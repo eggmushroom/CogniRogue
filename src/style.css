@@ -1,0 +1,41 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #04050a;
+  overflow: hidden;
+  overscroll-behavior: none;
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+canvas {
+  display: block;
+  touch-action: none;
+  outline: none;
+}
+
+#boot {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  background: #04050a;
+  color: #6f7b93;
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  transition: opacity 0.45s ease;
+  z-index: 10;
+}
+
+#boot.gone {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#boot b {
+  color: #e8b64c;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  font-size: 18px;
+}

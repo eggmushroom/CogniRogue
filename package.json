@@ -1,0 +1,22 @@
+{
+  "name": "cognirogue",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "把间隔复习做成一场 Roguelike 牌局",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "sim": "esbuild tools/sim.ts --bundle --platform=node --format=esm --outfile=.cache/sim.mjs --log-level=warning && node .cache/sim.mjs",
+    "smoke": "node tools/smoke.mjs",
+    "shots": "node tools/shots.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vite-plugin-singlefile": "^2.0.3"
+  }
+}

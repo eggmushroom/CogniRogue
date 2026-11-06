@@ -1,0 +1,14 @@
+# 仓库里统一用 LF，避免 Windows / macOS 之间整文件 diff
+* text=auto eol=lf
+
+# 二进制资源：不要做换行符转换，也不要尝试 diff
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff2 binary
+
+# 构建产物是单文件 HTML，别在 diff 里展开
+dist/index.html -diff

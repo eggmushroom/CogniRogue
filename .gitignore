@@ -1,0 +1,8 @@
+.workbuddy/
+.DS_Store
+Thumbs.db
+node_modules/
+*.log
+.shots/
+.cache/
+dist/

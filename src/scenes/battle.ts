@@ -1,0 +1,891 @@
+import { g, roundRect, VW } from '../gfx/canvas';
+import { ART } from '../gfx/assets';
+import { C, font, FONT_UI, withAlpha } from '../gfx/theme';
+import { bar, drawCard, icon, panel, text } from '../gfx/ui';
+import { onClick, hover } from '../input';
+import { drawBackdrop, drawMotes } from '../gfx/backdrop';
+import * as FX from '../gfx/fx';
+import { POWER_BY_ID } from '../core/data';
+import {
+  G, askCard, canAsk, defOf, endTurn, intentText, isForgotten, isUnlocked, memRatio, phaseOf, playPower,
+  playUnlocked, statOf, unlockStats,
+} from '../core/game';
+import type { CardDef, CardInst, Foe } from '../core/types';
+
+/** 增益牌飞向的位置：右上角第一个增益槽。和 topBar 里的排布常量对齐。 */
+export const POWER_SLOT = { x: VW - 82, y: 32 };
+
+export const ENEMY = { x: 1150, y: 330 };
+export const HERO = { x: 290, y: 462 };
+const HAND = { cx: 765, cy: 726, w: 200, h: 238, spread: 194 };
+
+/** 提灯的位置。攻击是从这里甩出去的，不是从卡片飞出去。 */
+export const heroHand = () => ({ x: HERO.x + 62, y: HERO.y + 6 });
+
+let lastEnemyKey = '';
+
+/** 换敌人时把战斗内的临时选择清掉，避免索引指向上一场的手牌。 */
+export function syncBattle() {
+  const key = G.enemy ? G.enemy.key + G.enemy.maxHp : '';
+  if (key !== lastEnemyKey) {
+    lastEnemyKey = key;
+    // 新的一场战斗：手牌表清空，开局那 5–6 张才能重新从牌堆飞进来。
+    // 牌实例是跨战斗复用的（deck 里就是同一批对象），不清的话它们会带着上场的坐标出现。
+    prevHand = new Set();
+    discardFx.length = 0;
+  }
+}
+
+export function drawBattle(t: number, dt: number) {
+  drawBackdrop(t, 0.58);
+  drawMotes(t);
+  topBar(t);
+
+  if (G.enemy) drawEnemy(G.enemy, t);
+  drawHero(t);
+  combatLog();
+  energyOrb(t);
+  piles();
+  drawHand(t, dt);
+  drawDiscards(dt);
+  endTurnButton();
+}
+
+/* ── 顶部：生命 / 位置 / 解锁进度 / 本场增益 ───────────────── */
+
+function topBar(t: number) {
+  g.save();
+  const grd = g.createLinearGradient(0, 0, 0, 76);
+  grd.addColorStop(0, 'rgba(6,8,13,.92)');
+  grd.addColorStop(1, 'rgba(6,8,13,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, VW, 100);
+  g.restore();
+
+  const pct = G.hp / G.maxHp;
+  bar(36, 20, 268, 22, pct, pct > 0.5 ? C.green : pct > 0.25 ? C.gold : C.red, {
+    label: `${Math.max(0, G.hp)} / ${G.maxHp}`,
+  });
+
+  if (G.block > 0) {
+    const bx = 316;
+    roundRect(bx, 16, 76, 30, 8);
+    g.fillStyle = withAlpha(C.blue, 0.16);
+    g.fill();
+    g.strokeStyle = withAlpha(C.blue, 0.6);
+    g.lineWidth = 1.4;
+    g.stroke();
+    icon('shield', bx + 18, 31, 11, C.blue);
+    text(String(G.block), bx + 36, 31, { size: 20, weight: 800, color: C.blue });
+  }
+
+  const floor = G.node ? G.node.r + 1 : G.pos ? G.pos.r + 1 : 1;
+  text(`第 ${floor} 层`, 430, 31, { size: 17, color: C.dim, weight: 600 });
+  if (G.enemy) {
+    const tag = G.enemy.type === 'boss' ? C.gold : G.enemy.type === 'elite' ? C.red : C.ink2;
+    text(G.enemy.tag, 512, 31, { size: 15, color: tag, weight: 700 });
+  }
+
+  // 解锁进度：这一场真正的资源。它比伤害数字更该一眼看见 ——
+  // 玩家每一手的取舍都是"要不要花行动力去解锁"。
+  const us = unlockStats();
+  if (us.total) {
+    const full = us.n >= us.total;
+    const col = full ? C.gold : C.cyan;
+    const pulse = full ? 1 : 1 + Math.sin(t * 5) * 0.03;
+    g.save();
+    g.translate(636, 31);
+    g.scale(pulse, pulse);
+    icon(full ? 'check' : 'lock', 0, 0, 9, col);
+    text(`${us.n}/${us.total}`, 16, 1, { size: 18, weight: 800, color: col });
+    text('已解锁', 62, 2, { size: 12, color: C.dim });
+    g.restore();
+  }
+
+  // 本场已打出的增益牌。它不再是"装备栏"：每场开头清空、每场重新打，
+  // 所以这一排实际上是这一场你已经花掉的行动力账本。
+  let rx = VW - 40;
+  for (let i = G.powers.length - 1; i >= 0; i--) {
+    const p = POWER_BY_ID[G.powers[i]];
+    if (!p) continue;
+    rx -= 42;
+    const r = 17;
+    const hv = hover(rx - r, 15, r * 2, r * 2);
+    g.save();
+    if (hv) { g.shadowColor = withAlpha(p.color, 0.6); g.shadowBlur = 16; }
+    g.beginPath();
+    g.arc(rx, 32, r, 0, Math.PI * 2);
+    g.fillStyle = withAlpha(p.color, hv ? 0.3 : 0.14);
+    g.fill();
+    g.strokeStyle = withAlpha(p.color, hv ? 0.95 : 0.6);
+    g.lineWidth = 1.4;
+    g.stroke();
+    g.restore();
+    text(p.icon, rx, 33, { size: 15, color: p.color, align: 'center', weight: 800 });
+    if (hv) {
+      const tw = 250;
+      panel(rx - tw / 2, 60, tw, 50, { r: 8, fill: 'rgba(8,10,16,.95)' });
+      text(p.name, rx, 78, { size: 14, weight: 700, align: 'center', color: p.color });
+      text(p.card, rx, 96, { size: 11, align: 'center', color: C.ink2 });
+    }
+  }
+  if (G.powers.length) {
+    text('本场增益', rx - 24, 33, { size: 11, color: C.dim, align: 'right' });
+  }
+}
+
+/* ── 敌人 ─────────────────────────────────────────────────── */
+
+function drawEnemy(e: Foe, t: number) {
+  const bob = Math.sin(t * 1.5) * 9;
+  const breathe = 1 + Math.sin(t * 1.5 + 1) * 0.012;
+  const size = 430 * breathe;
+  const art = ART[e.art];
+
+  // 出招和被击退都是身体的位移：冲出去 90，挨打退 34
+  const lunge = FX.enemyLunge();
+  const kick = FX.enemyRecoil();
+  const hitGlow = FX.enemyFlash();
+
+  // 敌人自己的动作也要落在身体上：只在外围飘一圈特效，读出来是"界面在动、怪没动"。
+  // 举盾后缩、变强涨大、塞杂念前倾、观察期微微收住，各给一个 sin 脉冲。
+  const pose = FX.enemyPose();
+  const pulse = pose ? Math.sin(Math.PI * pose.p) : 0;
+  let posePush = 0;
+  let poseScale = 1;
+  let poseRot = 0;
+  let poseBright = 0;
+  if (pose?.k === 'def') { posePush = 26 * pulse; poseScale = 1 - 0.06 * pulse; }
+  else if (pose?.k === 'buff') { poseScale = 1 + 0.11 * pulse; poseBright = 0.7 * pulse; }
+  else if (pose?.k === 'jam') { posePush = -20 * pulse; poseRot = 0.055 * pulse; }
+  else if (pose?.k === 'calm') { posePush = 12 * pulse; poseScale = 1 - 0.02 * pulse; }
+
+  const ex = ENEMY.x - lunge * 96 + kick * 30 + posePush;
+  const eh = 1 + kick * 0.05; // 挨打时横向压扁一点，重量感来自这里
+  const ew = 1 - kick * 0.025;
+  // poseScale 只作用在立绘尺寸上，别再乘进 g.scale —— 那样会平方，涨大一次就穿出画面
+  const drawnSize = size * poseScale;
+
+  // 地面光
+  g.save();
+  const groundCol = pose?.k === 'buff' ? C.orange : pose?.k === 'def' ? C.blue
+    : pose?.k === 'calm' ? C.cyan : e.type === 'boss' ? C.purple : C.cyan;
+  const base = g.createRadialGradient(ENEMY.x, ENEMY.y + 210, 10, ENEMY.x, ENEMY.y + 210, 240);
+  base.addColorStop(0, withAlpha(groundCol, 0.22 + hitGlow * 0.2 + pulse * 0.18));
+  base.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = base;
+  g.beginPath();
+  g.ellipse(ENEMY.x, ENEMY.y + 210, 260, 70, 0, 0, Math.PI * 2);
+  g.fill();
+  g.restore();
+
+  if (art.complete && art.naturalWidth) {
+    g.save();
+    g.globalCompositeOperation = 'screen';
+    g.globalAlpha = 0.95;
+    // 立绘是"纯黑底 + 发光主体"：先拉对比把底色压成纯黑，screen 混合后就没有方框边
+    const hue = e.hue ? ` hue-rotate(${e.hue}deg)` : '';
+    const bright = (hitGlow > 0 || poseBright > 0)
+      ? ` brightness(${1 + hitGlow * 2.6 + poseBright}) saturate(1.5)` : '';
+    g.filter = `contrast(1.5)${hue}${bright}`;
+    g.translate(ex, ENEMY.y + bob);
+    g.rotate(lunge * 0.05 - kick * 0.03 + poseRot);
+    g.scale(eh, ew);
+    g.drawImage(art, -drawnSize / 2, -drawnSize / 2, drawnSize, drawnSize);
+    g.filter = 'none';
+    g.restore();
+  } else {
+    g.fillStyle = withAlpha(C.purple, 0.3);
+    g.beginPath();
+    g.arc(ex, ENEMY.y + bob, 120, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  // 血条（数字压在条上，省一行高度）
+  const bw = 380;
+  const bx = ENEMY.x - bw / 2;
+  const by = ENEMY.y + 206;
+  bar(bx, by, bw, 20, e.hp / e.maxHp, e.type === 'boss' ? C.purple : C.red, {
+    r: 10, label: `${Math.max(0, e.hp)} / ${e.maxHp}`,
+  });
+  if (e.block > 0) {
+    icon('shield', bx + bw + 20, by + 10, 10, C.blue);
+    text(String(e.block), bx + bw + 34, by + 10, { size: 17, color: C.blue, weight: 700 });
+  }
+
+  // 名字
+  text(e.name, ENEMY.x, by + 48, { size: 24, align: 'center', color: C.ink, weight: 700 });
+
+  intentBubble(e, t);
+}
+
+function intentBubble(e: Foe, t: number) {
+  const it = intentText(e);
+  const cx = ENEMY.x;
+  const cy = ENEMY.y - 236 + Math.sin(t * 2.2) * 4;
+  const w = 158;
+  const h = 48;
+
+  const kind = it.icon === 'attack' ? 'attack' : it.icon === 'shield' ? 'shield'
+    : it.icon === 'junk' ? 'junk' : 'buff';
+  const col = kind === 'attack' ? C.red : kind === 'shield' ? C.blue
+    : kind === 'junk' ? C.orange : C.purple;
+
+  g.save();
+  g.shadowColor = withAlpha(col, 0.5);
+  g.shadowBlur = 20;
+  roundRect(cx - w / 2, cy - h / 2, w, h, 10);
+  g.fillStyle = 'rgba(10,12,18,.9)';
+  g.fill();
+  g.restore();
+  roundRect(cx - w / 2, cy - h / 2, w, h, 10);
+  g.strokeStyle = withAlpha(col, 0.75);
+  g.lineWidth = 1.6;
+  g.stroke();
+
+  icon(kind, cx - w / 2 + 28, cy, 13, col);
+  text(it.text, cx - w / 2 + 50, cy, { size: 19, weight: 700, color: C.ink });
+
+  // 小尖角
+  g.beginPath();
+  g.moveTo(cx - 7, cy + h / 2 - 1);
+  g.lineTo(cx, cy + h / 2 + 9);
+  g.lineTo(cx + 7, cy + h / 2 - 1);
+  g.closePath();
+  g.fillStyle = 'rgba(10,12,18,.9)';
+  g.fill();
+}
+
+/* ── 玩家 ─────────────────────────────────────────────────── */
+
+function drawHero(t: number) {
+  const { x, y } = HERO;
+  const bob = Math.sin(t * 1.25) * 5;
+  const hurt = FX.heroFlash();
+  const lunge = FX.heroLunge();
+  const recoil = FX.heroRecoil();
+  // 冲刺时整个身体前压、抬头；被击退时后仰。位移和倾斜要一起动，才像有重量
+  const dx = lunge * 96 - recoil * 30;
+  const dy = -lunge * 10 + bob;
+
+  // 光晕
+  const glow = g.createRadialGradient(x + dx * 0.6, y - 20, 8, x + dx * 0.6, y - 20, 190);
+  glow.addColorStop(0, hurt > 0 ? withAlpha(C.red, 0.4) : withAlpha(C.gold, 0.2 + lunge * 0.18));
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = glow;
+  g.beginPath();
+  g.arc(x + dx * 0.6, y - 20, 190, 0, Math.PI * 2);
+  g.fill();
+
+  // 地面投影
+  g.beginPath();
+  g.ellipse(x + dx * 0.4, y + 74, 74, 20, 0, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(0,0,0,.55)';
+  g.fill();
+
+  g.save();
+  g.translate(dx, dy);
+  g.rotate(lunge * 0.09 - recoil * 0.1);
+
+  // 披风剪影
+  g.beginPath();
+  g.moveTo(x, y - 104);
+  g.bezierCurveTo(x - 34, y - 96, x - 52, y - 26, x - 72, y + 70);
+  g.quadraticCurveTo(x, y + 88, x + 72, y + 70);
+  g.bezierCurveTo(x + 52, y - 26, x + 34, y - 96, x, y - 104);
+  g.closePath();
+  const cg = g.createLinearGradient(x, y - 100, x, y + 80);
+  cg.addColorStop(0, hurt > 0 ? '#5a1f22' : '#232b40');
+  cg.addColorStop(0.55, hurt > 0 ? '#3a1518' : '#141a28');
+  cg.addColorStop(1, '#080a10');
+  g.fillStyle = cg;
+  g.fill();
+  g.strokeStyle = hurt > 0 ? withAlpha(C.red, 0.8) : withAlpha(C.blue, 0.35);
+  g.lineWidth = 1.6;
+  g.stroke();
+
+  // 兜帽
+  g.beginPath();
+  g.ellipse(x, y - 84, 25, 29, 0, 0, Math.PI * 2);
+  g.fillStyle = hurt > 0 ? '#4a1a1e' : '#1b2233';
+  g.fill();
+  g.strokeStyle = withAlpha(C.blue, 0.3);
+  g.lineWidth = 1.2;
+  g.stroke();
+
+  // 眼
+  const eg = 0.55 + 0.45 * Math.sin(t * 2.4) + lunge * 0.4;
+  g.fillStyle = withAlpha(C.gold, Math.min(1, eg));
+  g.beginPath();
+  g.arc(x - 8, y - 86, 2.6, 0, Math.PI * 2);
+  g.arc(x + 8, y - 86, 2.6, 0, Math.PI * 2);
+  g.fill();
+
+  // 提灯：出招的瞬间它是最亮的东西，光刃就是从这里甩出去的
+  const lx = x + 62;
+  const ly = y + 6 + Math.sin(t * 2 + 1) * 3;
+  const flare = Math.max(0, lunge);
+  // 答错时焰会暗下去再回来：这一手没亮起来，比任何文字都快
+  const dim = FX.lampDim();
+  const lr = (42 + flare * 34) * (1 - 0.45 * dim);
+  const lg = g.createRadialGradient(lx, ly, 2, lx, ly, lr);
+  lg.addColorStop(0, withAlpha(C.gold, 0.85 * (1 - 0.82 * dim)));
+  lg.addColorStop(0.35, withAlpha(C.gold, (0.3 + flare * 0.35) * (1 - 0.86 * dim)));
+  lg.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = lg;
+  g.beginPath();
+  g.arc(lx, ly, lr, 0, Math.PI * 2);
+  g.fill();
+  g.beginPath();
+  g.arc(lx, ly, (5 + flare * 3) * (1 - 0.5 * dim), 0, Math.PI * 2);
+  g.fillStyle = withAlpha('#fff0c0', 1 - 0.7 * dim);
+  g.fill();
+  g.restore();
+
+  // 格挡环
+  if (G.block > 0) {
+    g.save();
+    g.translate(dx, dy);
+    g.strokeStyle = withAlpha(C.blue, 0.55);
+    g.lineWidth = 3;
+    g.setLineDash([10, 8]);
+    g.lineDashOffset = -t * 22;
+    g.beginPath();
+    g.ellipse(x, y + 10, 96, 108, 0, 0, Math.PI * 2);
+    g.stroke();
+    g.restore();
+    text(String(G.block), x + 96 + dx, y - 40 + dy, { size: 22, weight: 800, color: C.blue });
+  }
+
+  // 状态文字
+  text('你', x, y + 104, { size: 15, color: C.dim, align: 'center', weight: 600 });
+  const weak = Object.entries(G.topicWrong).filter(([, n]) => n > 0).length;
+  if (weak) text(`错题 ${weak} 主题`, x + 62, y + 104, { size: 11, color: C.redDim });
+}
+
+/* ── 光球 / 牌堆 / 日志 ───────────────────────────────────── */
+
+function energyOrb(t: number) {
+  const x = 86;
+  const y = 688;
+  const r = 48;
+  const p = G.ap / G.apMax;
+
+  g.save();
+  const glow = g.createRadialGradient(x, y, 4, x, y, r * 2.1);
+  glow.addColorStop(0, withAlpha(C.gold, 0.35 * (0.4 + p)));
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = glow;
+  g.beginPath();
+  g.arc(x, y, r * 2.1, 0, Math.PI * 2);
+  g.fill();
+  g.restore();
+
+  g.beginPath();
+  g.arc(x, y, r, 0, Math.PI * 2);
+  const ig = g.createRadialGradient(x - 14, y - 16, 4, x, y, r);
+  ig.addColorStop(0, p > 0 ? '#2a2412' : '#161821');
+  ig.addColorStop(1, '#0a0c12');
+  g.fillStyle = ig;
+  g.fill();
+  g.strokeStyle = withAlpha(C.gold, p > 0 ? 0.9 : 0.25);
+  g.lineWidth = 2.5;
+  g.stroke();
+
+  // 剩余量用弧线表示
+  g.beginPath();
+  g.arc(x, y, r - 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p);
+  g.strokeStyle = withAlpha(C.gold, 0.85);
+  g.lineWidth = 4;
+  g.lineCap = 'round';
+  g.stroke();
+
+  text(String(G.ap), x, y - 6, {
+    size: 38, weight: 800, align: 'center',
+    color: p > 0 ? C.gold : C.faint,
+  });
+  text('/ ' + G.apMax, x, y + 26, { size: 14, align: 'center', color: C.dim });
+
+  if (p > 0) {
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3);
+    g.globalAlpha = 0.18 + pulse * 0.12;
+    g.beginPath();
+    g.arc(x, y, r + 8 + pulse * 4, 0, Math.PI * 2);
+    g.strokeStyle = C.gold;
+    g.lineWidth = 2;
+    g.stroke();
+    g.globalAlpha = 1;
+  }
+}
+
+function piles() {
+  const pile = (x: number, y: number, label: string, n: number, col: string, fn: () => void, pulse = 0) => {
+    const hv = hover(x, y, 84, 42);
+    roundRect(x, y, 84, 42, 8);
+    g.fillStyle = hv ? 'rgba(255,255,255,.09)' : 'rgba(255,255,255,.035)';
+    g.fill();
+    g.strokeStyle = pulse > 0 ? withAlpha(col, 0.35 + pulse * 0.5) : hv ? withAlpha(col, 0.7) : C.line;
+    g.lineWidth = 1.3 + pulse * 1.1;
+    g.stroke();
+    // 收到牌的那一下数字顶起来，缩回去 —— 牌堆是"有反应"的，不是一块背景板
+    g.save();
+    if (pulse > 0) {
+      g.translate(x + 22, y + 22);
+      g.scale(1 + pulse * 0.32, 1 + pulse * 0.32);
+      text(String(n), 0, 0, { size: 19, weight: 800, align: 'center', color: col });
+    } else {
+      text(String(n), x + 22, y + 22, { size: 19, weight: 800, align: 'center', color: col });
+    }
+    g.restore();
+    text(label, x + 56, y + 22, { size: 12, align: 'center', color: C.dim });
+    onClick(x, y, 84, 42, fn);
+  };
+
+  // 还在飞的牌已经在 G.discard 里了，但玩家还没看见它落地 —— 计数要等落地才 +1。
+  // 洗牌那一帧弃牌堆会被清空，此时差额会变成负数，所以卡在 0。
+  let incoming = 0;
+  for (const f of discardFx) if (f.mode === 'discard') incoming += 1;
+
+  pile(44, 762, '抽牌', G.draw.length, C.blue, () => { G.panel = { k: 'pile', kind: 'draw' }; });
+  pile(44, 812, '弃牌', Math.max(0, G.discard.length - incoming), C.orange, () => {
+    G.panel = { k: 'pile', kind: 'discard' };
+  }, discardPulse);
+}
+
+function combatLog() {
+  const lines = G.log.slice(-5);
+  const x = 36;
+  const y0 = 100;
+  const w = 300;
+  g.save();
+  g.globalAlpha = 0.82;
+  panel(x, y0, w, 22 + lines.length * 22, { r: 10, fill: 'rgba(9,11,17,.72)', stroke: 'rgba(37,43,58,.9)' });
+  g.restore();
+  lines.forEach((l, i) => {
+    const col = l.kind === 'hi' ? C.green : l.kind === 'bad' ? C.red : l.kind === 'turn' ? C.gold : C.dim;
+    g.font = font(14, l.kind === 'turn' ? 700 : 400, FONT_UI);
+    g.fillStyle = col;
+    g.globalAlpha = 0.5 + 0.5 * (i / Math.max(1, lines.length - 1));
+    g.textAlign = 'left';
+    g.fillText(l.msg.length > 24 ? l.msg.slice(0, 23) + '…' : l.msg, x + 12, y0 + 16 + i * 22);
+    g.globalAlpha = 1;
+  });
+}
+
+/* ── 手牌 ─────────────────────────────────────────────────── */
+
+interface Slot { x: number; y: number; rot: number; i: number }
+
+/**
+ * 一张牌飞进手里的一小段演出。
+ *
+ * 逻辑层是"瞬间抽满"的（drawTo 一次 push 完），如果照原样画，玩家看到的是
+ * 手牌凭空出现 —— 抽牌这件事在画面上根本没有发生过。所以这里补上"牌从牌堆
+ * 出来"的那 0.3 秒：每张牌自己算一个出生时间，排队起飞。
+ */
+interface DrawFx {
+  /** 出生后经过的秒数。负数 = 还在排队，不画也不可点 */
+  age: number;
+  /** 上一次画到的位置，手牌重排时靠它做平滑过渡 */
+  px: number;
+  py: number;
+  /** 上一次真正画出去的位置（含悬停抬升）。牌离手时从这里起飞，否则会向下跳一下 */
+  dx: number;
+  dy: number;
+  /** 上一次画到的倾角，牌离手时从这里接着转，免得跳一下 */
+  rot: number;
+}
+
+/** 抽牌堆中心（piles() 里 44,762 那个 84×42 的方块） */
+const DRAW_FROM = { x: 86, y: 783 };
+/** 弃牌堆中心（piles() 里 44,812 那个） */
+/** 弃牌堆的位置：敌人塞过来的杂念要真的飞到这里，不能在数字上凭空 +1 */
+export const DISCARD_TO = { x: 86, y: 833 };
+/** 单张飞行时长 */
+const DRAW_DUR = 0.27;
+/** 同一批牌之间的间隔：一张接一张，不是一起出现 */
+const DRAW_GAP = 0.045;
+/** 牌飞进弃牌堆的时长。必须短于 panelHold，否则反馈面板会把它盖掉 */
+const DISCARD_DUR = 0.3;
+/** 一次弃多张（回合结束）时的错开间隔 */
+const DISCARD_GAP = 0.035;
+
+/**
+ * 一张正在离开手牌的牌。
+ *
+ * 逻辑层出牌是瞬时的（answer 里 push 进 discard 再 splice 掉），画面上如果不补
+ * 这一段，牌就是凭空消失 —— 玩家看不到"我这张牌去哪了"，也读不出牌堆在变厚。
+ */
+interface DiscardFx {
+  card: CardDef;
+  atk: number;
+  blk: number;
+  up: boolean;
+  /** 出发点：最后一次画到的位置 */
+  x: number;
+  y: number;
+  rot: number;
+  /** 负数 = 还在排队 */
+  age: number;
+  /**
+   * 这张牌离手之后去哪。
+   *  - discard：飞向左下角的弃牌堆，落地时计数 +1
+   *  - return：学习期答错的牌 **退回抽牌堆** —— 它没离开循环，下一回合就回来，
+   *    所以不能飞进弃牌堆（那个动作读出来是"被收走了"）
+   *  - junk：杂念原地化掉（它根本不进取牌堆）
+   *  - power：增益牌飞向右上角的增益槽 —— 它已经从牌组循环里出去了，不能飞进弃牌堆，
+   *    否则玩家会以为它下场还能再打一次
+   */
+  mode: 'discard' | 'return' | 'junk' | 'power';
+}
+
+const handFx = new Map<CardInst, DrawFx>();
+const discardFx: DiscardFx[] = [];
+let prevHand = new Set<CardInst>();
+/** 弃牌堆收到牌时冒一下：0..1 衰减，用来让计数跳起来 */
+let discardPulse = 0;
+
+function layoutHand(): Slot[] {
+  const n = G.hand.length;
+  if (!n) return [];
+  // 手牌尽量不重叠：重叠会切掉卡面文字。牌多到放不下时才让它们叠起来。
+  // 990 是「从能量球右边到结束回合按钮左边」能摆下的中心跨度 —— 索引卡会让手牌变 7 张，
+  // 用 1180 算的话第七张会压到「结束回合」上。
+  const spread = n <= 1 ? 0 : Math.min(HAND.spread, 990 / (n - 1));
+  const totalW = (n - 1) * spread;
+  const out: Slot[] = [];
+  for (let i = 0; i < n; i++) {
+    const x = HAND.cx - totalW / 2 + i * spread;
+    const off = (x - HAND.cx) / 620;
+    out.push({ x, y: HAND.cy + Math.abs(off) * 34, rot: off * 0.055, i });
+  }
+  return out;
+}
+
+const easeOut = (p: number) => 1 - Math.pow(1 - p, 3);
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+function drawHand(t: number, dt: number) {
+  const slots = layoutHand();
+
+  // 先认一遍"这一帧新进手的牌"。用上一帧的手牌表比对，而不是用逻辑层的事件：
+  // 回合开始抽满、专注抽牌、杂念，三种来源都会走这里，表现层不需要知道是谁抽的。
+  const inHand = new Set<CardInst>();
+  // 敌人出手期间，新抽的手牌先留在牌堆里：core 已经同步换好了手牌，
+  // 但两拨飞行物叠在一起会糊成一片。演完再让它们依次飞进来。
+  const foeActing = FX.enemyBusy();
+  let lane = 0;
+  for (const s of slots) {
+    const ent = G.hand[s.i];
+    if (!ent) continue;
+    inHand.add(ent);
+    let fx = handFx.get(ent);
+    if (!prevHand.has(ent) || !fx) {
+      fx = { age: -lane * DRAW_GAP, px: DRAW_FROM.x, py: DRAW_FROM.y, dx: DRAW_FROM.x, dy: DRAW_FROM.y, rot: -0.42 };
+      handFx.set(ent, fx);
+      lane += 1;
+    }
+    const before = fx.age;
+    if (!foeActing) fx.age += dt;
+    // 排队结束、真正起飞的那一帧：牌堆抖一下，牌是从这里出去的
+    if (before < 0 && fx.age >= 0) {
+      FX.burst(DRAW_FROM.x, DRAW_FROM.y, C.blue, 4, {
+        speed: 150, size: 3, grav: -70, life: 0.4,
+      });
+    }
+  }
+
+  // 离手的牌：出牌、或者回合结束整把弃掉。这里先按"上一帧还在手里"算出来，
+  // 拿它最后画到的位置当起点 —— 玩家看到的就是那张牌自己飞走的，不是一张新的。
+  let laneOut = 0;
+  for (const ent of prevHand) {
+    if (inHand.has(ent)) continue;
+    const fx = handFx.get(ent);
+    handFx.delete(ent);
+    const card = defOf(ent);
+    if (!card || !fx) continue;
+    // 判断去处的唯一依据是"逻辑层把它放哪了"：学习期答错的牌在 draw 里，
+    // 其余不是弃掉就是离开循环。表现层不重复算一遍规则。
+    const mode: DiscardFx['mode'] = card.power ? 'power'
+      : G.draw.includes(ent) ? 'return'
+        : card.junk ? 'junk' : 'discard';
+    const st = statOf(ent);
+    discardFx.push({
+      card, atk: st.atk, blk: st.blk, up: !!ent.up,
+      x: fx.dx, y: fx.dy, rot: fx.rot,
+      age: mode === 'power' || mode === 'junk' ? 0 : -laneOut * DISCARD_GAP,
+      mode,
+    });
+    if (mode === 'discard' || mode === 'return') laneOut += 1;
+  }
+  prevHand = inHand;
+
+  for (const s of slots) {
+    const ent = G.hand[s.i];
+    if (!ent) continue;
+    const fx = handFx.get(ent);
+    if (!fx || fx.age < 0) continue; // 还在队列里，这张牌此刻不存在
+    const card = defOf(ent);
+    const st = statOf(ent);
+
+    const flying = fx.age < DRAW_DUR;
+    let px: number;
+    let py: number;
+    let rot = s.rot;
+    let scale = 1;
+    let alpha = 1;
+
+    if (flying) {
+      const p = clamp01(fx.age / DRAW_DUR);
+      const e = easeOut(p);
+      // 抛物线而不是直线：从牌堆甩上来再落进手里，才有"抽"的重量。
+      // 每张牌弧高差一点，六张连着抽时才不会叠成一条线上的珠子。
+      const cx = (DRAW_FROM.x + s.x) / 2;
+      const cy = Math.min(DRAW_FROM.y, s.y) - (92 + (s.i % 3) * 24);
+      const iu = 1 - e;
+      px = iu * iu * DRAW_FROM.x + 2 * iu * e * cx + e * e * s.x;
+      py = iu * iu * DRAW_FROM.y + 2 * iu * e * cy + e * e * s.y;
+      // 牌堆里是斜着摞的，出手时先把它扶正
+      rot = -0.42 + (s.rot + 0.42) * e;
+      scale = 0.6 + 0.4 * e + 0.05 * Math.sin(p * Math.PI);
+      alpha = 0.3 + 0.7 * Math.min(1, p * 2.6);
+    } else {
+      // 落地之后，位置仍然平滑趋近目标 —— 出牌让手牌变少时，剩下的牌是滑过去而不是瞬移
+      const k = 1 - Math.exp(-dt * 18);
+      px = fx.px + (s.x - fx.px) * k;
+      py = fx.py + (s.y - fx.py) * k;
+    }
+    // 存的是"归位位置"而不是含悬停抬升的位置，否则一直悬停会把基准点越推越高
+    fx.px = px;
+    fx.py = py;
+    fx.rot = rot;
+
+    const hv = !flying && hover(px - HAND.w / 2, py - HAND.h / 2, HAND.w, HAND.h);
+    // 悬停只抬高、不放大太多：卡面文字要在放大后仍然清晰，又不能挡住邻居
+    if (hv) { scale *= 1.06; py -= 44; }
+    else if (!flying) py -= Math.sin(t * 1.4 + s.i) * 2;
+
+    const w = HAND.w * scale;
+    const h = HAND.h * scale;
+    fx.dx = px;
+    fx.dy = py;
+
+    // 三种状态：锁着（要答题）/ 已解锁（免答直接打）/ 这回合已经答错过，
+    // 外加一种整场作废（复习期答错）。增益牌不传状态 —— 它不需要证明什么。
+    const isPow = !!card.power;
+    const open = !card.junk && !isPow && isUnlocked(card.id);
+    const state = card.junk || isPow ? undefined
+      : open ? 'open'
+        : isForgotten(card.id) ? 'forgotten'
+          : G.failedTurn[card.id] ? 'spent'
+            : 'locked';
+
+    g.save();
+    g.globalAlpha = alpha;
+    g.translate(px, py);
+    g.rotate(rot);
+    drawCard(-w / 2, -h / 2, w, h, card, st.atk, st.blk, {
+      up: !!ent.up, glow: hv, mem: memRatio(ent.id), state,
+      phase: card.junk || isPow ? undefined : phaseOf(card.id),
+    });
+    g.restore();
+
+    // 还在飞的牌不给热区：那时候它画在半空中，点它等于点空气
+    if (flying) continue;
+
+    // 锁着的牌点下去出题，已解锁的牌点下去直接打，增益牌点下去立刻生效 ——
+    // 三种都是"点这张牌"，只是它问你要的东西不一样
+    if (isPow) {
+      onClick(px - w / 2, py - h / 2, w, h, () => {
+        if (G.ap <= 0) { FX.shake(6); return; }
+        playPower(s.i);
+      }, 'card');
+    } else if (!card.junk) {
+      onClick(px - w / 2, py - h / 2, w, h, () => {
+        if (G.ap <= 0) { FX.shake(6); return; }
+        if (open) { playUnlocked(s.i); return; }
+        if (isForgotten(card.id)) {
+          // 作废的牌还能快攻 —— 但不说明白，玩家会以为自己点不动它
+          FX.shake(4);
+          FX.floatText(HAND.cx, HAND.cy - 54, '这一场它已经作废了 —— 只能快攻', C.red, 20, { vy: -34 });
+          return;
+        }
+        if (canAsk(ent)) { askCard(s.i); return; }
+        FX.shake(5);
+      }, 'card');
+    } else {
+      onClick(px - w / 2, py - h / 2, w, h, () => {
+        text('杂念打不出去，回合结束会自己散去', HAND.cx, HAND.cy - 40, {
+          size: 18, align: 'center', color: C.dim,
+        });
+        FX.shake(4);
+      }, 'junk');
+    }
+  }
+
+  if (!G.hand.length && G.pending === null) {
+    text('手里没牌了 —— 结束回合', HAND.cx, HAND.cy - 40, { size: 20, align: 'center', color: C.dim });
+  }
+}
+
+/**
+ * 离手的牌飞向弃牌堆。
+ *
+ * 分两种：真牌被"收走"（加速下坠、转正、缩小、末段淡出），杂念原地化掉
+ * （它不进弃牌堆，所以不能有去处 —— 这一点和 core 里的处理是一致的）。
+ */
+function drawDiscards(dt: number) {
+  discardPulse = Math.max(0, discardPulse - dt * 2.4);
+
+  for (let i = discardFx.length - 1; i >= 0; i--) {
+    const f = discardFx[i];
+    f.age += dt;
+    if (f.age < 0) continue;
+    const p = clamp01(f.age / DISCARD_DUR);
+
+    let px = f.x;
+    let py = f.y;
+    let rot = f.rot;
+    let scale = 1;
+    let alpha = 1;
+    let landing = false;
+
+    if (f.mode === 'junk') {
+      const e = p * p;
+      py = f.y - e * 28;
+      scale = 1 - 0.3 * e;
+      alpha = 1 - e;
+      rot = f.rot + e * 0.2;
+    } else if (f.mode === 'power') {
+      // 增益牌不是"被弃掉"，是"被点亮"：往右上角抛一道弧，缩成一个小点钻进槽里。
+      // 一路缩小而不是淡出，是为了让"这张牌离开了循环"这件事看起来是升格，不是丢弃。
+      const e = p * p;
+      const cx = (f.x + POWER_SLOT.x) / 2;
+      const cy = Math.min(f.y, POWER_SLOT.y) - 150;
+      const iu = 1 - e;
+      px = iu * iu * f.x + 2 * iu * e * cx + e * e * POWER_SLOT.x;
+      py = iu * iu * f.y + 2 * iu * e * cy + e * e * POWER_SLOT.y;
+      rot = f.rot * (1 - e);
+      scale = 1 - 0.88 * e;
+      alpha = 1 - Math.max(0, (p - 0.72) / 0.28) * 0.95;
+      landing = p >= 1;
+    } else if (f.mode === 'return') {
+      // 退回牌堆：同一段距离，但往上走、走蓝色 —— 这张牌没有离开循环，
+      // 它是"下一次还会再来"，不是"被收走了"。颜色是这里唯一的语义。
+      const e = p * p;
+      const cx = (f.x + DRAW_FROM.x) / 2;
+      const cy = Math.min(f.y, DRAW_FROM.y) - 150;
+      const iu = 1 - e;
+      px = iu * iu * f.x + 2 * iu * e * cx + e * e * DRAW_FROM.x;
+      py = iu * iu * f.y + 2 * iu * e * cy + e * e * DRAW_FROM.y;
+      rot = f.rot * (1 - e);
+      scale = 1 - 0.66 * e;
+      alpha = 1 - Math.max(0, (p - 0.7) / 0.3) * 0.9;
+      if (p >= 1) landing = true;
+    } else {
+      // 加速而不是匀速：被收走的牌是"掉"进牌堆的，不是平移过去的
+      const e = p * p;
+      const cx = (f.x + DISCARD_TO.x) / 2;
+      const cy = Math.min(f.y, DISCARD_TO.y) + 46;
+      const iu = 1 - e;
+      px = iu * iu * f.x + 2 * iu * e * cx + e * e * DISCARD_TO.x;
+      py = iu * iu * f.y + 2 * iu * e * cy + e * e * DISCARD_TO.y;
+      rot = f.rot - 0.5 * e;
+      scale = 1 - 0.62 * e;
+      alpha = 1 - Math.max(0, (p - 0.74) / 0.26) * 0.9;
+      if (p >= 1) landing = true;
+    }
+
+    if (p >= 1 || landing) {
+      discardFx.splice(i, 1);
+      if (landing && (f.mode === 'discard' || f.mode === 'return')) {
+        // 落地这一帧才算"进了牌堆"：计数跳一下、牌堆扬一点灰（退回牌堆不动弃牌堆的计数）
+        const back = f.mode === 'return';
+        if (!back) discardPulse = 1;
+        const at = back ? DRAW_FROM : DISCARD_TO;
+        FX.burst(at.x, at.y - 6, back ? C.blue : C.orange, back ? 5 : 3, {
+          speed: back ? 110 : 90, size: 3, grav: back ? -120 : 320, life: 0.3,
+        });
+      } else if (f.mode === 'power') {
+        // 落进增益槽的那一下冒一圈光：这是"它开始工作了"的唯一提示
+        const col = f.card.power ? POWER_BY_ID[f.card.power].color : C.gold;
+        FX.burst(POWER_SLOT.x, POWER_SLOT.y, col, 7, {
+          speed: 120, size: 3, grav: 60, life: 0.42,
+        });
+      }
+      continue;
+    }
+
+    const w = HAND.w * scale;
+    const h = HAND.h * scale;
+    g.save();
+    g.globalAlpha = alpha;
+    g.translate(px, py);
+    g.rotate(rot);
+    drawCard(-w / 2, -h / 2, w, h, f.card, f.atk, f.blk, { up: f.up });
+    g.restore();
+  }
+}
+
+function endTurnButton() {
+  const x = 1392;
+  const y = 736;
+  const w = 176;
+  const h = 66;
+  const hv = hover(x, y, w, h);
+  /**
+   * 「结束回合」是战斗中唯一没有替代品的按钮：手牌打空、行动力归零时，
+   * 它是玩家唯一还能做的事。所以这里不能按"还有没有牌可打"来决定是否注册热区 ——
+   * 那样只会把已经无牌可打的一局彻底锁死（界面上还画着按钮，点下去却毫无反应）。
+   * 只有演出中和结算中（checkPending 已置位）才真的不该点。
+   */
+  const ready = !G.busy && G.pending === null;
+
+  g.save();
+  if (hv && ready) { g.shadowColor = withAlpha(C.gold, 0.45); g.shadowBlur = 22; }
+  roundRect(x, y, w, h, 12);
+  g.fillStyle = hv && ready ? withAlpha(C.gold, 0.22) : 'rgba(20,24,34,.9)';
+  g.fill();
+  g.restore();
+  roundRect(x, y, w, h, 12);
+  g.strokeStyle = !ready ? withAlpha(C.gold, 0.22) : hv ? C.gold : withAlpha(C.gold, 0.5);
+  g.lineWidth = 1.8;
+  g.stroke();
+
+  text('结束回合', x + w / 2, y + h / 2 - 8, {
+    size: 20, weight: 700, align: 'center', color: ready ? C.ink : C.dim,
+  });
+  text(`${G.hand.length} 张手牌 · 行动力 ${G.ap}`, x + w / 2, y + h / 2 + 16, {
+    size: 12, align: 'center', color: C.dim,
+  });
+
+  // 热区永远注册，endTurn 内部自己会拦"面板开着 / 正在结算"这些情况
+  onClick(x, y, w, h, () => endTurn(), 'endturn');
+
+  // 牌组按钮
+  const dx = 1392;
+  const dy = 646;
+  const dhv = hover(dx, dy, 176, 46);
+  roundRect(dx, dy, 176, 46, 10);
+  g.fillStyle = dhv ? 'rgba(255,255,255,.1)' : 'rgba(20,24,34,.85)';
+  g.fill();
+  g.strokeStyle = dhv ? C.lineHi : C.line;
+  g.lineWidth = 1.2;
+  g.stroke();
+  text(`牌组 ${G.deck.length}`, dx + 88, dy + 23, { size: 15, align: 'center', color: dhv ? C.ink : C.ink2 });
+  onClick(dx, dy, 176, 46, () => { G.panel = { k: 'deck' }; }, 'deck');
+}
+
+/** 调试/冒烟用：在飞的牌数量。飞行单元如果清不掉，会在屏幕上永远留一张牌。 */
+export function fxCount() {
+  return { hand: handFx.size, discard: discardFx.length };
+}
+
+export function resetBattleView() {
+  lastEnemyKey = '';
+  prevHand = new Set();
+  handFx.clear();
+  discardFx.length = 0;
+  discardPulse = 0;
+  FX.clearFx();
+}

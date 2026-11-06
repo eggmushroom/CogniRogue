@@ -1,0 +1,2058 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CogniRogue · 用你的知识打一场 roguelike</title>
+<style>
+:root{
+  --bg:#0a0c11; --panel:#121620; --panel2:#181d29; --line:#232a3a;
+  --text:#e8ebf2; --muted:#8b93a8; --dim:#5d6478;
+  --teal:#3ddc97; --red:#ff6b6b; --amber:#ffc857; --violet:#a78bfa; --blue:#5aa9f5;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--text);overflow:hidden;
+  font:14px/1.55 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  display:flex;flex-direction:column;
+}
+button{font:inherit;color:inherit;cursor:pointer;border:none;background:none}
+.hidden{display:none!important}
+
+header{
+  flex:none;display:flex;align-items:center;gap:18px;padding:10px 18px;
+  border-bottom:1px solid var(--line);background:var(--panel);
+}
+.brand{font-weight:600;letter-spacing:.4px;display:flex;align-items:center;gap:8px}
+.brand i{width:9px;height:9px;border-radius:50%;background:var(--teal);display:block}
+.stat{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted)}
+.stat b{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+.bar{width:120px;height:7px;border-radius:4px;background:#0d1119;overflow:hidden;border:1px solid var(--line)}
+.bar>s{display:block;height:100%;background:var(--red);transition:width .25s ease}
+.bar.e>s{background:var(--violet)}
+.spacer{flex:1}
+.iconbtn{
+  font-size:13px;color:var(--muted);padding:6px 11px;border-radius:7px;
+  border:1px solid var(--line);background:var(--panel2);transition:.15s;
+}
+.iconbtn:hover{color:var(--text);border-color:#33405a}
+
+/* 场景背景：整个视口一层，面板盖在上面 */
+#bg{position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background-image:var(--tint,linear-gradient(transparent,transparent)),
+    url("../assets/arena.jpg");
+  background-size:cover,cover;background-position:center 42%,center 42%;
+  opacity:0;transition:opacity .5s ease,filter .5s ease;
+  filter:saturate(.72) brightness(.82)}
+#bg.on{opacity:.5}
+#bg::after{content:'';position:absolute;inset:0;
+  background:
+    radial-gradient(115% 82% at 50% 26%, rgba(10,12,17,0) 0%, rgba(10,12,17,.68) 58%, #0a0c11 100%),
+    linear-gradient(180deg, rgba(10,12,17,.55) 0%, rgba(10,12,17,0) 26%, rgba(10,12,17,.92) 100%)}
+
+main{flex:1;min-height:0;display:grid;grid-template-columns:1fr 272px}
+#arena{min-width:0;display:flex;flex-direction:column;padding:18px 20px 14px;overflow:auto}
+#side{border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0}
+.sidehead{padding:11px 14px;font-size:12px;color:var(--dim);letter-spacing:.12em;border-bottom:1px solid var(--line)}
+#log{flex:1;overflow:auto;padding:10px 14px;font-size:12.5px;line-height:1.9}
+#log p{margin:0 0 2px;color:var(--muted)}
+#log p.hi{color:var(--teal)}
+#log p.bad{color:var(--red)}
+#log p.turn{color:var(--dim);margin-top:8px;letter-spacing:.08em;font-size:11.5px}
+
+/* enemy */
+#enemy{flex:1;min-height:0;display:flex;gap:34px;align-items:center;justify-content:center;padding:0 4px 6px;
+  width:100%;max-width:960px;margin:0 auto}
+.artwrap{position:relative;flex:none;display:grid;place-items:center;
+  width:min(46vh,32vw,540px);height:min(46vh,32vw,540px);
+  width:max(196px,min(46vh,32vw,540px));height:max(196px,min(46vh,32vw,540px))}
+.artwrap .glyph{font-size:72px;color:#6f7aa0}
+.artwrap .glow{position:absolute;inset:-6%;border-radius:50%;pointer-events:none;
+  background:radial-gradient(closest-side, var(--glowc,rgba(90,169,245,.16)), transparent 72%)}
+.artwrap img{
+  position:relative;width:100%;height:100%;object-fit:cover;object-position:center 34%;display:block;
+  filter:contrast(1.10) brightness(1.12) saturate(.95);mix-blend-mode:screen;
+  -webkit-mask-image:radial-gradient(closest-side,#000 62%,rgba(0,0,0,.62) 80%,transparent 99%);
+  mask-image:radial-gradient(closest-side,#000 62%,rgba(0,0,0,.62) 80%,transparent 99%);
+  animation:breathe 6.5s ease-in-out infinite;
+}
+@keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.022)}}
+.artwrap.boss{width:max(214px,min(52vh,37vw,600px));height:max(214px,min(52vh,37vw,600px))}
+.artwrap.boss img{filter:contrast(1.22) brightness(1.34) saturate(.95)}
+.artwrap.hit img{animation:hitShake .34s ease}
+@keyframes hitShake{
+  0%{transform:translateX(0)}
+  18%{transform:translateX(-7px) scale(1.03)}
+  40%{transform:translateX(6px) scale(1.01)}
+  62%{transform:translateX(-3px)}
+  100%{transform:translateX(0)}
+}
+.artwrap .flash{position:absolute;inset:8%;border-radius:50%;pointer-events:none;opacity:0;
+  background:radial-gradient(closest-side, rgba(255,107,107,.55), transparent 70%)}
+.artwrap.hit .flash{animation:flashOut .34s ease}
+@keyframes flashOut{0%{opacity:1}100%{opacity:0}}
+.dmgnum{position:absolute;left:50%;top:38%;font-weight:700;font-size:27px;letter-spacing:.5px;
+  color:#fff;text-shadow:0 2px 10px rgba(0,0,0,.9),0 0 22px rgba(255,107,107,.7);
+  pointer-events:none;animation:floatUp .95s cubic-bezier(.2,.7,.3,1) forwards}
+.dmgnum.blk{color:var(--blue);text-shadow:0 2px 10px rgba(0,0,0,.9),0 0 20px rgba(90,169,245,.7);font-size:22px}
+@keyframes floatUp{
+  0%{opacity:0;transform:translate(-50%,12px) scale(.75)}
+  22%{opacity:1;transform:translate(-50%,-6px) scale(1.12)}
+  100%{opacity:0;transform:translate(-50%,-74px) scale(1)}
+}
+.enemyinfo{flex:0 1 400px;min-width:0}
+.ename{font-size:21px;font-weight:600;letter-spacing:.3px}
+.etag{display:inline-block;font-size:11px;color:var(--amber);border:1px solid #4a3d1b;
+  background:#1d1a10;border-radius:5px;padding:1px 7px;margin-left:8px;vertical-align:2px}
+.ehint{color:var(--muted);font-size:12.5px;margin:7px 0 12px;min-height:20px;max-width:460px;line-height:1.75}
+.ehint em{color:var(--amber);font-style:normal}
+.hpline{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.hpline b{font-size:12.5px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+.intent{font-size:12.5px;color:var(--red)}
+
+/* hand */
+#handwrap{flex:none;display:flex;flex-direction:column;justify-content:flex-end;
+  width:100%;max-width:960px;margin:0 auto}
+.handlabel{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--dim);margin-bottom:9px}
+.apdots{display:flex;gap:5px}
+.apdots s{width:13px;height:13px;border-radius:50%;background:var(--teal);display:block}
+.apdots s.off{background:#22293a}
+#hand{display:flex;gap:clamp(8px,1vw,14px);flex-wrap:wrap;align-items:flex-end;justify-content:center}
+.card{
+  width:clamp(122px,12.2vw,168px);min-height:clamp(166px,20.5vh,224px);border-radius:12px;border:1px solid #2b3346;
+  background:linear-gradient(178deg,#1b2130 0%,#151a26 100%);
+  padding:11px 12px 9px;display:flex;flex-direction:column;gap:8px;position:relative;overflow:hidden;
+  transition:transform .14s ease,border-color .14s,box-shadow .14s;text-align:left;cursor:pointer;
+}
+.card::before{content:'';position:absolute;inset:0 0 auto;height:2px;
+  background:linear-gradient(90deg,var(--tc,#a78bfa),transparent 72%);opacity:.9}
+.card:hover{transform:translateY(-6px);border-color:#41506f;box-shadow:0 10px 26px -12px #000}
+.card .topic{font-size:10.5px;letter-spacing:.1em;color:var(--tc,#a78bfa);
+  border:1px solid color-mix(in srgb,var(--tc,#a78bfa) 34%,transparent);
+  background:color-mix(in srgb,var(--tc,#a78bfa) 10%,#141824);
+  border-radius:4px;padding:1px 6px;align-self:flex-start}
+.card .q{font-size:12.5px;line-height:1.5;color:#cfd5e4;flex:1;
+  display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.card .meta{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);
+  border-top:1px solid #242c3d;padding-top:7px}
+.card .meta b{color:var(--text)}
+.card.streaked{border-color:#4a3d1b}
+.card .chipbar{display:flex;gap:5px;border-top:1px solid #242c3d;padding-top:7px}
+.card .ti{
+  flex:1;font-size:11.5px;padding:4px 0;border-radius:5px;line-height:1.2;
+  border:1px solid #2b3346;background:#141a26;color:var(--muted);transition:.13s;
+}
+.card .ti:hover{border-color:#41506f;color:var(--text);background:#1e2634}
+.card .ti.t1{color:#8fbdf5;border-color:#25344a}
+.card .ti.t2{color:var(--amber);border-color:#4a3d1b;background:#1a1710}
+.card .ti.t2:hover{background:#231d10}
+.card .ti.quick{flex:.72;color:var(--dim)}
+.tiertag{display:inline-block;font-size:11.5px;padding:3px 9px;border-radius:5px;margin-bottom:10px;
+  color:var(--muted);border:1px solid var(--line);background:var(--panel2)}
+.tiertag.t1{color:#8fbdf5;border-color:#25344a}
+.tiertag.t2{color:var(--amber);border-color:#4a3d1b;background:#1a1710}
+.calib{margin-top:18px;border-top:1px solid var(--line);padding-top:14px}
+.calib .ct{font-size:12px;color:var(--dim);letter-spacing:.08em;margin-bottom:6px}
+.calib .verdict{margin-top:10px;font-size:12.5px;line-height:1.75;color:#b9c7c0;
+  border-left:2px solid var(--amber);padding-left:11px}
+.footrow{display:flex;align-items:center;gap:12px;margin-top:14px}
+.primary{
+  background:var(--teal);color:#06231a;font-weight:600;padding:9px 20px;border-radius:8px;font-size:13.5px;
+}
+.primary:hover{filter:brightness(1.08)}
+.ghost{border:1px solid var(--line);background:var(--panel2);color:var(--muted);
+  padding:9px 16px;border-radius:8px;font-size:13px}
+.ghost:hover{color:var(--text);border-color:#33405a}
+
+/* sheet / modal */
+#modal{position:fixed;inset:0;background:rgba(5,7,11,.80);display:flex;align-items:center;justify-content:center;
+  padding:24px;z-index:50;backdrop-filter:blur(7px)}
+.sheet{width:min(620px,100%);max-height:88vh;overflow:auto;background:var(--panel);
+  border:1px solid #2b3346;border-radius:16px;padding:24px 26px;box-shadow:0 30px 80px -30px #000}
+.sheet h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:.2px}
+.sheet .sub{color:var(--muted);font-size:12.5px;margin-bottom:18px}
+.opt{
+  display:flex;gap:11px;align-items:flex-start;width:100%;text-align:left;
+  border:1px solid var(--line);background:var(--panel2);border-radius:10px;
+  padding:11px 14px;margin-bottom:9px;font-size:13.5px;transition:.13s;
+}
+.opt:hover{border-color:#41506f;background:#1d2434}
+.opt u{width:20px;flex:none;color:var(--dim);text-decoration:none;font-size:12px;padding-top:1px}
+.opt.ok{border-color:#1d6b4e;background:#0f231b}
+.opt.ok u{color:var(--teal)}
+.opt.no{border-color:#6b2525;background:#1f1315}
+.opt.no u{color:var(--red)}
+.feedback{margin-top:16px;padding:13px 15px;border-radius:10px;font-size:13px;line-height:1.7;
+  border-left:3px solid var(--teal);background:#0f1a16;color:#b9c7c0}
+.feedback.no{border-color:var(--red);background:#1a1214;color:#c8b4b4}
+.feedback b{color:var(--teal)}
+.feedback.no b{color:var(--red)}
+.sheet .row{display:flex;gap:10px;margin-top:18px;align-items:center}
+.tabs{display:flex;gap:6px;margin-bottom:18px}
+.tabs button{font-size:12.5px;padding:6px 13px;border-radius:7px;color:var(--muted);border:1px solid transparent}
+.tabs button[aria-selected="true"]{background:var(--panel2);border-color:var(--line);color:var(--text)}
+textarea,input{
+  width:100%;background:#0c1017;border:1px solid var(--line);border-radius:8px;color:var(--text);
+  padding:9px 11px;font:13px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;outline:none;resize:vertical;
+}
+textarea:focus,input:focus{border-color:#3a4a6b}
+label.fl{display:block;font-size:12px;color:var(--muted);margin:14px 0 6px}
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #1d2433}
+th{color:var(--dim);font-weight:400;font-size:11.5px;letter-spacing:.06em}
+td b{color:var(--text)}
+.mbar{height:6px;border-radius:3px;background:#0d1119;overflow:hidden;min-width:64px}
+.mbar s{display:block;height:100%;background:var(--teal)}
+.choice3{display:grid;gap:10px;margin-top:6px}
+.choice3 button{border:1px solid var(--line);background:var(--panel2);border-radius:10px;
+  padding:13px 15px;text-align:left;font-size:13.5px;transition:.13s}
+.choice3 button:hover{border-color:var(--teal);background:#0f1a16}
+.choice3 button s{display:block;text-decoration:none;color:var(--muted);font-size:11.5px;margin-top:2px}
+.note{font-size:12px;color:var(--dim);margin-top:14px;line-height:1.7}
+.title-hero{padding:26px 8px}
+.title-hero h1{font-size:30px;margin:0 0 6px;letter-spacing:.5px}
+.title-hero h1 span{color:var(--teal)}
+.title-hero p{color:var(--muted);max-width:560px;margin:0 0 22px;font-size:13.5px;line-height:1.8}
+.kv{display:flex;gap:26px;margin-bottom:24px;flex-wrap:wrap}
+.kv div{font-size:12px;color:var(--dim)}
+.kv b{display:block;font-size:20px;color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+/* ---------------- 地图 ---------------- */
+#map{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;
+  gap:12px;padding:4px 0 6px;width:100%;max-width:960px;margin:0 auto}
+.maplayer{position:relative;width:min(480px,100%);flex:1;min-height:0}
+.maplayer svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.maplayer line{stroke:#252d3d;stroke-width:1.5;vector-effect:non-scaling-stroke}
+.maplayer line.on{stroke:#3d5a52;stroke-dasharray:5 4}
+.mnode{
+  position:absolute;transform:translate(-50%,-50%);width:40px;height:40px;border-radius:50%;
+  display:grid;place-items:center;font-size:16px;color:#5d6478;background:#121722;
+  border:1px solid #262e40;transition:transform .15s,border-color .15s,box-shadow .15s,color .15s;
+  padding:0;
+}
+.mnode:disabled{cursor:default}
+.mnode.fight{color:#8b93a8}
+.mnode.elite{color:#ff8a8a;border-color:#5b3232;background:#1b1316}
+.mnode.rest{color:#3ddc97;border-color:#2a4a3d;background:#101c17}
+.mnode.event{color:#a78bfa;border-color:#3a3060;background:#151226}
+.mnode.boss{width:52px;height:52px;font-size:21px;color:#c4a8ff;border-color:#4a3a6e;background:#191328}
+.mnode.seen{opacity:.3}
+.mnode.cur{border-color:var(--amber);color:var(--amber);box-shadow:0 0 0 3px rgba(255,200,87,.13)}
+.mnode.avail{color:#e8ebf2;border-color:var(--teal);cursor:pointer;
+  box-shadow:0 0 0 3px rgba(61,220,151,.10),0 0 16px -2px rgba(61,220,151,.55);
+  animation:nodePulse 2.2s ease-in-out infinite}
+.mnode.avail:hover{transform:translate(-50%,-50%) scale(1.12)}
+@keyframes nodePulse{
+  0%,100%{box-shadow:0 0 0 3px rgba(61,220,151,.08),0 0 14px -2px rgba(61,220,151,.40)}
+  50%{box-shadow:0 0 0 6px rgba(61,220,151,.13),0 0 24px 0 rgba(61,220,151,.55)}
+}
+.maplegend{display:flex;gap:14px;font-size:11.5px;color:var(--dim);align-items:center;flex-wrap:wrap}
+.maplegend span{display:flex;align-items:center;gap:5px}
+.maplegend .lg{font-style:normal;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;
+  font-size:11px;border:1px solid #2a3244;background:#121722}
+.maplegend .lg.fight{color:#8b93a8}
+.maplegend .lg.elite{color:#ff8a8a;border-color:#5b3232}
+.maplegend .lg.rest{color:#3ddc97;border-color:#2a4a3d}
+.maplegend .lg.event{color:#a78bfa;border-color:#3a3060}
+.maplegend .lg.boss{color:#c4a8ff;border-color:#4a3a6e}
+.maplegend .lg-hint{color:#4a5164;margin-left:4px}
+
+/* ---------------- 遗物 ---------------- */
+.relicbar{display:flex;gap:6px;align-items:center}
+.relic{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;
+  background:#1a1526;border:1px solid #3a3060;color:#c4a8ff;cursor:help}
+.relicrow{display:flex;gap:8px;flex-wrap:wrap}
+.relicbig{font-size:12px;color:#c4a8ff;border:1px solid #3a3060;background:#1a1526;
+  border-radius:7px;padding:3px 9px}
+
+/* ---------------- 选卡 / 牌组列表 ---------------- */
+.sheet.wide{width:min(780px,100%)}
+.cardgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:4px}
+.pick{border:1px solid #2b3346;border-radius:11px;background:linear-gradient(178deg,#1b2130,#151a26);
+  padding:11px 11px 9px;text-align:left;display:flex;flex-direction:column;gap:7px;
+  position:relative;overflow:hidden;transition:.14s}
+.pick::before{content:'';position:absolute;inset:0 0 auto;height:2px;
+  background:linear-gradient(90deg,var(--tc,#a78bfa),transparent 72%);opacity:.9}
+.pick:hover{transform:translateY(-4px);border-color:#41506f;box-shadow:0 10px 26px -14px #000}
+.pick .pt{font-size:10.5px;letter-spacing:.08em;color:var(--tc,#a78bfa)}
+.pick .pq{font-size:12px;line-height:1.5;color:#cfd5e4;min-height:54px}
+.pick .pm{font-size:11.5px;color:var(--muted);border-top:1px solid #242c3d;padding-top:6px;line-height:1.6}
+.pick .pm b{color:var(--text)}
+
+.decklist{max-height:min(46vh,420px);overflow:auto;border:1px solid var(--line);border-radius:10px}
+.dgroup{font-size:11px;letter-spacing:.1em;color:var(--dim);padding:7px 11px 5px;
+  background:#101520;position:sticky;top:0}
+.drow{display:grid;grid-template-columns:84px 1fr auto;gap:9px;align-items:center;
+  width:100%;text-align:left;padding:8px 11px;border-bottom:1px solid #1b2231;
+  font-size:12px;color:var(--muted);transition:.12s}
+.drow:hover:not(.static){background:#1a2130;color:var(--text)}
+.drow.static{cursor:default}
+.drow .dt{font-size:11px}
+.drow .dq{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drow .dm{font-size:11px;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
+
+/* ---------------- 战斗态补充 ---------------- */
+.card.junk{width:clamp(96px,9.2vw,126px);min-height:clamp(140px,17vh,186px);opacity:.62;
+  border-style:dashed;border-color:#3a3348;cursor:default;background:linear-gradient(178deg,#191722,#14121a)}
+.card.junk .topic{color:#8b7fa8;border-color:#3a3060;background:#191527}
+.card.junk .q{color:#7a738c;font-size:12px}
+.card.forged{border-color:#4a3d1b}
+.card.forged::before{background:linear-gradient(90deg,var(--amber),transparent 72%)}
+.pilebtn{padding:9px 13px;font-size:12.5px}
+#arena.hurt{animation:hurtShake .4s ease}
+@keyframes hurtShake{
+  0%,100%{transform:translateX(0)}
+  15%{transform:translateX(-6px)}
+  38%{transform:translateX(5px)}
+  62%{transform:translateX(-3px)}
+  82%{transform:translateX(2px)}
+}
+@media (max-width:880px){
+  main{grid-template-columns:1fr}
+  #side{display:none}
+  #hand .card{width:132px;min-height:172px}
+}
+</style>
+</head>
+<body>
+
+<div id="bg" aria-hidden="true"></div>
+
+<header>
+  <div class="brand"><i></i>CogniRogue</div>
+  <div class="stat">HP <div class="bar"><s id="hpbar" style="width:100%"></s></div><b id="hptext">70/70</b></div>
+  <div class="stat">层 <b id="floorText">-</b></div>
+  <div class="stat">连击 <b id="streaktext" style="color:var(--amber)">0</b></div>
+  <div class="relicbar" id="relicbar"></div>
+  <div class="spacer"></div>
+  <button class="iconbtn" id="btnDeck">牌组</button>
+  <button class="iconbtn" id="btnPack">知识包</button>
+  <button class="iconbtn" id="btnHelp">玩法</button>
+</header>
+
+<main>
+  <section id="arena">
+    <div id="map" class="hidden"></div>
+    <div id="enemy"></div>
+    <div id="handwrap">
+      <div class="handlabel">
+        <span>手牌</span>
+        <div class="apdots" id="apdots"></div>
+        <span id="aphint">行动力</span>
+      </div>
+      <div id="hand"></div>
+      <div class="footrow" id="footrow"></div>
+    </div>
+  </section>
+  <aside id="side">
+    <div class="sidehead">战斗记录</div>
+    <div id="log"></div>
+  </aside>
+</main>
+
+<div id="modal" class="hidden"><div class="sheet" id="sheet"></div></div>
+<input type="file" id="fileInput" accept=".md,.txt,.json" class="hidden" />
+
+<script>
+/* ------------------------------------------------------------------
+   CogniRogue — 单文件原型
+   设计要点：答题不是"加伤害"，而是"解锁更复杂的策略"。
+   随机只作用于表现形式，抽哪张知识卡由调度（FSRS-lite）决定。
+------------------------------------------------------------------- */
+
+const BUILTIN = `# 算法与复杂度
+
+> CogniRogue 示例知识包。一个 \`###\` 就是一张卡，卡面效果由 \`%\` 决定且固定不变；
+> 用 \`?\` 追加「理解」「迁移」两档更深的题，档位越高，答对返还的行动力越多、答错代价越重。
+> 顺序即档位：第一个 \`?\` 是理解，第二个是迁移。
+
+## 复杂度
+
+### 二分查找在 n 个有序元素上的最坏时间复杂度是？
+A) O(1)
+B) O(log n)
+C) O(n)
+D) O(n log n)
+= B
++ 每次比较把搜索区间折半，最多比较约 log2(n) 次。前提是数组「有序」，无序数组先排序就已经是 O(n log n) 了。
+% 6 5
+
+? 理解: 为什么无序数组上不能直接用二分查找？
+A) 无序数组不具备"折半后目标仍在某一侧"的性质
+B) 无序数组算不出中间下标
+C) 无序数组按下标访问是 O(n)
+D) 无序数组元素太多，递归会爆栈
+= A
++ 二分的关键不是"有序"，而是"有序"带来的可判定性：比过 mid 之后，你能确定目标只可能在左半边或右半边。无序时这个断言失效，折半就变成了瞎猜。
+
+? 迁移: n = 1024 的有序数组，二分查找最多比较几次？
+A) 10
+B) 32
+C) 512
+D) 1024
+= A
++ 2 的 10 次方是 1024，区间从 1024 缩到 1 需要 10 次折半。记住这个换算比记公式有用。
+
+### 递归式 T(n) = 2T(n/2) + O(n) 的解是？
+A) O(n)
+B) O(log n)
+C) O(n log n)
+D) O(n²)
+= C
++ 这正是归并排序的结构：分成两个 n/2 的子问题，再花 O(n) 合并。按主定理属于「平衡划分、线性合并」，结果是 O(n log n)。
+% 7 5
+
+? 理解: 这个递归式里的 2 和 n/2 分别对应什么？
+A) 两个规模减半的子问题
+B) 两次比较，每次跳过一半
+C) 两层嵌套循环，每层 n/2
+D) 两个长度为 n/2 的辅助数组
+= A
++ 系数 2 是子问题个数，n/2 是每个子问题的规模。递归树每一层的总代价都是 O(n)，树高是 log n，乘起来才是 O(n log n)。
+
+? 迁移: 如果合并步骤从 O(n) 变成 O(n log n)，总复杂度是多少？
+A) O(n log² n)
+B) O(n log n)
+C) O(n²)
+D) O(n√n)
+= A
++ 每层代价升到 O(n log n)，层数仍是 log n，相乘即 O(n log² n)。这是"多一层对数因子"，不是平方。
+
+### 快速排序的最坏时间复杂度出现在什么情况下？
+A) 数组已经完全有序，且取首元素为枢轴
+B) 数组随机排列
+C) 数组元素全部相等
+D) 元素数量是 2 的幂
+= A
++ 已排序 + 首元素枢轴，每次划分都极不均衡（一侧空、一侧 n-1），退化成 O(n²)。三数取中或随机化枢轴就是为了打散这种最坏情况。
+% 8 5
+
+? 理解: 快排退化成 O(n²) 的根本原因是？
+A) 每次划分极不均衡，递归树退化成一条链
+B) 元素个数太多
+C) 递归层数太浅
+D) 每次比较的开销太大
+= A
++ 快排的代价是「每层 O(n) × 层数」。均分时层数是 log n；每次只剥掉一个元素时层数是 n，于是 O(n²)。所以问题永远出在划分的均衡性上。
+
+? 迁移: 每次都用三数取中选枢轴，能不能保证最坏 O(n log n)？
+A) 不能，仍然存在被构造出来的最坏输入
+B) 能，三数取中必然均分
+C) 能，因为它等价于随机化枢轴
+D) 不能，因为枢轴取值不唯一
+= A
++ 三数取中只是降低了碰到坏输入的概率，没有消除它。要拿到最坏情况的线性保证，得用 median-of-medians 这类确定性选择算法，代价是常数极大。
+
+### 哈希表里所有键都冲突、全部挤在同一条链上时，查找的复杂度是？
+A) O(1)
+B) O(log n)
+C) O(n)
+D) O(n log n)
+= C
++ 冲突全部堆在一起时，哈希表在结构上退化成了链表，查找变成线性扫描。所以 O(1) 是平均情况，不是最坏情况。
+% 7 5
+
+? 理解: 为什么哈希表的 O(1) 是平均情况而不是最坏情况？
+A) 冲突会让链变长，最坏时退化成线性扫描
+B) 哈希函数本身的计算是 O(n)
+C) 扩容时需要重新插入所有元素
+D) 哈希表不支持删除操作
+= A
++ 均摊 O(1) 的前提是「冲突足够均匀」。一旦哈希函数把键集中到少数桶里，桶内查找就回到了线性结构的老路。
+
+? 迁移: 开放寻址法、装载因子已经到 0.9 时，查找性能会怎样？
+A) 明显变慢，探测链变长且缓存失效
+B) 不受影响，仍是 O(1)
+C) 反而变快，内存更紧凑
+D) 变成 O(1) 的最坏情况
+= A
++ 开放寻址的成功查找期望探测次数约 1/(1-α)，α 从 0.5 涨到 0.9 时从 2 次涨到 10 次。这就是为什么实现普遍在 0.7 左右就扩容。
+
+## 数据结构
+
+### 同时需要「尾部插入均摊 O(1)」和「随机访问 O(1)」，应该选什么？
+A) 单链表
+B) 动态数组（可扩容数组）
+C) 二叉搜索树
+D) 哈希表
+= B
++ 数组的连续内存天然支持下标随机访问；尾部追加均摊 O(1)（扩容那一次是 O(n)，摊还后可以忽略）。链表随机访问是 O(n)，哈希表不支持按下标访问。
+% 6 5
+
+? 理解: 为什么扩容要按倍数（比如 2 倍）而不是每次加 1？
+A) 均摊之后每次追加才是 O(1)
+B) 倍数扩容更省内存
+C) 为了支持按下标随机访问
+D) 语言运行时规定必须这样
+= A
++ 每次 +1 的话，n 次追加累计复制 n²/2 个元素；每次翻倍则是 1+2+4+…+n < 2n。均摊分析里，这个"翻倍"就是 O(1) 的全部来源。
+
+? 迁移: 从空数组开始连续 push n 次，累计复制的元素数量级是多少？
+A) O(n)
+B) O(n log n)
+C) O(n²)
+D) O(1)
+= A
++ 等比数列求和上限是 2n。注意区分「单次最坏 O(n)」和「n 次总计 O(n)」——均摊就是拿这两个数相除。
+
+### 优先队列（每次取出最小元素）最常用的底层实现是？
+A) 有序数组
+B) 二叉堆
+C) 哈希表
+D) 平衡树
+= B
++ 二叉堆插入和删除堆顶都是 O(log n)，查看堆顶 O(1)，常数小、实现简单。有序数组插入是 O(n)，每次插都要挪元素。
+% 7 5
+
+? 理解: 二叉堆查堆顶是 O(1)，插入却是 O(log n)，原因是？
+A) 堆顶固定在数组第 0 位，插入要沿树上升
+B) 堆顶需要实时排序，插入直接放尾部
+C) 两者其实都是 O(1)
+D) 因为堆是链式结构，指针跳转慢
+= A
++ 堆只保证「父子有序」这一条弱不变量，所以最小值天然在根上。插入时破坏的是从叶到根这条路径，恢复它恰好要走 log n 步。
+
+### 并查集同时使用「路径压缩」和「按秩合并」后，单次操作的均摊复杂度约是？
+A) O(1)
+B) O(log n)
+C) O(n)
+D) O(n α(n))
+= A
++ 两者结合后均摊代价是 O(α(n))，α 是阿克曼函数的反函数，在实际规模下不超过 4，因此工程上直接当作 O(1)。
+% 8 6
+
+? 理解: 只做路径压缩、不做按秩合并，复杂度会变成什么样？
+A) 仍然很快，但理论界退化到 O(log n) 均摊
+B) 直接退化到 O(n)
+C) 完全不变，两种优化等价
+D) 变成 O(n log n)
+= A
++ 两个优化各自能拿到 O(log n)，合起来才能拿到接近常数的 α(n)。工程上两个都写几乎不增加成本，没有理由只写一半。
+
+? 迁移: 并查集不擅长支持下面哪个操作？
+A) 从一个集合中删除单个元素，并恢复它原来的归属
+B) 查询两个元素是否属于同一集合
+C) 合并两个集合
+D) 查询某个集合的大小
+= A
++ 并查集只支持「合并」，不支持「拆分」或「删除」。这是它的结构性局限，也是为什么带删除的动态连通性要用别的方法（如 LCT 或离线倒序处理）。
+
+### 布隆过滤器判断一个元素「不存在」时，结论的正确性如何？
+A) 一定正确
+B) 可能误判为存在
+C) 可能误判为不存在
+D) 完全随机
+= A
++ 布隆过滤器只有假阳性（说不存在就一定不存在）、没有假阴性。所以它适合「挡掉一定不存在」的请求，不能当作「一定存在」的证明。
+% 8 6
+
+? 理解: 布隆过滤器为什么不能删除元素？
+A) 一个位被多个元素共享，清零会误伤其他元素
+B) 因为哈希函数不可逆
+C) 因为位数组容量太小
+D) 因为它不支持并发写入
+= A
++ 你元素的第 3 个哈希位，可能恰好是别人元素的第 1 个哈希位。清掉它，别人就被误判成"不存在"了。计数布隆过滤器用计数器替代单比特，才换来删除能力。
+
+### 单链表判断是否有环，且要求额外空间 O(1)，应该用？
+A) 哈希集合记录访问过的节点
+B) 快慢指针（Floyd 判圈）
+C) 递归遍历并计数
+D) 先反转再比较
+= B
++ 快指针每次走两步、慢指针一步，有环必然相遇。哈希集合法时间也是 O(n)，但空间是 O(n)，不满足 O(1) 的要求。
+% 7 5
+
+? 理解: 为什么在有环时快慢指针一定会相遇，而不是永远错开？
+A) 每轮净追近一步，环上的距离必然归零
+B) 因为环的长度一定是偶数
+C) 因为慢指针最终会停下
+D) 因为两者的哈希值相同
+= A
++ 一旦两人都进环，快指针相对慢指针每轮前进 1 格。在长度为 L 的环上，距离对 L 取模后每轮加 1，必然经过 0。这就是"净追近 1"的重要性。
+
+? 迁移: 如果让快指针每次走 3 步、慢指针 1 步，在长度为偶数的环上会怎样？
+A) 可能永远不相遇，相对速度 2 只能覆盖同奇偶的节点
+B) 一定相遇，而且比走 2 步更快
+C) 一定不相遇
+D) 与走 2 步完全等价
+= A
++ 相对速度变成 2，在长度为偶数的环上只能遍历一半的节点。如果初始距离是奇数，就永远踩不到 0。经典解法要求相对速度与环长互质，2 步对 1 步恰好满足。
+
+## 排序与查找
+
+### 下列排序算法中，稳定的是？
+A) 快速排序
+B) 堆排序
+C) 归并排序
+D) 选择排序
+= C
++ 归并排序在合并时遇到相等元素优先取左边，顺序得以保持。快排的分区交换和堆排的堆调整都会打乱相等元素的相对顺序。
+% 7 5
+
+? 理解: 归并排序为什么天然稳定？
+A) 合并阶段遇到相等元素时优先取左侧
+B) 它不做任何元素交换
+C) 它使用了额外的辅助数组
+D) 它的比较次数是固定的
+= A
++ 稳定性不是"有没有交换"决定的，而是"相等时怎么选"决定的。归并的合并是逐个挑选，天然有"写 <= 就取左"这个自由度，取左即稳定。
+
+? 迁移: 稳定排序最实际的用途是下面哪一个？
+A) 先按次关键字排、再按主关键字排，能保留次级顺序
+B) 让排序本身更快
+C) 减少排序所需的内存
+D) 支持浮点数比较
+= A
++ 这叫多关键字排序：先按次要关键字排一遍，再稳定地按主要关键字排一遍，最终次级顺序不会被打乱。不稳定排序必须改成一次比较多个键。
+
+### 在无序数组中找第 k 大的元素，平均 O(n) 的算法是？
+A) 全排序后取下标
+B) 快速选择（Quickselect）
+C) 建堆后连续弹出 k 次
+D) 二分查找
+= B
++ 快速选择只递归处理包含目标的那一侧，平均 O(n)。全排序 O(n log n)，建堆弹 k 次是 O(n + k log n)。
+% 8 6
+
+? 理解: 快速选择的平均复杂度是 O(n) 而不是 O(n log n)，原因是？
+A) 只递归含目标的那一侧，总工作量是 n + n/2 + n/4 + …
+B) 因为它根本不做排序
+C) 因为它用了随机数
+D) 因为它只查找一次
+= A
++ 快排要处理左右两边，所以每层工作量是 n，共 log n 层。快速选择只处理一边，每层工作量减半，几何级数求和收敛到 2n。
+
+? 迁移: 快速选择的最坏时间复杂度是多少？
+A) O(n²)
+B) O(n log n)
+C) O(n)
+D) O(log n)
+= A
++ 和快排一样怕不均衡划分：每轮只削掉一个元素时，工作量是 n + (n-1) + … = O(n²)。"平均 O(n)"不等于"最坏 O(n)"。
+
+### 内存装不下的大文件排序，标准做法是？
+A) 直接调 sort() 硬排
+B) 外部归并排序：分块排序 + 多路归并
+C) 用哈希表分组
+D) 转成 JSON 再排序
+= B
++ 先把文件切成能放进内存的块，每块内部排好序写回磁盘，再做多路归并。这是数据库和 MapReduce 里 shuffle 阶段的原型。
+% 8 5
+
+? 理解: 多路归并里的「多路」主要是为了减少什么？
+A) 归并的趟数，也就是读写磁盘的次数
+B) 内存占用量
+C) 元素比较次数
+D) 临时文件的数量
+= A
++ 二路归并对 n 条记录要跑 log2(n) 趟；改成 k 路就只要 logk(n) 趟。磁盘 IO 才是瓶颈，所以这里优化的是趟数，代价是内存里要维护 k 个堆。
+
+### 计数排序适用的前提条件是？
+A) 数据已经有序
+B) 数据是范围较小的整数
+C) 数据全是浮点数
+D) 数据量小于 100
+= B
++ 计数排序用值域大小 k 开数组统计出现次数，复杂度 O(n + k)。值域过大（比如 64 位整数）时数组开不出来，就退化了。
+% 7 5
+
+? 理解: 计数排序不做两两比较，却能达到 O(n)，原因是？
+A) 用值域做下标直接定位，省掉了比较
+B) 它的比较被编译器优化掉了
+C) 因为它只处理整数
+D) 因为它内部用了哈希表
+= A
++ 基于比较的排序有 O(n log n) 的下界，绕开它的唯一办法就是不做比较——直接用值本身当位置。代价是必须有界且离散的值域。
+
+? 迁移: 0 到 10 亿范围、共 100 万个整数，计数排序还合适吗？
+A) 不合适，值域太大，计数数组开不出来
+B) 合适，O(n + k) 依然最快
+C) 合适，把下标改成负数就行
+D) 不合适，因为数据是整数
+= A
++ 这里 k = 10⁹ 而 n = 10⁶，O(n + k) 完全被 k 主导，内存也撑不住。这种情况应该用基数排序，把值拆成几段，每段做一次计数排序。
+`;
+
+/* ---------------- 敌人图鉴 ----------------
+   立绘复用三张，变体靠 hue-rotate 区分；机制各自不同。
+   moves 是意图循环，每回合走一格 —— 玩家永远能看见它下一步要干什么。 */
+const FOES = [
+  { key:'shard', name:'记忆的碎片', type:'fight', art:'../assets/shard.jpg', tag:'普通',
+    hp:56, dmg:7, moves:[{k:'atk', m:1}],
+    glow:'rgba(90,200,220,.20)', tint:'rgba(50,180,200,.10)',
+    hint:'它就是来消耗你手牌的。答对就好，别想太多。' },
+
+  { key:'examiner', name:'复习官', type:'fight', art:'../assets/examiner.jpg', tag:'普通',
+    hp:62, dmg:8, moves:[{k:'atk', m:1}], mech:'reviewer',
+    glow:'rgba(255,200,87,.16)', tint:'rgba(255,190,90,.09)',
+    hint:'一回合内没有<em>真正答对</em>任何一张卡，它额外打你 3 点。快攻流在这里会被惩罚。' },
+
+  { key:'echo', name:'回声', type:'fight', art:'../assets/shard.jpg', hue:'130deg', tag:'普通',
+    hp:50, dmg:7, moves:[{k:'atk', m:1}], mech:'pierce',
+    glow:'rgba(61,220,151,.18)', tint:'rgba(60,200,150,.10)',
+    hint:'它的攻击<em>无视一半格挡</em>。堆格挡这一套对它不好使。' },
+
+  { key:'entropy', name:'熵', type:'fight', art:'../assets/examiner.jpg', hue:'-70deg', tag:'普通',
+    hp:58, dmg:8, moves:[{k:'jam', n:1},{k:'atk', m:1}],
+    glow:'rgba(167,139,250,.18)', tint:'rgba(150,120,230,.10)',
+    hint:'它会往你的弃牌堆里塞<em>杂念</em>——占手牌位、打不出去，回合结束才散。' },
+
+  { key:'reviewer', name:'审视者', type:'elite', art:'../assets/examiner.jpg', tag:'精英',
+    hp:92, dmg:11, moves:[{k:'atk', m:1.3},{k:'atk', m:.65, times:2},{k:'def', v:12}],
+    glow:'rgba(255,138,138,.20)', tint:'rgba(200,90,90,.12)',
+    hint:'它会<em>格挡</em>。想靠一回合爆发带走它，得先把那层挡住。' },
+
+  { key:'mirror', name:'镜像', type:'elite', art:'../assets/shard.jpg', hue:'205deg', tag:'精英',
+    hp:88, dmg:10, moves:[{k:'atk', m:1.2},{k:'jam', n:2},{k:'atk', m:.7, times:2}], mech:'pierce',
+    glow:'rgba(120,160,255,.20)', tint:'rgba(90,130,230,.12)',
+    hint:'<em>无视一半格挡</em>，还会塞杂念。它专门惩罚"只守不攻"。' },
+
+  { key:'oblivion', name:'遗忘', type:'boss', art:'../assets/oblivion.jpg', tag:'BOSS',
+    hp:150, dmg:14, moves:[{k:'atk', m:1},{k:'atk', m:.6, times:2},{k:'buff', v:2}],
+    mech:'oblivion',
+    glow:'rgba(167,139,250,.20)', tint:'rgba(150,120,230,.13)',
+    hint:'本局你错得最多的主题，对它伤害 <em>+4</em>；但你在该主题上答对，它本回合 <em>-3</em>。' }
+];
+
+/* ---------------- 遗物 ----------------
+   全部围绕"学习行为"设计，不是数值 buff：让某种出牌方式变便宜。 */
+const RELICS = [
+  { id:'log',        icon:'✎', name:'错题本',  desc:'每次答错，该主题本局攻击 +1（最多 +6）' },
+  { id:'hourglass',  icon:'⌛', name:'沙漏',    desc:'每回合第一张卡不消耗行动力' },
+  { id:'index',      icon:'▤', name:'索引卡',  desc:'每回合多抽 1 张牌' },
+  { id:'binder',     icon:'⌇', name:'装订线',  desc:'每回合第一次答错不赔行动力' },
+  { id:'mirrorcard', icon:'◫', name:'双面镜',  desc:'迁移档答对时抽 1 张牌' },
+  { id:'lamp',       icon:'✦', name:'长明灯',  desc:'战斗开始时获得 8 点格挡' },
+  { id:'marker',     icon:'▮', name:'荧光笔',  desc:'识记档答对也退还 1 点行动力' }
+];
+
+/* ---------------- 事件 ---------------- */
+const EVENTS = [
+  { id:'index-cards', title:'散落的索引卡',
+    text:'地上一摊被别人拆散的知识卡。墨迹还新，边缘被人反复捏过——这个人大概也在这里卡住过。',
+    opts:[
+      { t:'拾起来，收进自己的牌组', sub:'获得一张随机知识卡，已精炼（攻/挡 +3）',
+        run:() => { const c = PACK.cards[Math.floor(Math.random()*PACK.cards.length)];
+                    S.deck.push({ id:c.id, up:1 }); return '你把「' + c.topic + '」那张卡收进了牌组。'; } },
+      { t:'按主题重新排好', sub:'回复 16 点生命——整理本身也是复习',
+        run:() => { S.hp = Math.min(S.maxHp, S.hp + 16); return '你按主题排好了它们，回了 16 点生命。'; } },
+      { t:'绕过去', sub:'什么也不发生', run:() => '你没有碰它。' }
+    ]},
+
+  { id:'notebook', title:'旧笔记本',
+    text:'一本写着你名字的笔记本，翻开全是错的题。每一道旁边都标了当时的想法——大部分标错了。',
+    opts:[
+      { t:'一页一页看完', sub:'本局所有主题攻击 +2，但你会掉 12 点生命',
+        run:() => { topics().forEach(t => { S.topicAtk[t] = (S.topicAtk[t]||0) + 2; });
+                    S.hp = Math.max(1, S.hp - 12); return '看完自己犯过的错，比做十道新题疼，但有用。'; } },
+      { t:'只翻你最近错的那几页', sub:'本局该主题攻击 +3',
+        run:() => { const t = topTopic() || topics()[0];
+                    S.topicAtk[t] = (S.topicAtk[t]||0) + 3; return '「' + t + '」的攻击 +3。'; } },
+      { t:'合上，放回原处', sub:'什么也不发生', run:() => '你把它放了回去。' }
+    ]},
+
+  { id:'keeper', title:'守夜人',
+    text:'一个坐在灯下的人抬起头："想过去，留一样东西。"他没有说是什么东西。',
+    opts:[
+      { t:'把一张卡留下来', sub:'永久移除牌组里一张卡，回复 20 点生命',
+        run:() => { if (S.deck.length > 5){ const i = Math.floor(Math.random()*S.deck.length);
+                      const d = defOf(S.deck[i]); S.deck.splice(i,1);
+                      S.hp = Math.min(S.maxHp, S.hp + 20);
+                      return '「' + d.topic + '」被留下了，你换回 20 点生命。'; }
+                    S.hp = Math.min(S.maxHp, S.hp + 20); return '你的牌组太薄了，他只收下了 20 点生命。'; } },
+      { t:'给他 12 点生命', sub:'获得一个遗物',
+        run:() => { S.hp = Math.max(1, S.hp - 12);
+                    const pool = RELICS.filter(r => !hasRelic(r.id));
+                    if (!pool.length) { S.hp = Math.min(S.maxHp, S.hp + 12); return '他已经没有东西可以给你了。'; }
+                    const r = pool[Math.floor(Math.random()*pool.length)];
+                    S.relics.push(r.id); return '你拿到了「' + r.name + '」：' + r.desc; } },
+      { t:'什么也不留，转身离开', sub:'什么也不发生', run:() => '他没有拦你。' }
+    ]},
+
+  { id:'lamp-hall', title:'长明灯廊',
+    text:'一整条廊道的灯都亮着，只有尽头那盏是灭的。你可以在这里坐一会儿，也可以去把那盏灯点上。',
+    opts:[
+      { t:'坐一会儿', sub:'回复 22 点生命', run:() => { S.hp = Math.min(S.maxHp, S.hp + 22); return '你在灯下坐了一会儿，回了 22 点生命。'; } },
+      { t:'去点那盏灭的灯', sub:'获得一个遗物，但会掉 10 点生命',
+        run:() => { S.hp = Math.max(1, S.hp - 10);
+                    const pool = RELICS.filter(r => !hasRelic(r.id));
+                    if (!pool.length) return '灯亮了，什么也没发生。';
+                    const r = pool[Math.floor(Math.random()*pool.length)];
+                    S.relics.push(r.id); return '灯亮了。你拿到「' + r.name + '」：' + r.desc; } }
+    ]}
+];
+
+/* ---------------- 地图 ----------------
+   8 层：起点 → 6 层分支 → Boss。节点类型在生成时定死，玩家能看见整条路，
+   所以"去哪一层"是一个可以提前规划的决定，不是抽卡。 */
+const MAP_ROWS = 8;
+const NODE = {
+  fight:{ k:'战斗', g:'⚔' }, elite:{ k:'精英', g:'☠' },
+  rest:{ k:'复习', g:'✦' }, event:{ k:'事件', g:'?' }, boss:{ k:'遗忘', g:'✺' }
+};
+
+function genMap(){
+  const rows = [[{ col:1, type:'fight' }]];
+  for (let r = 1; r < MAP_ROWS - 1; r++){
+    const n = r === 1 ? 2 : (Math.random() < 0.5 ? 3 : 2);
+    const cols = shuffle([0,1,2]).slice(0, n).sort((a,b) => a - b);
+    rows.push(cols.map(c => {
+      let type;
+      if (r === MAP_ROWS - 2) type = 'rest';               // Boss 前必有复习点
+      else if (r === 1) type = Math.random() < .55 ? 'fight' : 'event';
+      else {
+        const x = Math.random();
+        type = x < .46 ? 'fight' : x < .66 ? 'event' : x < .84 ? 'rest' : 'elite';
+      }
+      return { col:c, type };
+    }));
+  }
+  rows.push([{ col:1, type:'boss' }]);
+
+  for (let r = 0; r < MAP_ROWS - 1; r++){
+    const a = rows[r], b = rows[r+1];
+    a.forEach(x => {
+      const s = b.map((y,j) => ({ j, d: Math.abs(y.col - x.col) }))
+                 .sort((p,q) => p.d - q.d || p.j - q.j);
+      x.next = [s[0].j];
+      if (s[1] && s[1].d <= 1 && Math.random() < .5) x.next.push(s[1].j);
+    });
+    b.forEach((y,j) => {
+      if (a.some(x => x.next.includes(j))) return;
+      let bi = 0, bd = 9;
+      a.forEach((x,i) => { const d = Math.abs(x.col - y.col); if (d < bd) { bd = d; bi = i; } });
+      a[bi].next.push(j);
+    });
+  }
+  rows.forEach((rr, r) => rr.forEach((nd, i) => { nd.r = r; nd.i = i; nd.key = r + ':' + i; }));
+  return rows;
+}
+
+function availableNodes(){
+  if (!S.map) return [];
+  if (!S.pos) return S.map[0].map(nd => nd.key);
+  const nd = S.map[S.pos.r][S.pos.i];
+  return (nd.next || []).map(j => (S.pos.r + 1) + ':' + j);
+}
+
+/* ---------------- 敌人构造 ---------------- */
+function pickFoe(type, r){
+  const pool = FOES.filter(f => f.type === type);
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+const BAL = { hp:1.34, dmg:1.20 };   // 全局强度旋钮，改动集中在这里
+function makeFoe(tpl, type, r){
+  const k = type === 'boss' ? 1 : type === 'elite' ? 1 + r * 0.055 : 1 + r * 0.075;
+  const hp = Math.round(tpl.hp * k * BAL.hp);
+  return Object.assign({}, tpl, {
+    maxHp:hp, hp, dmg:Math.round(tpl.dmg * k * BAL.dmg), block:0, mv:0, buff:0
+  });
+}
+
+const LS_KEY = 'cognirogue.v1';
+
+/* 三档不是为了"更难"，是为了让你给这一手标定把握。
+   效果恒定，胜负全在节奏：答对返还行动力，答错赔行动力，迁移档赔到本回合结束。 */
+const TIER = [
+  { k:'识记', short:'识', desc:'答对拿满卡面效果；答错效果作废，卡进弃牌' },
+  { k:'理解', short:'理', desc:'答对退还这一手行动力；答错再赔 1 点' },
+  { k:'迁移', short:'迁', desc:'答对返还 3 点行动力；答错再赔 3 点，这回合剩不下什么' }
+];
+/* 三档不是三种难度，是同一个赌注的三个仓位：识记不下注，理解小注，迁移大注。
+   卡面效果恒定，唯一的差别是节奏收支。数值由无头模拟定版（见 README）。 */
+const ECON = [
+  { refund:0, fine:0 },   // 识记：答错只白费一手
+  { refund:1, fine:1 },   // 理解：对退一手，错赔两手
+  { refund:3, fine:3 }    // 迁移：对赚两手，错赔四手
+];
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const shuffle = a => { a = a.slice(); for (let i = a.length-1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; } return a; };
+
+/* ---------------- 知识包解析 ---------------- */
+/*
+  一张卡 = 一个知识点 = 一个固定效果 + 最多三档考题（识记 / 理解 / 迁移）。
+  ### 开一张卡，其问题即「识记」档；`? 理解:` / `? 迁移:` 追加更深的两档。
+  档位不改变卡面效果，只改变这一手的节奏收支 —— 见 resolveAnswer。
+*/
+function parsePack(text){
+  const pack = { name:'未命名知识包', cards:[] };
+  let topic = '未分类', cur = null, tier = null;
+  const newTier = q => ({ q, options:[], answer:-1, explain:'' });
+  const flushTier = () => {
+    if (!cur || !tier) return;
+    if (cur.tiers.length < 3 && tier.options.length >= 2 &&
+        tier.answer >= 0 && tier.answer < tier.options.length) {
+      cur.tiers.push(tier);
+    }
+    tier = null;
+  };
+  const flush = () => {
+    flushTier();
+    if (cur && cur.tiers.length) {
+      cur.q = cur.tiers[0].q;
+      cur.id = pack.cards.length + ':' + cur.q.slice(0, 18);
+      pack.cards.push(cur);
+    }
+    cur = null;
+  };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('>')) continue;
+    if (line.startsWith('### ')) { flush(); cur = {topic, tiers:[], atk:6, blk:5}; tier = newTier(line.slice(4).trim()); continue; }
+    if (line.startsWith('## ')) { flush(); topic = line.slice(3).trim(); continue; }
+    if (line.startsWith('# ')) { flush(); pack.name = line.slice(2).trim(); continue; }
+    if (!cur) continue;
+    if (line.startsWith('? ')) {
+      flushTier();
+      const m = line.slice(2).match(/^(识记|理解|迁移|回忆|应用|挑战)\s*[:：]\s*(.+)$/);
+      tier = newTier(m ? m[2].trim() : line.slice(2).trim());
+      continue;
+    }
+    const om = line.match(/^([A-Za-z])[).、:：]\s*(.+)$/);
+    if (om) { if (!tier) tier = newTier(''); tier.options.push(om[2].trim()); continue; }
+    const am = line.match(/^=\s*([A-Za-z])/);
+    if (am) { if (tier) tier.answer = am[1].toUpperCase().charCodeAt(0) - 65; continue; }
+    if (line.startsWith('+ ')) { if (tier) tier.explain = line.slice(2).trim(); continue; }
+    if (line.startsWith('% ')) { const n = line.slice(2).trim().split(/\s+/); cur.atk = +n[0] || 6; cur.blk = +n[1] || 5; continue; }
+  }
+  flush();
+  return pack;
+}
+
+function parseAny(text){
+  const t = text.trim();
+  if (t.startsWith('{')) {
+    const j = JSON.parse(t);
+    if (!Array.isArray(j.cards)) throw new Error('JSON 缺少 cards 数组');
+    j.cards.forEach((c, i) => {
+      c.id = c.id || ('json:' + i);
+      c.atk = c.atk || 6; c.blk = c.blk || 5;
+      c.topic = c.topic || '未分类';
+      if (!Array.isArray(c.tiers) || !c.tiers.length) {
+        c.tiers = [{ q:c.q || '', options:c.options || [], answer:c.answer || 0, explain:c.explain || '' }];
+      }
+      c.tiers = c.tiers.slice(0, 3).map(x => ({
+        q: x.q || '', options: x.options || [], answer: x.answer || 0, explain: x.explain || ''
+      }));
+      c.q = c.tiers[0].q;
+    });
+    return { name: j.name || '自定义知识包', cards: j.cards };
+  }
+  return parsePack(t);
+}
+
+const topics = () => [...new Set(PACK.cards.map(c => c.topic))];
+
+/* ---------------- 记忆状态 ---------------- */
+function loadMem(){ try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch { return {}; } }
+function saveMem(){ try { localStorage.setItem(LS_KEY, JSON.stringify(MEM)); } catch {} }
+function M(id){
+  if (!MEM[id]) MEM[id] = {stab:1, due:0, reps:0, lapses:0, ok:0, bad:0};
+  return MEM[id];
+}
+
+let PACK = parsePack(BUILTIN);
+let MEM = loadMem();
+let S = { screen:'title', log:[], deck:[], relics:[], hp:70, maxHp:70, streak:0 };
+
+/* 手牌里的是「牌组实例」：id 指向知识卡定义，up 表示已精炼。
+   杂念是污染牌 —— 占手牌位、打不出去，回合结束时自己散去。 */
+const JUNK = { id:'__junk', topic:'杂念', atk:0, blk:0, junk:true, tiers:[] };
+const defOf = ent => (ent && ent.junk) ? JUNK : PACK.cards.find(c => c.id === (ent && ent.id));
+const hasRelic = id => !!(S.relics && S.relics.includes(id));
+const relicById = id => RELICS.find(r => r.id === id);
+
+function statOf(ent){
+  const d = defOf(ent);
+  const up = ent.up ? 3 : 0;
+  return {
+    atk: (d.atk || 0) + up + ((S.topicAtk || {})[d.topic] || 0),
+    blk: (d.blk || 0) + up
+  };
+}
+
+/* ---------------- 开一局 ---------------- */
+function startRun(){
+  for (const id in MEM) MEM[id].due -= 1;
+  saveMem();
+  const sorted = PACK.cards.slice().sort((a,b) => M(a.id).due - M(b.id).due);
+  const deck = sorted.slice(0, Math.min(10, sorted.length)).map(c => ({ id:c.id, up:0 }));
+  S = {
+    screen:'map', pending:null, deck, draw:[], discard:[], hand:[],
+    map:genMap(), pos:null, seen:{}, node:null,
+    hp:70, maxHp:70, block:0, ap:5, apMax:5, turn:1, enemy:null,
+    relics:[], topicAtk:{}, streak:0, lastTopic:null, topicWrong:{}, okThisTurn:0, topOk:0,
+    cardsPlayed:0, binderUsed:false,
+    tierStat:[[0,0],[0,0],[0,0]], answering:null, answeringTier:0,
+    runOk:0, runBad:0, floors:0, log:[], busy:false
+  };
+  artKey = null;
+  log('── 你走进记忆的档案馆 ──', 'turn');
+  render();
+}
+
+/* ---------------- 地图节点 ---------------- */
+function enterNode(key){
+  if (S.busy || S.screen !== 'map') return;
+  if (!availableNodes().includes(key)) return;
+  const p = key.split(':').map(Number);
+  const nd = S.map[p[0]][p[1]];
+  S.node = nd;
+  S.seen[key] = true;
+  if (nd.type === 'rest') { openCampfire(); return; }
+  if (nd.type === 'event') { openEvent(); return; }
+  startBattle(nd);
+}
+
+function startBattle(nd){
+  const tpl = pickFoe(nd.type, nd.r);
+  const e = makeFoe(tpl, nd.type, nd.r);
+  S.screen = 'battle';
+  S.enemy = e;
+  S.pending = null; S.busy = false; S.turn = 1;
+  S.streak = 0; S.lastTopic = null; S.topOk = 0; S.okThisTurn = 0; S.cardsPlayed = 0; S.binderUsed = false;
+  S.draw = shuffle(S.deck); S.discard = []; S.hand = [];
+  S.block = hasRelic('lamp') ? 8 : 0;
+  artKey = null;
+  log('── ' + e.name + ' 出现了 ──', 'turn');
+  if (S.block) log('长明灯亮起，开局 ' + S.block + ' 格挡', 'hi');
+  startTurn();
+  render();
+}
+
+function startTurn(){
+  S.ap = S.apMax; S.block = 0; S.okThisTurn = 0; S.cardsPlayed = 0; S.binderUsed = false;
+  // 杂念不进入弃牌堆：它是虚无的，回合结束就散
+  S.hand.forEach(e => { if (!(e && e.junk)) S.discard.push(e); });
+  S.hand = [];
+  drawTo(5 + (hasRelic('index') ? 1 : 0));
+  log('回合 ' + S.turn + ' 开始', 'turn');
+}
+
+function drawTo(n){
+  while (S.hand.length < n){
+    if (!S.draw.length){
+      if (!S.discard.length) break;
+      S.draw = shuffle(S.discard); S.discard = [];
+      log('弃牌堆重新洗入牌堆', 'turn');
+    }
+    S.hand.push(S.draw.pop());
+  }
+}
+
+function drawCards(n){
+  while (n-- > 0){
+    if (!S.draw.length){
+      if (!S.discard.length) return;
+      S.draw = shuffle(S.discard); S.discard = [];
+    }
+    S.hand.push(S.draw.pop());
+  }
+}
+
+function topTopic(){
+  let best = null, n = 0;
+  for (const t in S.topicWrong) if (S.topicWrong[t] > n) { n = S.topicWrong[t]; best = t; }
+  return best;
+}
+
+function log(msg, kind){
+  if (!S.log) S.log = [];
+  S.log.push({ msg, kind: kind || '' });
+  if (S.log.length > 80) S.log.shift();
+}
+
+/* ---------------- 出牌：答题 / 快攻 ---------------- */
+function comboMult(){
+  return 1 + 0.2 * clamp(S.streak - 1, 0, 4);
+}
+
+function openQuestion(idx, ti){
+  if (S.busy || S.ap <= 0) return;
+  const ent = S.hand[idx];
+  const card = defOf(ent);
+  if (!card || card.junk) return;
+  const t = card.tiers[ti];
+  if (!t) return;
+  S.answering = idx; S.answeringTier = ti;
+  const st = statOf(ent);
+  const letters = 'ABCD';
+  const opts = t.options.map((o, i) =>
+    '<button class="opt" data-choice="' + i + '"><u>' + letters[i] + '</u><span>' + esc(o) + '</span></button>').join('');
+  openSheet(
+    '<div class="tiertag t' + ti + '">' + TIER[ti].k + '档 · ' + esc(TIER[ti].desc) + '</div>' +
+    '<h2>' + esc(t.q) + '</h2>' +
+    '<div class="sub">' + esc(card.topic) + ' · 卡面 攻 ' + st.atk + ' / 挡 ' + st.blk + '（不随档位变化）</div>' +
+    opts +
+    '<div class="row"><button class="ghost" data-quick="' + idx + '">不打这道，改为快攻（半额伤害）</button></div>'
+  );
+}
+
+function damageEnemy(raw){
+  const e = S.enemy;
+  let n = raw, absorbed = 0;
+  if (e.block > 0){ absorbed = Math.min(e.block, n); e.block -= absorbed; n -= absorbed; }
+  e.hp -= n;
+  return { dealt:n, absorbed };
+}
+
+function resolveAnswer(idx, choice){
+  const ent = S.hand[idx];
+  const card = defOf(ent);
+  const ti = S.answeringTier || 0;
+  const t = card.tiers[ti];
+  const right = choice === t.answer;
+  const m = M(card.id);
+  const st = statOf(ent);
+
+  let dmg = 0, blkGain = 0, absorbed = 0, apNote = '';
+
+  if (right) {
+    if (S.lastTopic === card.topic) S.streak += 1; else S.streak = 1;
+    S.lastTopic = card.topic;
+    dmg = Math.round(st.atk * comboMult());
+    blkGain = Math.round(st.blk * 0.7);
+    const r = damageEnemy(dmg);
+    absorbed = r.absorbed;
+    S.block += blkGain;
+    S.okThisTurn += 1; S.runOk += 1;
+    if (card.topic === topTopic()) S.topOk += 1;
+    m.reps += 1; m.ok += 1;
+    m.stab = Math.min(60, Math.max(m.stab * 1.8, m.stab + 1));
+    m.due = Math.round(m.stab);
+    if (hasRelic('mirrorcard') && ti === 2) { drawCards(1); apNote = '双面镜：抽 1 张。'; }
+  } else {
+    S.streak = 0; S.lastTopic = null;
+    S.topicWrong[card.topic] = (S.topicWrong[card.topic] || 0) + 1;
+    S.runBad += 1;
+    m.lapses += 1; m.bad += 1;
+    m.stab = Math.max(1, m.stab * 0.4);
+    m.due = 1;
+    if (hasRelic('log')){
+      const cur = S.topicAtk[card.topic] || 0;
+      if (cur < 6){ S.topicAtk[card.topic] = cur + 1; apNote = '错题本：「' + card.topic + '」攻击 +1。'; }
+    }
+  }
+
+  // 节奏结算：出牌固定消耗 1 点，档位只决定返还或追加
+  const ec = ECON[ti];
+  const free = hasRelic('hourglass') && S.cardsPlayed === 0;
+  if (!free) S.ap -= 1;
+  S.cardsPlayed += 1;
+
+  if (right) {
+    S.ap += ec.refund;
+    if (ec.refund === 1) apNote = (apNote ? apNote + ' ' : '') + '这一手没有消耗行动力。';
+    if (ec.refund > 1) apNote = (apNote ? apNote + ' ' : '') + '净赚 ' + (ec.refund - 1) + ' 点行动力。';
+    if (hasRelic('marker') && ti === 0) { S.ap += 1; apNote = (apNote ? apNote + ' ' : '') + '荧光笔：识记档也退一手。'; }
+  } else {
+    let fine = ec.fine;
+    if (fine && hasRelic('binder') && !S.binderUsed){ fine = 0; S.binderUsed = true; apNote = (apNote ? apNote + ' ' : '') + '装订线：这次不赔。'; }
+    S.ap -= fine;
+    if (fine) apNote = (apNote ? apNote + ' ' : '') + '额外赔了 ' + fine + ' 点行动力。';
+  }
+  if (free) apNote = (apNote ? apNote + ' ' : '') + '沙漏：本回合第一手免行动力。';
+  S.ap = clamp(S.ap, 0, 10);
+
+  S.tierStat[ti][0] += 1;
+  if (right) S.tierStat[ti][1] += 1;
+
+  S.busy = true;
+  S.discard.push(ent);
+  S.hand.splice(idx, 1);
+  saveMem();
+
+  log('「' + card.topic + '」' + TIER[ti].k + '档' + (right ? '答对' : '答错') +
+      (right ? '，' + dmg + ' 伤害' + (absorbed ? '（' + absorbed + ' 被挡）' : '') +
+        (S.streak > 1 ? '，连击 x' + comboMult().toFixed(1) : '') + '，' + blkGain + ' 格挡'
+        : '，效果作废'),
+      right ? 'hi' : 'bad');
+  checkPending();
+  render();
+
+  // 先让玩家看到这一手的后果，再弹结算
+  if (right) {
+    fxDamage(dmg);
+    if (blkGain) after(160, () => fxDamage(blkGain, { blk:true, sign:'+' }));
+  }
+
+  const letters = 'ABCD';
+  const fb = right
+    ? '<div class="feedback"><b>正确。</b>造成 ' + dmg + ' 点伤害' +
+      (absorbed ? '（其中 ' + absorbed + ' 点被格挡吸收）' : '') + '，获得 ' + blkGain + ' 格挡。' +
+      (S.streak > 1 ? ' 同主题连击 x' + comboMult().toFixed(1) + '。' : '') +
+      (apNote ? ' ' + apNote : '') + (t.explain ? '<br>' + esc(t.explain) : '') + '</div>'
+    : '<div class="feedback no"><b>答错了。</b>正确答案是 ' + letters[t.answer] + '. ' + esc(t.options[t.answer]) +
+      '。这张卡面效果全部作废，进弃牌堆。' + (apNote ? ' ' + apNote : '') +
+      (t.explain ? '<br>' + esc(t.explain) : '') + '</div>';
+
+  const html =
+    '<div class="tiertag t' + ti + '">' + TIER[ti].k + '档</div>' +
+    '<h2>' + esc(t.q) + '</h2>' +
+    '<div class="sub">' + esc(card.topic) + '</div>' +
+    t.options.map((o, i) => {
+      let cls = 'opt';
+      if (i === t.answer) cls += ' ok';
+      else if (i === choice) cls += ' no';
+      return '<div class="' + cls + '"><u>' + letters[i] + '</u><span>' + esc(o) + '</span></div>';
+    }).join('') +
+    fb +
+    '<div class="row"><button class="primary" data-continue="1">继续</button></div>';
+
+  const my = ++fxToken;
+  after(right ? 520 : 340, () => { if (my === fxToken) openSheet(html); });
+}
+
+function quickPlay(idx){
+  const ent = S.hand[idx];
+  const card = defOf(ent);
+  if (!card || card.junk) return;
+  const dmg = Math.floor(statOf(ent).atk / 2);
+  damageEnemy(dmg);
+  S.streak = 0; S.lastTopic = null;
+  if (!(hasRelic('hourglass') && S.cardsPlayed === 0)) S.ap -= 1;
+  S.cardsPlayed += 1;
+  S.ap = clamp(S.ap, 0, 10); S.busy = true;
+  S.discard.push(ent);
+  S.hand.splice(idx, 1);
+  log('快攻「' + card.topic + '」，' + dmg + ' 点伤害（未计入复习）', '');
+  checkPending();
+  render();
+  fxDamage(dmg);
+  const my = ++fxToken;
+  after(420, () => {
+    if (my !== fxToken) return;
+    openSheet(
+      '<h2>快攻</h2><div class="sub">你没有作答，这张知识卡不会进入复习调度。</div>' +
+      '<div class="feedback">造成 ' + dmg + ' 点伤害，没有格挡，连击清零。' +
+      '<br>代价是：它明年还是这个强度——你只是绕过去了，没有变强。</div>' +
+      '<div class="row"><button class="primary" data-continue="1">继续</button></div>'
+    );
+  });
+}
+
+function checkPending(){
+  if (!S.enemy) return;
+  if (S.enemy.hp <= 0) S.pending = (S.node && S.node.type === 'boss') ? 'win' : 'clear';
+  else if (S.hp <= 0) S.pending = 'dead';
+}
+
+/* ---------------- 敌人回合 ---------------- */
+function moveOf(e){
+  const arr = e.moves || [{ k:'atk', m:1 }];
+  return arr[(e.mv || 0) % arr.length];
+}
+
+function endTurn(){
+  if (S.pending || !S.enemy) return;
+  const e = S.enemy;
+  e.block = 0;                                  // 敌人自己的回合开始时清空格挡
+  const m = moveOf(e);
+
+  if (m.k === 'atk'){
+    let dmg = Math.round(e.dmg * m.m) * (m.times || 1);
+    if (e.mech === 'reviewer' && S.okThisTurn === 0){
+      dmg += 3; log('复习官：你这回合没有认真答对任何一张卡，+3', 'bad');
+    }
+    if (e.mech === 'oblivion'){
+      const t = topTopic();
+      if (t){
+        dmg += 4;
+        if (S.topOk > 0) { dmg -= 3; log('遗忘：你在「' + t + '」上答对了，它被削弱 -3', 'hi'); }
+        else log('遗忘：你错得最多的主题是「' + t + '」，它抓住这点 +4', 'bad');
+      }
+    }
+    let guard = S.block;
+    if (e.mech === 'pierce'){ guard = Math.ceil(guard / 2); log(e.name + '：穿透了一半格挡', 'bad'); }
+    const absorbed = Math.min(guard, dmg);
+    const taken = dmg - absorbed;
+    S.hp -= taken;
+    log(e.name + ' 攻击 ' + dmg + (m.times ? '（' + m.times + ' 段）' : '') + ' 点' +
+        (absorbed ? '，格挡吸收 ' + absorbed : '') +
+        (taken ? '，你受到 ' + taken + ' 点伤害' : '，全部挡下'), taken ? 'bad' : 'hi');
+    if (taken) fxPlayerHit();
+  } else if (m.k === 'def'){
+    e.block += m.v;
+    log(e.name + ' 举起格挡，获得 ' + m.v + ' 点护甲', 'bad');
+  } else if (m.k === 'jam'){
+    for (let i = 0; i < m.n; i++) S.discard.push({ junk:true });
+    log(e.name + ' 往你的弃牌堆塞了 ' + m.n + ' 张杂念', 'bad');
+  } else if (m.k === 'buff'){
+    e.buff += m.v; e.dmg += m.v;
+    log(e.name + ' 变得更清晰了，攻击 +' + m.v, 'bad');
+  }
+
+  e.mv = (e.mv || 0) + 1;
+  checkPending();
+  if (!S.pending){ S.turn += 1; startTurn(); }
+  S.busy = false;
+  render();
+  if (S.pending === 'dead') after(700, () => { if (S.pending === 'dead') endRun(false); });
+}
+
+/* ---------------- 节点结算 ---------------- */
+function continueSheet(){
+  closeSheet();
+  S.busy = false;
+  if (S.pending === 'clear') openReward();
+  else if (S.pending === 'win') endRun(true);
+  else if (S.pending === 'dead') endRun(false);
+  else render();
+}
+
+function rewardPool(n){
+  const owned = {}; S.deck.forEach(e => { owned[e.id] = 1; });
+  const fresh = PACK.cards.filter(c => !owned[c.id]);
+  // 优先给牌组里还没有的卡，但三张必须来自不同主题：
+  // 构筑的乐趣是"这一局往哪个方向堆"，不是挑三张同主题的。
+  const pool = shuffle(fresh).concat(shuffle(PACK.cards));
+  const out = [], used = {};
+  pool.forEach(c => { if (out.length < n && !used[c.topic]) { used[c.topic] = 1; out.push(c); } });
+  pool.forEach(c => { if (out.length < n && out.indexOf(c) < 0) out.push(c); });
+  return out;
+}
+
+function openReward(){
+  const isElite = S.node && S.node.type === 'elite';
+  const pool = rewardPool(3);
+  S.reward = pool; S.ui = 'reward';
+  openSheet(
+    '<h2>战斗结束</h2><div class="sub">' +
+      (isElite ? '精英倒下了。先挑一张卡，它还会留下一样东西。' : '从这三张里挑一张放进牌组，或者一张都不要。') +
+    '</div>' +
+    '<div class="cardgrid">' + pool.map((c, i) => {
+      const mm = M(c.id);
+      const mast = mm.reps ? '掌握 ' + Math.round(clamp(mm.stab / 25, 0, 1) * 100) + '%' : '还没答过';
+      return '<button class="pick" data-pick="' + i + '" style="--tc:' + topicColor(c.topic) + '">' +
+        '<span class="pt">' + esc(c.topic) + '</span>' +
+        '<span class="pq">' + esc(c.tiers[0] ? c.tiers[0].q : '') + '</span>' +
+        '<span class="pm">攻 <b>' + c.atk + '</b> · 挡 <b>' + c.blk + '</b> · ' + c.tiers.length + ' 档' +
+        '<br>' + mast + '</span></button>';
+    }).join('') + '</div>' +
+    '<div class="row"><button class="ghost" data-skipcard="1">跳过，不要卡</button>' +
+    '<span class="note" style="margin:0">牌组越厚，关键卡越难抽到。</span></div>',
+    true
+  );
+}
+
+function takeCard(i){
+  const c = S.reward[i];
+  S.deck.push({ id:c.id, up:0 });
+  log('「' + c.topic + '」加入牌组（' + S.deck.length + ' 张）', 'hi');
+  closeSheet();
+  if (S.node && S.node.type === 'elite') openRelicReward();
+  else finishNode();
+}
+
+function openRelicReward(){
+  const pool = shuffle(RELICS.filter(r => !hasRelic(r.id))).slice(0, 2);
+  S.relicPool = pool; S.ui = 'relic';
+  if (!pool.length){ finishNode(); return; }
+  openSheet(
+    '<h2>精英留下了东西</h2><div class="sub">遗物不会占手牌位，它们改的是规则。</div>' +
+    '<div class="choice3">' + pool.map(r =>
+      '<button data-takeRelic="' + r.id + '">' + r.icon + '　' + esc(r.name) +
+      '<s>' + esc(r.desc) + '</s></button>').join('') + '</div>'
+  );
+}
+
+function finishNode(){
+  const nd = S.node;
+  S.ui = null;
+  S.pos = { r:nd.r, i:nd.i };
+  S.floors = (S.floors || 0) + 1;
+  S.screen = 'map';
+  S.enemy = null; S.pending = null; S.busy = false;
+  S.hand = []; S.draw = []; S.discard = [];
+  closeSheet();
+  render();
+}
+
+/* ---------------- 复习点（篝火） ---------------- */
+function openCampfire(){
+  S.ui = 'rest';
+  openSheet(
+    '<h2>复习</h2><div class="sub">这一层没有敌人。你可以休息，也可以把一张卡磨得更利。</div>' +
+    '<div class="choice3">' +
+      '<button data-rest="heal">休息<s>回复 ' + Math.round(S.maxHp * 0.32) + ' 点生命</s></button>' +
+      '<button data-rest="smith">精炼一张卡<s>永久改写它的卡面：攻 +3、挡 +3</s></button>' +
+      '<button data-rest="forget">遗忘<s>永久移除一张卡（牌组至少留 5 张）</s></button>' +
+    '</div>'
+  );
+}
+
+function openCardList(mode){
+  S.ui = 'cardlist'; S.cardMode = mode;
+  const items = S.deck.map((e,i) => ({ e, i, d:defOf(e), st:statOf(e) }))
+    .sort((a,b) => a.d.topic.localeCompare(b.d.topic) || a.st.atk - b.st.atk);
+  const attr = mode === 'up' ? 'upcard' : 'rmcard';
+  openSheet(
+    '<h2>' + (mode === 'up' ? '精炼哪一张' : '遗忘哪一张') + '</h2>' +
+    '<div class="sub">' + (mode === 'up'
+      ? '卡面数值会永久改变——这是构筑，不是赌博。'
+      : '移除后这张知识卡本局不会再出现。牌组会更薄，也更好抽。') + '</div>' +
+    '<div class="decklist">' + items.map((o, k) =>
+      '<button class="drow" data-' + attr + '="' + o.i + '">' +
+        '<span class="dt" style="color:' + topicColor(o.d.topic) + '">' + esc(o.d.topic) + '</span>' +
+        '<span class="dq">' + esc(o.d.tiers[0] ? o.d.tiers[0].q : '') + '</span>' +
+        '<span class="dm">攻 ' + o.st.atk + ' · 挡 ' + o.st.blk + (o.e.up ? ' · 已精炼' : '') + '</span>' +
+      '</button>').join('') + '</div>' +
+    '<div class="row"><button class="ghost" data-cancelrest="1">返回</button></div>'
+  );
+}
+
+/* ---------------- 事件 ---------------- */
+function openEvent(){
+  S.ui = 'event';
+  const ev = EVENTS[Math.floor(Math.random() * EVENTS.length)];
+  S.ev = ev;
+  openSheet(
+    '<h2>' + esc(ev.title) + '</h2><div class="sub">事件 · 第 ' + (S.node.r + 1) + ' 层</div>' +
+    '<div class="feedback" style="border-color:#3a3060;background:#161226;color:#c3bcd8">' +
+      esc(ev.text) + '</div>' +
+    '<div class="choice3" style="margin-top:16px">' +
+      ev.opts.map((o, i) => '<button data-evopt="' + i + '">' + esc(o.t) +
+        '<s>' + esc(o.sub) + '</s></button>').join('') +
+    '</div>'
+  );
+}
+
+/* ---------------- 结算 ---------------- */
+function endRun(win){
+  S.screen = 'report';
+  saveMem();
+  render();
+  const rows = topics().map(t => {
+    const cs = PACK.cards.filter(c => c.topic === t);
+    const ok = cs.reduce((n,c) => n + M(c.id).ok, 0);
+    const bad = cs.reduce((n,c) => n + M(c.id).bad, 0);
+    const mast = cs.reduce((n,c) => n + clamp(M(c.id).stab / 25, 0, 1), 0) / cs.length;
+    return { t, ok, bad, mast };
+  });
+  const total = rows.reduce((n,r) => n + r.mast, 0) / rows.length;
+  const pct = ([n, ok]) => n ? Math.round(ok / n * 100) : null;
+  const calib = S.tierStat.map(pct);
+  let verdict;
+  if (S.tierStat[2][0] >= 3 && calib[2] !== null) {
+    verdict = calib[2] >= 85
+      ? '你在迁移档上说对了 ' + calib[2] + '%，说明你敢打也打得准——这是这局最值钱的东西。'
+      : calib[2] >= 60
+        ? '你在迁移档上对了 ' + calib[2] + '%。这个区间就是"以为自己会"，下次先降到理解档验一下再往上压。'
+        : '迁移档只对了 ' + calib[2] + '%。这不是运气差，是标定偏了：你对该主题的自我评估比实际高一档。';
+  } else {
+    verdict = '这局你几乎没走迁移档。下次在某张卡上有九成把握时试着压它——那是"会"变成"打得开"的地方。';
+  }
+  const calibRows = TIER.map((t, i) =>
+    '<tr><td>' + t.k + '档</td><td>' + S.tierStat[i][0] + '</td><td>' + S.tierStat[i][1] + '</td>' +
+    '<td>' + (calib[i] === null ? '—' : calib[i] + '%') + '</td></tr>').join('');
+  openSheet(
+    '<h2>' + (win ? '你走到了档案馆的尽头'
+      : '这次倒在了第 ' + (S.node ? S.node.r + 1 : (S.pos ? S.pos.r + 1 : 1)) + ' 层') + '</h2>' +
+    '<div class="sub">知识等级不会掉。下一局的牌序会自动把该复习的卡排到前面。</div>' +
+    '<div class="kv" style="margin-bottom:14px">' +
+      '<div><b>' + S.runOk + '/' + (S.runOk + S.runBad) + '</b>本局答题</div>' +
+      '<div><b>' + (S.runOk + S.runBad ? Math.round(S.runOk / (S.runOk + S.runBad) * 100) : 0) + '%</b>正确率</div>' +
+      '<div><b>' + S.floors + '</b>走过节点</div>' +
+      '<div><b>' + S.deck.length + '</b>牌组张数</div>' +
+      '<div><b>' + Math.round(total * 100) + '%</b>知识包掌握度</div>' +
+    '</div>' +
+    (S.relics.length ? '<div class="relicrow" style="margin-bottom:14px">' + S.relics.map(id => {
+      const r = relicById(id); return '<span class="relicbig">' + r.icon + ' ' + esc(r.name) + '</span>';
+    }).join('') + '</div>' : '') +
+    '<table><thead><tr><th>主题</th><th>对</th><th>错</th><th>掌握</th></tr></thead><tbody>' +
+    rows.map(r =>
+      '<tr><td>' + esc(r.t) + '</td><td>' + r.ok + '</td><td>' + r.bad + '</td>' +
+      '<td style="display:flex;gap:8px;align-items:center"><span class="mbar" style="flex:1"><s style="width:' +
+      Math.round(r.mast*100) + '%"></s></span><b>' + Math.round(r.mast*100) + '%</b></td></tr>').join('') +
+    '</tbody></table>' +
+    '<div class="calib"><div class="ct">自信标定 · 你选的档位准不准</div>' +
+    '<table><thead><tr><th>档位</th><th>出手</th><th>答对</th><th>正确率</th></tr></thead><tbody>' +
+    calibRows + '</tbody></table>' +
+    '<div class="verdict">' + esc(verdict) + '</div></div>' +
+    '<div class="row"><button class="primary" data-restart="1">再来一局</button>' +
+    '<button class="ghost" data-totitle="1">回到首页</button></div>'
+  );
+}
+
+/* ---------------- 渲染 ---------------- */
+let artKey = null;          // 只在换敌人时重建立绘，避免每次操作都重放动画
+let fxToken = 0;            // 延迟弹窗的取消令牌
+
+function after(ms, fn){
+  if (typeof setTimeout === 'function') setTimeout(fn, ms);
+  else fn();
+}
+
+function renderEnemy(e, hintTxt){
+  if (artKey === e.name + '|' + e.maxHp){
+    const s = document.querySelector('#enemy .bar > s');
+    if (s) s.style.width = clamp(e.hp / e.maxHp * 100, 0, 100) + '%';
+    const t = document.querySelector('#enemy .hptxt');
+    if (t) t.textContent = Math.max(0, e.hp) + ' / ' + e.maxHp + (e.block ? '　⛊ ' + e.block : '');
+    const it = document.querySelector('#enemy #intenttext');
+    if (it) it.textContent = intentText(e);
+    return;
+  }
+  artKey = e.name + '|' + e.maxHp;
+  const isBoss = e.tag === 'BOSS';
+  const flt = 'contrast(1.10) brightness(1.12) saturate(.95)' + (e.hue ? ' hue-rotate(' + e.hue + ')' : '');
+  $('#enemy').innerHTML =
+    '<div class="artwrap' + (isBoss ? ' boss' : '') + '" id="art" style="--glowc:' +
+      (e.glow || 'rgba(90,169,245,.16)') + '">' +
+      '<div class="glow"></div>' +
+      (e.art ? '<img src="' + e.art + '" alt="' + esc(e.name) + '" draggable="false" style="filter:' + flt + '">'
+              : '<div class="glyph">' + (e.glyph || '◈') + '</div>') +
+      '<div class="flash"></div>' +
+    '</div>' +
+    '<div class="enemyinfo"><div class="ename">' + esc(e.name) +
+      '<span class="etag">' + e.tag + '</span></div>' +
+      '<div class="ehint">' + hintTxt + '</div>' +
+      '<div class="hpline"><div class="bar e" style="width:100%;max-width:380px"><s style="width:' +
+        clamp(e.hp / e.maxHp * 100, 0, 100) + '%"></s></div>' +
+        '<b class="hptxt">' + Math.max(0, e.hp) + ' / ' + e.maxHp + (e.block ? '　⛊ ' + e.block : '') + '</b></div>' +
+      '<div class="intent" id="intenttext">' + intentText(e) + '</div></div>';
+  const bg = $('#bg');
+  if (bg) bg.style.setProperty('--tint', e.tint
+    ? 'linear-gradient(' + e.tint + ',' + e.tint + ')'
+    : 'linear-gradient(transparent,transparent)');
+}
+
+function intentText(e){
+  const m = moveOf(e);
+  if (m.k === 'atk'){
+    const v = Math.round(e.dmg * m.m);
+    return '意图：攻击 ' + v + (m.times ? '×' + m.times : '') +
+      (S.block ? '（你有 ' + S.block + ' 格挡）' : '');
+  }
+  if (m.k === 'def') return '意图：获得 ' + m.v + ' 点格挡';
+  if (m.k === 'jam') return '意图：往你的弃牌堆塞 ' + m.n + ' 张杂念';
+  if (m.k === 'buff') return '意图：强化自身攻击 +' + m.v;
+  return '意图：不明';
+}
+
+/* 每个主题一个固定色，牌面靠颜色就能分辨流派 */
+const TOPIC_COLORS = ['#5aa9f5', '#3ddc97', '#ffc857', '#a78bfa', '#f78fb3', '#4fd6cf', '#f0a35a'];
+function topicColor(t){
+  const i = topics().indexOf(t);
+  return TOPIC_COLORS[(i < 0 ? 0 : i) % TOPIC_COLORS.length];
+}
+
+/* 受击表现：数字飘字 + 怪物闪动 */
+function fxDamage(n, opt){
+  opt = opt || {};
+  if (typeof document === 'undefined' || !document.getElementById || !document.createElement) return;
+  const art = document.getElementById('art');
+  if (!art) return;
+  const d = document.createElement('div');
+  d.className = 'dmgnum' + (opt.blk ? ' blk' : '');
+  d.textContent = (opt.sign || '−') + n;
+  d.style.left = opt.blk ? (63 + Math.random() * 8) + '%' : (44 + Math.random() * 12) + '%';
+  if (opt.blk) d.style.top = '56%';
+  art.appendChild(d);
+  if (!opt.blk) {
+    art.classList.remove('hit');
+    void art.offsetWidth;
+    art.classList.add('hit');
+    after(380, () => art.classList.remove('hit'));
+  }
+  after(1000, () => { if (d.parentNode) d.parentNode.removeChild(d); });
+}
+
+function fxPlayerHit(){
+  if (typeof document === 'undefined') return;
+  const a = $('#arena');
+  if (!a) return;
+  a.classList.remove('hurt');
+  void a.offsetWidth;
+  a.classList.add('hurt');
+  after(420, () => a.classList.remove('hurt'));
+}
+
+/* ---------------- 渲染 ---------------- */
+function renderRelics(){
+  const el = $('#relicbar');
+  if (!el) return;
+  el.innerHTML = (S.relics || []).map(id => {
+    const r = relicById(id);
+    return '<span class="relic" title="' + esc(r.name + '：' + r.desc) + '">' + r.icon + '</span>';
+  }).join('');
+}
+
+function render(){
+  const hp = Math.max(0, S.hp || 0), mh = S.maxHp || 70;
+  $('#hpbar').style.width = clamp(hp / mh * 100, 0, 100) + '%';
+  $('#hptext').textContent = hp + '/' + mh;
+  // 战斗中显示正在打的这一层，地图上显示刚走完的那一层
+  $('#floorText').textContent = S.screen === 'title' ? '-'
+    : (S.screen !== 'map' && S.node ? S.node.r + 1 : (S.pos ? S.pos.r + 1 : 1)) + '/' + MAP_ROWS;
+  $('#streaktext').textContent = S.streak || 0;
+  renderRelics();
+  const deckBtn = $('#btnDeck');
+  if (deckBtn) deckBtn.textContent = '牌组 ' + (S.deck ? S.deck.length : 0);
+
+  if (S.screen === 'title'){ renderTitle(); return; }
+  if (S.screen === 'map'){ renderMap(); return; }
+  if (S.screen === 'report'){
+    artKey = null;
+    $('#map').classList.add('hidden');
+    $('#enemy').classList.add('hidden');
+    $('#handwrap').classList.add('hidden');
+    $('#hand').innerHTML = ''; $('#footrow').innerHTML = '';
+    renderLog();
+    return;
+  }
+  renderBattle();
+}
+
+function renderTitle(){
+  artKey = null;
+  $('#map').classList.add('hidden');
+  $('#enemy').classList.remove('hidden');
+  const bg0 = $('#bg');
+  if (bg0) bg0.style.setProperty('--tint', 'linear-gradient(transparent,transparent)');
+  $('#enemy').innerHTML =
+    '<div class="title-hero"><h1>用你的知识<br><span>爬一座塔</span></h1>' +
+    '<p>一张卡 = 一个知识点 = 一个固定效果。每张卡备了三档考题：识记、理解、迁移。' +
+    '打哪一档不改变卡面数值，只改变你能换回多少行动力——所以真正的决策是<b style="color:var(--text)">你有多确定</b>。' +
+    '沿途你会不断往牌组里加卡、精炼卡、扔掉卡。牌组就是你这一局愿意面对的知识边界。</p>' +
+    '<div class="kv"><div><b>' + PACK.cards.length + '</b>张知识卡</div>' +
+    '<div><b>' + PACK.cards.reduce((n,c) => n + c.tiers.length, 0) + '</b>道题</div>' +
+    '<div><b>' + topics().length + '</b>个主题</div>' +
+    '<div><b>' + PACK.name + '</b>当前知识包</div></div>' +
+    '<button class="primary" id="btnStart">开始一局</button>' +
+    '<div class="note">没有后端、没有账号。记忆进度存在浏览器 localStorage 里。' +
+    '换知识包点右上角「知识包」。</div></div>';
+  $('#hand').innerHTML = '';
+  $('#apdots').innerHTML = '';
+  $('#aphint').textContent = '';
+  $('#footrow').innerHTML = '';
+  $('#handwrap').classList.add('hidden');
+  renderLog();
+}
+
+/* 地图：整条路一次全画出来，玩家能提前看见下一层有什么 */
+function renderMap(){
+  artKey = null;
+  $('#enemy').classList.add('hidden');
+  $('#handwrap').classList.add('hidden');
+  const box = $('#map');
+  box.classList.remove('hidden');
+  const rows = S.map, R = rows.length, avail = availableNodes();
+  let lines = '', nodes = '';
+  // 两端各留 4% 的余量，避免首尾节点被容器边缘切掉
+  const cx = col => (col + 0.5) / 3 * 100;
+  const cy = r => 4 + (1 - (r + 0.5) / R) * 92;
+
+  rows.forEach((rr, r) => {
+    rr.forEach((nd, i) => {
+      const x = cx(nd.col), y = cy(r);
+      (nd.next || []).forEach(j => {
+        const nx = rows[r+1][j];
+        const on = S.pos && S.pos.r === r && S.pos.i === i;
+        lines += '<line x1="' + x + '" y1="' + y + '" x2="' + cx(nx.col) + '" y2="' + cy(r+1) + '"' +
+          (on ? ' class="on"' : '') + '/>';
+      });
+      const isAvail = avail.indexOf(nd.key) >= 0;
+      const isCur = S.pos && S.pos.r === r && S.pos.i === i;
+      const seen = S.seen[nd.key];
+      const cls = 'mnode ' + nd.type + (isAvail ? ' avail' : '') + (isCur ? ' cur' : '') +
+        (seen && !isCur && !isAvail ? ' seen' : '');
+      nodes += '<button class="' + cls + '" style="left:' + x + '%;top:' + y + '%" data-node="' + nd.key +
+        '"' + (isAvail ? '' : ' disabled') + ' title="' + esc(NODE[nd.type].k) + '">' +
+        NODE[nd.type].g + '</button>';
+    });
+  });
+
+  box.innerHTML =
+    '<div class="maplayer"><svg viewBox="0 0 100 100" preserveAspectRatio="none">' + lines + '</svg>' + nodes + '</div>' +
+    '<div class="maplegend">' +
+      '<span><i class="lg fight">⚔</i>战斗</span><span><i class="lg elite">☠</i>精英</span>' +
+      '<span><i class="lg rest">✦</i>复习</span><span><i class="lg event">?</i>事件</span>' +
+      '<span><i class="lg boss">✺</i>遗忘</span>' +
+      '<span class="lg-hint">只有亮起来的节点能走</span>' +
+    '</div>';
+
+  $('#apdots').innerHTML = '';
+  $('#aphint').textContent = '';
+  $('#footrow').innerHTML = '';
+  renderLog();
+}
+
+function renderBattleFrame(showHand){
+  $('#map').classList.add('hidden');
+  $('#enemy').classList.remove('hidden');
+  if (showHand) $('#handwrap').classList.remove('hidden');
+  else { $('#handwrap').classList.add('hidden'); $('#hand').innerHTML = ''; }
+}
+
+function renderBattle(){
+  renderBattleFrame(true);
+  const e = S.enemy;
+  const hintTxt = e.mech === 'oblivion' && topTopic()
+    ? e.hint + '<br>当前锁定主题：<em>' + esc(topTopic()) + '</em>'
+    : e.hint;
+  renderEnemy(e, hintTxt);
+
+  $('#hand').innerHTML = S.hand.map((ent, i) => {
+    const c = defOf(ent);
+    if (!c) return '';
+    if (c.junk){
+      return '<div class="card junk"><span class="topic">杂念</span>' +
+        '<span class="q">一张想不起来的碎片。占着位置，打不出去，回合结束时散去。</span>' +
+        '<span class="meta"><span>不可打出</span></span></div>';
+    }
+    const st = statOf(ent);
+    const onStreak = S.lastTopic === c.topic && S.streak > 0;
+    const chips = c.tiers.map((_, ti) =>
+      '<button class="ti t' + ti + '" data-play="' + i + ':' + ti + '" title="' + esc(TIER[ti].desc) + '">' +
+        TIER[ti].short + '</button>').join('');
+    return '<div class="card' + (onStreak ? ' streaked' : '') + (ent.up ? ' forged' : '') +
+        '" data-card="' + i + '" style="--tc:' + topicColor(c.topic) + '">' +
+      '<span class="topic">' + esc(c.topic) + (onStreak ? ' · 连击中' : '') + '</span>' +
+      '<span class="q">' + esc(c.tiers[0].q) + '</span>' +
+      '<span class="meta"><span>攻 <b>' + st.atk + '</b></span>' +
+      '<span>挡 <b>' + st.blk + '</b></span>' +
+      '<span style="color:' + (ent.up ? 'var(--amber)' : 'var(--dim)') + '">' +
+        (ent.up ? '精炼 +' : c.tiers.length + ' 档') + '</span></span>' +
+      '<span class="chipbar">' + chips +
+        '<button class="ti quick" data-quick="' + i + '" title="不作答，半额伤害，不进复习调度">快</button>' +
+      '</span></div>';
+  }).join('');
+
+  let dots = '';
+  for (let i = 0; i < Math.max(4, S.ap); i++) dots += '<s class="' + (i < S.ap ? '' : 'off') + '"></s>';
+  $('#apdots').innerHTML = dots;
+  $('#aphint').textContent = S.ap > 0
+    ? '回合 ' + S.turn + ' · 点卡上的「识 / 理 / 迁」选档 · 剩余 ' + S.ap
+    : '没有行动力了，结束回合';
+  $('#footrow').innerHTML =
+    '<button class="primary" id="btnEnd">结束回合</button>' +
+    '<button class="ghost pilebtn" data-pile="draw">牌堆 ' + S.draw.length + '</button>' +
+    '<button class="ghost pilebtn" data-pile="discard">弃牌 ' + S.discard.length + '</button>';
+  renderLog();
+}
+
+function renderLog(){
+  const el = $('#log');
+  el.innerHTML = (S.log || []).slice(-40).map(l =>
+    '<p class="' + l.kind + '">' + esc(l.msg) + '</p>').join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+/* ---------------- 弹层 ---------------- */
+function openSheet(html, wide){
+  $('#sheet').className = 'sheet' + (wide ? ' wide' : '');
+  $('#sheet').innerHTML = html;
+  $('#modal').classList.remove('hidden');
+}
+function closeSheet(){
+  fxToken += 1;                 // 取消还没弹出来的结算
+  $('#modal').classList.add('hidden');
+  $('#sheet').innerHTML = '';
+}
+
+/* ---------------- 知识包 / 设置 ---------------- */
+function openPack(){
+  const t = topics();
+  openSheet(
+    '<h2>知识包</h2><div class="sub">当前：' + esc(PACK.name) + ' · ' + PACK.cards.length + ' 张卡 · ' +
+      t.length + ' 个主题（' + t.map(esc).join('、') + '）</div>' +
+    '<div class="tabs" role="tablist">' +
+      '<button data-tab="import" aria-selected="true">导入</button>' +
+      '<button data-tab="llm" aria-selected="false">用 LLM 生成</button>' +
+      '<button data-tab="reset" aria-selected="false">记忆进度</button>' +
+    '</div>' +
+    '<div data-pane="import">' +
+      '<div class="note" style="margin:0 0 10px">支持两种格式：<b>Markdown</b>（手写友好，一个 ### 一张卡）或 <b>JSON</b>。' +
+      '也可以直接选文件，或把 .md 拖进来。</div>' +
+      '<textarea id="packText" rows="9" placeholder="### 你的问题？（识记档）&#10;A) 选项&#10;B) 选项&#10;C) 选项&#10;D) 选项&#10;= B&#10;+ 解析&#10;% 6 5&#10;? 理解: 为什么？&#10;A) 选项…&#10;= A&#10;+ 解析&#10;? 迁移: 换个新场景？&#10;A) 选项…&#10;= A&#10;+ 解析"></textarea>' +
+      '<div class="row"><button class="ghost" id="btnFile">选择文件…</button>' +
+      '<button class="primary" id="btnApply">解析并加载</button></div>' +
+      '<div class="note">字段：<b>#</b> 包名 · <b>##</b> 主题 · <b>###</b> 卡（固定效果 + 识记档题）· <b>A)-D)</b> 选项 · <b>=</b> 正确答案 · <b>+</b> 解析 · <b>%</b> 攻击 格挡 · <b>?</b> 追加一档更深的题（顺序即档位）。一张卡最多三档，档位不影响卡面数值。</div>' +
+    '</div>' +
+    '<div data-pane="llm" class="hidden">' +
+      '<div class="note" style="margin:0">把你自己的材料（笔记 / 课件 / 错题）贴进来，用任意 OpenAI 兼容接口编译成知识包。Key 只存在你自己的浏览器里。</div>' +
+      '<label class="fl">接口地址</label><input id="llmUrl" value="https://api.openai.com/v1" />' +
+      '<label class="fl">模型</label><input id="llmModel" value="gpt-4o-mini" />' +
+      '<label class="fl">API Key</label><input id="llmKey" type="password" placeholder="sk-..." />' +
+      '<label class="fl">材料</label><textarea id="llmText" rows="6" placeholder="粘贴你的笔记或课本片段…"></textarea>' +
+      '<div class="row"><button class="primary" id="btnLlm">生成知识包</button><span id="llmMsg" class="note" style="margin:0"></span></div>' +
+      '<div class="note">浏览器直接请求需要服务端允许 CORS。如果失败，用 <b>python3 -m http.server</b> 起本地服务再打开，或改用「导入」粘贴结果。</div>' +
+    '</div>' +
+    '<div data-pane="reset" class="hidden">' +
+      '<div class="note" style="margin:0 0 14px">记忆进度（间隔重复调度用的 stability / due）存在 localStorage，共 ' +
+        Object.keys(MEM).length + ' 条记录。</div>' +
+      '<div class="row"><button class="ghost" id="btnExport">导出 JSON</button>' +
+      '<button class="ghost" id="btnWipe">清空记忆进度</button></div>' +
+    '</div>' +
+    '<div class="row"><button class="ghost" data-close="1">关闭</button></div>'
+  );
+}
+
+const LLM_PROMPT = '把用户提供的学习材料转换成知识卡，严格输出下面的 Markdown 格式，不要任何额外说明：\n' +
+'# 知识包名\n## 主题名\n### 识记层问题：直接问结论或定义\nA) 选项\nB) 选项\nC) 选项\nD) 选项\n= 正确选项的字母\n+ 一句到两句解析\n% 6 5\n' +
+'? 理解: 问"为什么"或"两个概念的区别"\nA) 选项\nB) 选项\nC) 选项\nD) 选项\n= 字母\n+ 解析\n' +
+'? 迁移: 换一个材料里没有直接出现的新场景，让用户判断\nA) 选项\nB) 选项\nC) 选项\nD) 选项\n= 字母\n+ 解析\n\n' +
+'要求：每个主题 4-6 张卡，总共 12-16 张；每张卡必须写满三档，缺一档宁可删掉这张卡。' +
+'识记层问事实，理解层问机制（为什么、区别、反例），迁移层必须是新场景，不能只是把识记层换个说法。' +
+'四个选项都要像"真的会搞混的错误"，不要明显荒谬；解析讲原理，不要重复答案。';
+
+async function llmGenerate(){
+  const url = $('#llmUrl').value.replace(/\/+$/, '');
+  const key = $('#llmKey').value.trim();
+  const model = $('#llmModel').value.trim();
+  const material = $('#llmText').value.trim();
+  const msg = $('#llmMsg');
+  if (!material) { msg.textContent = '先贴点材料'; return; }
+  msg.textContent = '生成中…';
+  try {
+    const res = await fetch(url + '/chat/completions', {
+      method:'POST',
+      headers:{'Content-Type':'application/json', 'Authorization':'Bearer ' + key},
+      body: JSON.stringify({
+        model,
+        temperature: 0.4,
+        messages:[{role:'system', content:LLM_PROMPT}, {role:'user', content: material}]
+      })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + (await res.text()).slice(0, 120));
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content || '';
+    const clean = text.replace(/^```[a-z]*\n?/i, '').replace(/```$/, '').trim();
+    const p = parsePack(clean);
+    if (!p.cards.length) throw new Error('模型返回的内容里没解析出卡片');
+    PACK = p; MEM = {};
+    saveMem(); closeSheet(); S = {screen:'title'};
+    render();
+    openSheet('<h2>已加载「' + esc(p.name) + '」</h2><div class="sub">' + p.cards.length +
+      ' 张卡 · ' + topics().length + ' 个主题</div>' +
+      '<div class="row"><button class="primary" data-restart="1">开始一局</button></div>');
+  } catch (err) {
+    msg.textContent = '失败：' + err.message;
+  }
+}
+
+/* 玩家选择（抽成函数，便于无头模拟驱动同一套逻辑） */
+function skipReward(){
+  closeSheet();
+  if (S.node && S.node.type === 'elite') openRelicReward(); else finishNode();
+}
+
+function doTakeRelic(id){
+  S.relics.push(id);
+  const r = relicById(id);
+  log('获得遗物「' + r.name + '」：' + r.desc, 'hi');
+  finishNode();
+}
+
+function doRest(k){
+  if (k === 'heal'){
+    const n = Math.round(S.maxHp * 0.32);
+    S.hp = Math.min(S.maxHp, S.hp + n);
+    log('休息，回复 ' + n + ' 点生命', 'hi');
+    finishNode();
+  } else if (k === 'smith') openCardList('up');
+  else {
+    if (S.deck.length <= 5){ log('牌组太薄，不能再删了', ''); return; }
+    openCardList('rm');
+  }
+}
+
+function doEventOpt(i){
+  const msg = S.ev.opts[i].run();
+  if (msg) log(msg, 'hi');
+  finishNode();
+}
+
+function doUpgrade(i){
+  const e = S.deck[i];
+  e.up = 1;
+  log('「' + defOf(e).topic + '」被精炼：攻 +3、挡 +3', 'hi');
+  finishNode();
+}
+
+function doForget(i){
+  const d = defOf(S.deck[i]);
+  S.deck.splice(i, 1);
+  log('你永久放下了「' + d.topic + '」', '');
+  finishNode();
+}
+
+/* ---------------- 牌组 / 牌堆 ---------------- */
+function cardRow(e, i, extra){
+  const d = defOf(e), st = statOf(e);
+  return '<div class="drow static">' +
+    '<span class="dt" style="color:' + topicColor(d.topic) + '">' + esc(d.topic) + '</span>' +
+    '<span class="dq">' + esc(d.tiers[0] ? d.tiers[0].q : '') + '</span>' +
+    '<span class="dm">攻 ' + st.atk + ' · 挡 ' + st.blk + (e.up ? ' · 精炼' : '') + (extra || '') + '</span>' +
+  '</div>';
+}
+
+function openDeck(){
+  if (!S.deck || !S.deck.length){
+    openSheet('<h2>牌组</h2><div class="sub">还没开局。开局时牌组由调度器按到期顺序自动生成 10 张。</div>' +
+      '<div class="row"><button class="ghost" data-close="1">关闭</button></div>');
+    return;
+  }
+  const items = S.deck.map((e,i) => ({e,i})).sort((a,b) => {
+    const da = defOf(a.e), db = defOf(b.e);
+    return da.topic.localeCompare(db.topic) || statOf(a.e).atk - statOf(b.e).atk;
+  });
+  const byTopic = {};
+  items.forEach(o => {
+    const t = defOf(o.e).topic;
+    (byTopic[t] = byTopic[t] || []).push(o);
+  });
+  openSheet(
+    '<h2>牌组</h2><div class="sub">' + S.deck.length + ' 张 · ' + Object.keys(byTopic).length + ' 个主题' +
+      '　（抽到关键卡的概率随牌组变厚而下降）</div>' +
+    '<div class="decklist">' +
+      Object.keys(byTopic).map(t =>
+        '<div class="dgroup">' + esc(t) + ' · ' + byTopic[t].length + '</div>' +
+        byTopic[t].map(o => cardRow(o.e, o.i)).join('')).join('') +
+    '</div>' +
+    '<div class="row"><button class="ghost" data-close="1">关闭</button></div>'
+  );
+}
+
+function openPile(kind){
+  const list = kind === 'draw' ? S.draw.slice().reverse() : S.discard.slice();
+  openSheet(
+    '<h2>' + (kind === 'draw' ? '牌堆（抽牌顺序）' : '弃牌堆') + '</h2>' +
+    '<div class="sub">' + list.length + ' 张</div>' +
+    '<div class="decklist">' + (list.length
+      ? list.map(e => e.junk
+          ? '<div class="drow static"><span class="dt">杂念</span><span class="dq">无法打出</span><span class="dm">—</span></div>'
+          : cardRow(e)).join('')
+      : '<div class="note">空的。</div>') + '</div>' +
+    '<div class="row"><button class="ghost" data-close="1">关闭</button></div>'
+  );
+}
+
+/* ---------------- 事件绑定 ---------------- */
+document.addEventListener('click', ev => {
+  const t = ev.target.closest('button, [data-card]');
+  if (!t) return;
+
+  if (t.id === 'btnStart') { startRun(); return; }
+  if (t.id === 'btnEnd') { endTurn(); return; }
+  if (t.id === 'btnPack') { openPack(); return; }
+  if (t.id === 'btnHelp') { openHelp(); return; }
+  if (t.id === 'btnDeck') { openDeck(); return; }
+
+  if (t.dataset.node !== undefined) { enterNode(t.dataset.node); return; }
+  if (t.dataset.pile !== undefined) { openPile(t.dataset.pile); return; }
+
+  if (t.dataset.play !== undefined) {
+    const p = t.dataset.play.split(':');
+    openQuestion(+p[0], +p[1]);
+    return;
+  }
+  if (t.dataset.card !== undefined) { openQuestion(+t.dataset.card, 0); return; }
+  if (t.dataset.quick !== undefined) { quickPlay(+t.dataset.quick); return; }
+  if (t.dataset.choice !== undefined) { resolveAnswer(S.answering, +t.dataset.choice); return; }
+  if (t.dataset.continue !== undefined) { continueSheet(); return; }
+  if (t.dataset.close !== undefined) { closeSheet(); return; }
+
+  if (t.dataset.pick !== undefined) { takeCard(+t.dataset.pick); return; }
+  if (t.dataset.skipcard !== undefined) { skipReward(); return; }
+  if (t.dataset.takerelic !== undefined) { doTakeRelic(t.dataset.takerelic); return; }
+
+  if (t.dataset.rest !== undefined) { doRest(t.dataset.rest); return; }
+  if (t.dataset.cancelrest !== undefined) { openCampfire(); return; }
+  if (t.dataset.upcard !== undefined) { doUpgrade(+t.dataset.upcard); return; }
+  if (t.dataset.rmcard !== undefined) { doForget(+t.dataset.rmcard); return; }
+  if (t.dataset.evopt !== undefined) { doEventOpt(+t.dataset.evopt); return; }
+
+  if (t.dataset.totitle !== undefined) {
+    closeSheet();
+    S = { screen:'title', log:[], relics:[], deck:[], hp:70, maxHp:70, streak:0 };
+    artKey = null;
+    render();
+    return;
+  }
+  if (t.dataset.restart !== undefined) { closeSheet(); startRun(); return; }
+
+  if (t.dataset.tab) {
+    document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b === t)));
+    document.querySelectorAll('[data-pane]').forEach(p =>
+      p.classList.toggle('hidden', p.dataset.pane !== t.dataset.tab));
+    return;
+  }
+  if (t.id === 'btnApply') {
+    try {
+      const p = parseAny($('#packText').value);
+      if (!p.cards.length) throw new Error('没解析出卡片，检查 ### 和 = 行');
+      PACK = p; MEM = {}; saveMem(); closeSheet();
+      S = { screen:'title', log:[], relics:[], deck:[], hp:70, maxHp:70, streak:0 };
+      artKey = null;
+      render();
+    } catch (err) { alert('解析失败：' + err.message); }
+    return;
+  }
+  if (t.id === 'btnFile') { $('#fileInput').click(); return; }
+  if (t.id === 'btnLlm') { llmGenerate(); return; }
+  if (t.id === 'btnExport') {
+    const blob = new Blob([JSON.stringify(MEM, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'cognirogue-memory.json'; a.click();
+    return;
+  }
+  if (t.id === 'btnWipe') {
+    if (confirm('清空所有记忆进度？知识包不受影响。')) {
+      MEM = {}; saveMem(); closeSheet();
+      S = { screen:'title', log:[], relics:[], deck:[], hp:70, maxHp:70, streak:0 };
+      render();
+    }
+    return;
+  }
+});
+
+document.addEventListener('change', ev => {
+  if (ev.target.id === 'fileInput') {
+    const f = ev.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { $('#packText').value = r.result; };
+    r.readAsText(f);
+  }
+});
+
+function openHelp(){
+  openSheet(
+    '<h2>玩法</h2><div class="sub">一局 8 层，每回合 5 点行动力，走一条自己选的路。</div>' +
+    '<div class="note" style="margin:0;font-size:13px;line-height:1.9">' +
+    '<b>地图是分支的，而且整条路一次看得见。</b>每一层 2–3 个节点，你只能走与自己相连的那个。' +
+    '战斗、精英、复习、事件——去哪一层是这一局最早、也最贵的决定。<br><br>' +
+    '<b>卡面效果是固定的。</b>攻和挡写在卡上，你答对哪一档都不会变。变的只有一件事：这一手换回多少行动力。<br><br>' +
+    '<b>每张卡都备了三档题，出牌时你自己选：</b><br>' +
+    '· <b>识记</b>（问"是什么"）——不下注。答对拿满效果，答错只白费一手。<br>' +
+    '· <b>理解</b>（问"为什么"）——小注。答对退还这一手，答错再赔 1 点。<br>' +
+    '· <b>迁移</b>（问"换个场景还成立吗"）——大注。答对赚两手，答错赔三手。<br><br>' +
+    '它们是同一注的三个仓位，不是三种难度。<b>你在给"我有多确定"定价。</b>完全不会就走<b>快攻</b>——半额伤害，不进复习调度。<br><br>' +
+    '<b>打完一场，从三张卡里挑一张进牌组。</b>牌组越厚，越难抽到你想要的那张——所以"不要卡"经常是对的。<br><br>' +
+    '<b>复习点</b>可以休息、精炼一张卡（攻+3/挡+3）、或者<b>永久删掉一张</b>。删卡是构筑里最被低估的一步。<br><br>' +
+    '<b>精英</b>会留下遗物，遗物改的是规则：错题本让"答错"变成投资，沙漏让每回合第一手免费，索引卡让你多抽一张。<br><br>' +
+    '<b>敌人会提前告诉你下一步要干什么</b>（意图），也会格挡、会往你弃牌堆塞杂念。看见意图再决定打哪一档。<br><br>' +
+    '<b>Boss 遗忘</b>会打你错得最多的那个主题——但你在该主题答对时它会被削弱。错误模式直接变成了它的弱点。<br><br>' +
+    '<b>结算面板会告诉你标定准不准。</b>迁移档正确率低于六成，说明你对这块的自我评估整体高一档——这比多背十个知识点有用。' +
+    '</div><div class="row"><button class="primary" data-close="1">知道了</button></div>'
+  );
+}
+
+/* ---------------- 启动 ---------------- */
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('#modal').classList.contains('hidden')) closeSheet();
+});
+
+const bgEl = $('#bg');
+if (bgEl) bgEl.classList.add('on');
+
+render();
+</script>
+</body>
+</html>
