@@ -46,12 +46,12 @@ export function endRun(win: boolean) {
     k: 'report',
     data: {
       win,
+      mode: G.mode,
       floor: G.node ? G.node.r + 1 : G.pos ? G.pos.r + 1 : 1,
       runOk: G.runOk, runBad: G.runBad, floors: G.floors, deckSize: G.deck.length,
       // 增益牌不算卡种：它没有题，混进来会把牌组的多样性说多
       kinds: new Set(G.deck.filter((e) => !isPowerId(e.id)).map((e) => e.id)).size,
       mastery: total, rows, frees: G.frees, unlocks: G.unlocks,
-      learnMiss: G.learnMiss, reviewMiss: G.reviewMiss,
       verdict, powers: deckPowers().map((p) => p.name),
     },
   };

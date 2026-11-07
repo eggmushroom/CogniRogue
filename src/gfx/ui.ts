@@ -1,9 +1,9 @@
 import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
-import { C, font, FONT_UI, FONT_TITLE, topicColor, withAlpha } from './theme';
-import { BAL, EFFS, POWER_BY_ID, resolveEff } from '../core/model';
-import { cardKind } from '../core/cards';
-import type { CardDef, PowerDef } from '../core/model';
+import { C, font, FONT_UI, FONT_TITLE, withAlpha } from './theme';
+import { BAL, EFFS, MODES, POWER_BY_ID, resolveEff } from '../core/model';
+import { cardKind, cardType, CARD_TYPE_META } from '../core/cards';
+import type { CardDef, PowerDef, RunMode } from '../core/model';
 import { drawArtIcon } from './art/icons';
 
 
@@ -197,38 +197,35 @@ export interface CardOpts {
   note?: string;
   /** 隐藏底部的攻/挡 */
   bare?: boolean;
-  /** 这张卡在长期记忆里的稳固度 0..1；不传就不画记忆条 */
-  mem?: number;
   /**
    * 战斗中的解锁状态。只有手牌会传 —— 牌组/奖励列表传了没意义，
    * 那两个界面关心的是"这张卡是什么"，不是"这一场能不能用"。
    *
-   * `forgotten` 是复习期答错的结果：这一场这个卡种作废了（还能快攻，但不能答题）。
+   * `forgotten` 是测试模式答错的结果：这一场这个卡种作废了（还能快攻，但不能答题）。
+   * `basic` 是初始牌组：不答题、随时可打，所以它不画成一幅"封印"的样子。
    */
-  state?: 'locked' | 'open' | 'spent' | 'forgotten';
+  state?: 'locked' | 'open' | 'spent' | 'forgotten' | 'basic';
   /**
-   * 知识点短名副标题（如「二分查找的代价」）。只给牌组 / 奖励 / 精炼列表用：
-   * 那里需要知道这张牌背后是哪个知识点。战斗手牌不传 —— 牌名就够了，
-   * 题目是点开之后才付的代价。
-   */
-  sub?: string;
-  /**
-   * 学习期 / 复习期。它决定"答错这件事有多贵"，所以必须画在卡面上 ——
+   * 本局模式。它决定"答错这件事有多贵"，所以画在卡面下沿 ——
    * 玩家在点开这张牌之前就该知道自己是"还能重来"还是"错了就废"。
+   * 模式整局不变，所以同一把手里每一张卡写的是同一句价码。
    */
-  phase?: 'learn' | 'review';
+  mode?: RunMode;
 }
 
 /**
  * 手牌、奖励、牌组列表共用同一种卡面。
- * 视觉效果：主题色定调 —— 同一主题在任何界面里颜色一致，玩家靠颜色认构筑方向。
+ *
+ * **牌面只讲机械，不讲知识。** 卡面上没有题干、没有主题名、没有知识点名、没有记忆度 ——
+ * 颜色按四类（攻击橙 / 防御蓝 / 技能紫 / 能力金）而不是按主题，所以同主题的两张牌
+ * 不会因为"长得像"而被联想。知识只在你点开牌、看到那一道题的时候才出现。
  */
 export function drawCard(
   x: number, y: number, w: number, h: number,
   card: CardDef, atk: number, blk: number, opts: CardOpts = {},
 ) {
-  // 身份只问一次：知识卡 / 增益牌 / 杂念。下面所有分支都读这个 kind，
-  // 不再各自去翻 card.junk、card.power —— 加第四种牌时只改 cards/kinds.ts。
+  // 身份只问一次：知识卡 / 增益牌 / 杂念 / 基础牌。下面所有分支都读这个 kind，
+  // 不再各自去翻 card.junk、card.power —— 加第五种牌时只改 cards/kinds.ts。
   const kind = cardKind(card);
 
   // 增益牌是另一个物种：没有题、没有伤害，打出去就一直在。卡面必须一眼分得开，
@@ -236,7 +233,13 @@ export function drawCard(
   const pc = kind === 'power' && card.power ? POWER_BY_ID[card.power] : null;
   if (pc) { drawPowerCard(x, y, w, h, pc, opts); return; }
 
-  const tc = kind === 'junk' ? C.faint : topicColor(card.topic);
+  // 牌面色 = 类别色，不是主题色。主题色会泄露"这张牌对应哪个知识点"，
+  // 而且同一主题的牌看起来像一套 —— 颜色改用四类之后，扫一眼读的是"它干什么"。
+  const typeMeta = CARD_TYPE_META[cardType(card)];
+  const tc = kind === 'junk' ? C.faint : typeMeta.color;
+  const eff = EFFS[card.eff] ?? EFFS.strike;
+  const out = resolveEff(card.eff, atk, blk, 1, card.mods);
+  const per = out.hits[0];
   const r = 12;
 
   g.save();
@@ -297,12 +300,6 @@ export function drawCard(
   const pad = w * 0.09;
   const s = w / 220;
 
-  // 主题
-  g.font = font(Math.round(15 * s), 700, FONT_UI);
-  g.fillStyle = kind === 'junk' ? C.dim : tc;
-  g.textAlign = 'left';
-  g.fillText(squeeze(kind === 'junk' ? '杂念' : card.topic, w - pad * 2 - 34 * s), x + pad, y + 24 * s);
-
   // 消耗：所有卡都吃 1 点行动力，画在右上角免得每次都要心算
   if (kind !== 'junk') {
     const cx = x + w - pad - 9 * s;
@@ -317,58 +314,49 @@ export function drawCard(
     text('1', cx, cy + 1, { size: Math.round(13 * s), weight: 800, align: 'center', color: C.gold });
   }
 
-  // ── 正文：牌名 + 效果徽章 + 效果数字 ──────────────────────
-  // 卡面上不出现题目。题目是点开这张牌之后才付的代价，提前看到就等于免了那道坎。
-  // 牌名是杀戮尖塔式的游戏名（折半之刃 / 三度缔约），不是知识点名 —— 大字印在手牌上，
-  // 知识点以 `kp` 小字跟着牌组/奖励/精炼列表的牌名走，手牌上不出现。
-  const eff = EFFS[card.eff] ?? EFFS.strike;
-  const out = resolveEff(card.eff, atk, blk, 1, card.mods);
-  const per = out.hits[0];
+  // ── 正文：牌名 + 类别徽章 + 效果数字 ──────────────────────
+  // 卡面只有机械信息：叫什么、什么类别、打出去发生什么。
+  // 题干、主题、知识点、记忆度一概不出现 —— 那四样都是"知识"，不该在牌面上。
   const lh = 25 * s;
   const eh = 21 * s;
 
-  // 效果徽章：同一副牌里"洞察/巩固/内化"必须一眼分得开，靠的就是这一小块颜色
+  // 类别徽章：知识卡写「类别 · 效果」（攻击·洞察 / 防御·巩固 / 技能·专注），
+  // 基础牌只写类别（攻击 / 防御）—— 它没有效果原型，只负责把数字换成伤害或格挡。
+  const badgeName = kind === 'basic' ? typeMeta.name : `${typeMeta.name}·${eff.name}`;
+  const badgeColor = kind === 'basic' ? typeMeta.color : eff.color;
   if (kind !== 'junk') {
     g.font = font(Math.round(11 * s), 700, FONT_UI);
-    const lw = g.measureText(eff.name).width + 24 * s;
+    const lw = g.measureText(badgeName).width + 24 * s;
     const ly = y + 36 * s;
     roundRect(x + pad, ly, lw, 18 * s, 9 * s);
-    g.fillStyle = withAlpha(eff.color, 0.2);
+    g.fillStyle = withAlpha(badgeColor, 0.2);
     g.fill();
-    g.strokeStyle = withAlpha(eff.color, 0.72);
+    g.strokeStyle = withAlpha(badgeColor, 0.72);
     g.lineWidth = 1.2;
     g.stroke();
     // 前面的小圆点比整块颜色更打眼，扫手牌时先看到点再看字
     g.beginPath();
     g.arc(x + pad + 8 * s, ly + 9 * s, 2.6 * s, 0, Math.PI * 2);
-    g.fillStyle = eff.color;
+    g.fillStyle = badgeColor;
     g.fill();
-    text(eff.name, x + pad + 14 * s, ly + 9.5 * s, {
-      size: Math.round(11 * s), align: 'left', color: eff.color, weight: 700,
+    text(badgeName, x + pad + 14 * s, ly + 9.5 * s, {
+      size: Math.round(11 * s), align: 'left', color: badgeColor, weight: 700,
     });
   }
 
-  // 牌名正文：最多两行，超出截断（牌名都控制在七个字以内，两行只是兜底）
+  // 牌名正文：最多两行，超出截断（牌名都控制在七个字以内，两行只是兜底）。
+  // 版式改成"从上往下读"：类别徽章 → 牌名 → 效果 → 底部状态，下半部留给纹章水印。
+  // 以前正文是垂直居中排的，撤掉主题行和记忆条之后居中会留出一大块空，读起来散。
   g.font = font(Math.round(21 * s), 700, FONT_UI);
   const nameLines = kind === 'junk' ? ['杂念'] : wrapText(card.name, w - pad * 2).slice(0, 2);
-  const subH = opts.sub ? 17 * s : 0;
-  // 正文在「徽章下沿」和「记忆条上沿」之间居中：两种卡高（手牌 238 / 列表 252）都不会显得头重脚轻
-  const bodyH = nameLines.length * lh + subH + 12 * s + 2 * eh;
-  const top = y + 58 * s;
-  const bot = y + h - 88 * s;
-  const by0 = top + Math.max(0, (bot - top - bodyH) / 2) - 6 * s; // 6 是基线补偿
+  const by0 = y + 84 * s;
 
   g.fillStyle = kind === 'junk' ? C.dim : C.ink;
   g.textAlign = 'left';
   nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
-  if (opts.sub) {
-    text(squeeze(opts.sub, w - pad * 2), x + pad, by0 + nameLines.length * lh + 2 * s, {
-      size: Math.round(11 * s), color: C.dim, weight: 500,
-    });
-  }
 
   // 效果：数字单独放大上色，和卡牌游戏里"造成 6 点伤害"的读法一致
-  const ey = by0 + nameLines.length * lh + subH + 9 * s;
+  const ey = by0 + nameLines.length * lh;
   const effLine = (pre: string, num: number, suf: string, yy: number, col: string) => {
     g.textAlign = 'left';
     g.font = font(Math.round(14 * s), 400, FONT_UI);
@@ -389,14 +377,16 @@ export function drawCard(
     effLine('无法打出', 0, '', ey, C.faint);
     effLine('回合结束自动散去', 0, '', ey + eh, C.faint);
   } else {
-    effLine('造成 ', per, out.hits.length > 1 ? ` 点伤害 ×${out.hits.length}` : ' 点伤害', ey, C.orange);
-    // 第二行写的是"这张卡特殊在哪"，六种效果各一句，不再全是千篇一律的格挡
-    if (out.blk > 0) effLine('获得 ', out.blk, ' 点格挡', ey + eh, C.blue);
-    else if (out.pierce) effLine('无视格挡', 0, '', ey + eh, eff.color);
+    // 纯防御的牌（基础格挡）没有伤害行，格挡那一行直接顶上来
+    if (per > 0) effLine('造成 ', per, out.hits.length > 1 ? ` 点伤害 ×${out.hits.length}` : ' 点伤害', ey, C.orange);
+    const dy = per > 0 ? ey + eh : ey;
+    // 第二行写的是"这张卡特殊在哪"：格挡 / 破防 / 回血 / 抽牌 / 分段。
+    // 猛击本身没有第二件事（它的价值全在数字上），所以这一行留空，不硬凑一句。
+    if (out.blk > 0) effLine('获得 ', out.blk, ' 点格挡', dy, C.blue);
+    else if (out.pierce) effLine('无视格挡', 0, '', dy, eff.color);
     else if (out.healRatio > 0) {
-      effLine('回复 ', Math.max(1, Math.round(per * out.hits.length * out.healRatio)), ' 点生命', ey + eh, eff.color);
-    } else if (out.draw > 0) effLine('抽 ', out.draw, ' 张牌', ey + eh, eff.color);
-    else effLine('分两段结算', 0, '', ey + eh, eff.color);
+      effLine('回复 ', Math.max(1, Math.round(per * out.hits.length * out.healRatio)), ' 点生命', dy, eff.color);
+    } else if (out.draw > 0) effLine('抽 ', out.draw, ' 张牌', dy, eff.color);
   }
 
   // 效果纹章：按效果原型画一枚小徽记压在右下。六种效果六种形，
@@ -409,39 +399,10 @@ export function drawCard(
     { alpha: kind === 'junk' ? 0.45 : 0.85 },
   );
 
-  // 主题水印：卡面下半部空白多，用主题首字压一个大字，既填了空又给主题一个身份。
-  // 原来 alpha 0.035 等于没画；但抬到 0.07 又把牌组画廊糊成一片背景贴图。
-  // 0.05 是刚好能被认出来、又始终待在文字后面的那一档。
+  // 水印：用效果纹章放大压在下半部，单纯填版面 —— 它是机械信息，不是知识。
+  // 以前这里是主题首字，等于把"这张牌属于哪一块知识"印在牌面上，撤掉了。
   if (kind !== 'junk') {
-    g.save();
-    g.globalAlpha = 0.05;
-    g.font = `800 ${Math.round(h * 0.52)}px ${FONT_TITLE}`;
-    g.fillStyle = tc;
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText(card.topic.slice(0, 1) || '?', x + w * 0.74, y + h * 0.6);
-    g.restore();
-  }
-
-  // ── 记忆条：卡面下半部最有信息量的东西 ────────────────────
-  // 它回答的是"这张牌我现在有多熟" —— 熟不熟决定的是该不该留着它，而不是该押多大。
-  // 手牌底下还要留一行解锁状态，所以记忆条得往上让一格；牌组/奖励没有那一行，就把它压到底。
-  if (kind !== 'junk' && opts.mem !== undefined) {
-    const my = y + h - (opts.state ? 74 : 44) * s;
-    const mw = w - pad * 2;
-    const mv = Math.max(0, Math.min(1, opts.mem));
-
-    text('记忆', x + pad, my, { size: Math.round(11 * s), color: C.dim });
-    const bw2 = mw - 34 * s;
-    roundRect(x + pad + 30 * s, my - 5 * s, bw2, 6 * s, 3 * s);
-    g.fillStyle = 'rgba(255,255,255,.07)';
-    g.fill();
-    roundRect(x + pad + 30 * s, my - 5 * s, Math.max(2, bw2 * mv), 6 * s, 3 * s);
-    g.fillStyle = withAlpha(tc, 0.8);
-    g.fill();
-    text(`${Math.round(mv * 100)}%`, x + w - pad, my, {
-      size: Math.round(11 * s), color: withAlpha(tc, 0.9), align: 'right', weight: 700,
-    });
+    drawArtIcon(eff.key, x + w * 0.6, y + h * 0.76, h * 0.36, tc, { alpha: 0.08 });
   }
 
   // ── 底部：解锁状态 ────────────────────────────────────────
@@ -471,25 +432,30 @@ export function drawCard(
 
     const open = opts.state === 'open';
     const forgot = opts.state === 'forgotten';
-    // 底部这一行是玩家在"要不要点它"那一刻唯一能看见的规则：答错的代价。
-    // 学习期和复习期的价码不一样，所以这句必须写在卡上，不能只写在帮助页里。
-    const reviewLabel = BAL.reviewStrict ? '复习 · 答错作废' : '复习 · 答错不再回来';
-    const label = open ? `免答 ×${BAL.freeMult}`
-      : forgot ? '本场作废'
-        : opts.state === 'spent' ? '这回合已答错'
-          : opts.phase === 'review' ? reviewLabel : '学习 · 答错会回来';
-    // 复习期那一档用暖色：它和"学习 · 答错会回来"是两种价码，扫一眼就该分开
-    const col = open ? C.gold : forgot ? C.red
-      : opts.state === 'locked' ? (opts.phase === 'review' ? withAlpha(C.orange, 0.9) : C.dim)
-        : C.faint;
+    const basic = opts.state === 'basic';
+    // 底部这一行是玩家在"要不要点它"那一刻唯一能看见的规则：本局模式下的答错价码。
+    // 模式整局不变，所以不用再按卡算，直接读 MODES。基础牌例外 —— 它不答题。
+    const mode = opts.mode ? MODES[opts.mode] : null;
+    const label = basic ? '基础 · 不答题'
+      : open ? `免答 ×${BAL.freeMult}`
+        : forgot ? '本场作废'
+          : opts.state === 'spent' ? '这回合已答错'
+            : mode ? mode.cardLabel : '答错作废';
+    // 三档用三种颜色：学习冷、复习暖、测试红，扫一眼就知道这一局犯错有多贵
+    const col = basic ? tc
+      : open ? C.gold : forgot ? C.red
+        : opts.state === 'locked' ? (mode?.key === 'test' ? withAlpha(C.red, 0.9)
+          : mode?.key === 'review' ? withAlpha(C.orange, 0.9) : C.dim)
+          : C.faint;
 
     roundRect(x + pad, py - 11 * s, w - pad * 2, 22 * s, 5 * s);
     g.fillStyle = open ? withAlpha(C.gold, 0.14)
       : forgot ? withAlpha(C.red, 0.1)
-        : 'rgba(255,255,255,.04)';
+        : basic ? withAlpha(col, 0.1)
+          : 'rgba(255,255,255,.04)';
     g.fill();
-    if (open || forgot) {
-      g.strokeStyle = withAlpha(forgot ? C.red : C.gold, 0.45);
+    if (open || forgot || basic) {
+      g.strokeStyle = withAlpha(basic ? col : forgot ? C.red : C.gold, 0.45);
       g.lineWidth = 1;
       g.stroke();
     }
@@ -584,10 +550,10 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   g.stroke();
   text('1', cx, cy + 1, { size: Math.round(13 * s), weight: 800, align: 'center', color: C.gold });
 
-  // 左上：增益标签 + 一个字的图标
+  // 左上：类别标签（能力）+ 一个字的图标
   const ly = y + 38 * s;
   g.font = font(Math.round(11 * s), 700, FONT_UI);
-  const lw = g.measureText('增益').width + 38 * s;
+  const lw = g.measureText('能力').width + 38 * s;
   roundRect(x + pad, ly - 9 * s, lw, 18 * s, 9 * s);
   g.fillStyle = withAlpha(tc, 0.2);
   g.fill();
@@ -597,7 +563,7 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   text(p.icon, x + pad + 9 * s, ly + 0.5, {
     size: Math.round(11 * s), weight: 800, align: 'center', color: tc,
   });
-  text('增益', x + pad + 18 * s, ly + 0.5, {
+  text('能力', x + pad + 18 * s, ly + 0.5, {
     size: Math.round(11 * s), align: 'left', color: tc, weight: 700,
   });
 

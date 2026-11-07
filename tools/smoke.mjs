@@ -171,14 +171,21 @@ const S = (path) => evalJs(`(${path})`);
 
 await boot();
 
-await step('标题 → 开局', () => clickLabel('开始新的一局'), async () => (await S('cog.state.screen')) === 'map');
+await step('标题 → 选模式 → 开局', async () => {
+  await clickLabel('开始新的一局');
+  if (!await waitFor('mode:review')) throw new Error('模式选择没有出现');
+  await clickLabel('mode:review');
+}, async () => (await S('cog.state.screen')) === 'map' && (await S('cog.state.mode')) === 'review');
 await step('地图 → 进节点', () => clickLabel('node'), async () => (await S('cog.state.screen')) === 'battle');
 // 点牌就是出题：中间不该再有任何浮层。这一步挂了就说明又退回了"先选档再看题"
-await step('点一张手牌 → 直接出题', async () => {
+// 手牌里现在混着初始牌组（base:*），要挑一张知识卡点 —— 基础牌点下去不出题。
+await step('点一张知识卡 → 直接出题', async () => {
   // 开局的手牌是从牌堆飞进来的，飞行途中没有热区（点它等于点空气），必须等它落地
   if (!await waitFor('card')) throw new Error('手牌一直没落位');
   globalThis.__apBeforeAsk = await S('cog.state.ap');
-  await clickLabel('card');
+  globalThis.__askIdx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
+  if (globalThis.__askIdx < 0) throw new Error('手里没有知识卡');
+  await clickLabel('card', globalThis.__askIdx);
 }, async () => {
   const p = await S('cog.state.panel');
   return p.k === 'question' && typeof p.qi === 'number';
@@ -282,11 +289,30 @@ await step('免答出牌 → 不出题，只扣 1 点行动力', async () => {
   await evalJs('cog.unlockAll()');
   if (!await waitFor('card')) throw new Error('手牌一直没落位');
   globalThis.__apBefore = await S('cog.state.ap');
-  await clickLabel('card', 0);
+  // 基础牌本来就不出题，这条要测的是"知识卡解锁后也不出题"，所以必须挑知识卡
+  await clickLabel('card', await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))'));
 }, async () => {
   const ap = await S('cog.state.ap');
   const k = await S('cog.state.panel.k');
   return k === 'none' && ap === globalThis.__apBefore - 1;
+});
+
+// 初始牌组：点基础牌不弹题，直接结算，并且扣 1 点行动力。
+// 它是这一局的"地板"——答错锁卡、测试模式作废之后，至少还有牌能打。
+// 13 张牌只带 2 张基础斩击，开局不一定抽到；这里直接塞一张进手牌，
+// 测的是"点基础牌不走答题"，不是抽牌概率。
+await boot(URL_ + '?dev=battle');
+await step('基础牌 → 不出题，直接造成伤害并扣 1 点行动力', async () => {
+  if (!await waitFor('card')) throw new Error('手牌一直没落位');
+  await evalJs('cog.state.hand[0] = { id: "base:strike", up: 0 }');
+  await sleep(260); // 手牌重排是动画，等热区落到新位置
+  globalThis.__baseHp = await S('cog.state.enemy.hp');
+  globalThis.__baseAp = await S('cog.state.ap');
+  await clickLabel('card', 0);
+}, async () => {
+  const st = await S('({ hp: cog.state.enemy.hp, ap: cog.state.ap, panel: cog.state.panel.k })');
+  // 基础斩击是 4 点伤害：不出题、敌人掉血、行动力 -1
+  return st.panel === 'none' && st.hp === globalThis.__baseHp - 4 && st.ap === globalThis.__baseAp - 1;
 });
 
 // 回归：手牌打空、行动力归零时，「结束回合」必须仍然可点。
@@ -305,9 +331,11 @@ await boot(URL_ + '?dev=battle');
 await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一定会来', async () => {
   if (!await waitFor('card')) throw new Error('手牌一直没落位');
   globalThis.__foeHp = await S('cog.state.enemy.hp');
-  // 记住这张牌是谁：下一步要查它到底回了牌堆还是进了弃牌堆
-  globalThis.__missId = await S('cog.state.hand[0].id');
-  await clickLabel('card');
+  // 记住这张牌是谁：下一步要查它到底回了牌堆还是进了弃牌堆。
+  // 必须挑知识卡 —— 基础牌不出题。
+  globalThis.__missIdx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
+  globalThis.__missId = await S(`cog.state.hand[${globalThis.__missIdx}].id`);
+  await clickLabel('card', globalThis.__missIdx);
   // 挑一个「本次视图里」的错误选项：题库里的原始答案位置已经被打乱了
   const pick = await evalJs(`(() => {
     const v = cog.state.panel.view;
@@ -326,9 +354,9 @@ await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一
 // 弃牌动画：牌离手后要飞向牌堆，然后自己清掉。清不掉的话画面左下角会永远
 // 停着一张牌，而且每出一张牌就多留一张 —— 是那种"看起来没事、玩十分钟才花屏"的漏。
 //
-// 这一步同时钉住新的分档规则：刚开的新浏览器没有任何记忆，所以每张卡都在「学习期」，
+// 这一步同时钉住学习模式的分档规则：刚开的新浏览器默认是学习模式，
 // 答错之后牌应该**回到抽牌堆**（下一回合就抽回来），而不是进弃牌堆。
-await step('学习期答错 → 牌回抽牌堆，不进弃牌堆', async () => {
+await step('学习模式答错 → 牌回抽牌堆，不进弃牌堆', async () => {
   await sleep(900); // 飞行 0.3s + 落地淡出，留一倍余量
 }, async () => {
   const st = await evalJs(`({
@@ -339,36 +367,66 @@ await step('学习期答错 → 牌回抽牌堆，不进弃牌堆', async () => 
   return st.fx === 0 && st.dc === 0 && st.back;
 });
 
-// 复习期那一档：先把这个卡种的稳固度顶到门槛以上，再答错一次。
+// 复习模式那一档：把这一局切到复习模式，再答错一次。
 // 它必须**进弃牌堆**（这一场不再自动回来），而且要能被数出来。
 await boot(URL_ + '?dev=battle');
-await step('复习期答错 → 牌进弃牌堆，不再自动回来', async () => {
+await step('复习模式答错 → 牌进弃牌堆，不再自动回来', async () => {
   if (!await waitFor('card')) throw new Error('手牌一直没落位');
-  globalThis.__revId = await evalJs('cog.state.hand[0].id');
-  await evalJs(`cog.markMem(${JSON.stringify(globalThis.__revId)}, 6)`);
+  const idx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
+  globalThis.__revIdx = idx;
+  globalThis.__revId = await S(`cog.state.hand[${idx}].id`);
+  await evalJs("cog.state.mode = 'review'");
   globalThis.__dcBeforeRev = await S('cog.state.discard.length');
-  await clickLabel('card', 0);
+  await clickLabel('card', idx);
   // 挑一个「本次视图里」的错误选项：题库里的原始答案位置已经被打乱了
   const pick = await evalJs(`(() => {
     const v = cog.state.panel.view;
     return { wrong: (v.answer + 1) % v.options.length };
   })()`);
-  globalThis.__phaseAtAsk = await evalJs('cog.state.reviewMiss');
+  globalThis.__missAtAsk = await evalJs('cog.state.runBad');
   await clickLabel('opt', pick.wrong);
-  if (!await waitFor('继续')) throw new Error('复习期答错后反馈面板没出现');
+  if (!await waitFor('继续')) throw new Error('复习模式答错后反馈面板没出现');
 }, async () => {
   const st = await evalJs(`({
     dc: cog.state.discard.length,
-    rev: cog.state.reviewMiss,
-    learn: cog.state.learnMiss,
+    miss: cog.state.runBad,
     back: cog.state.draw.some((c) => c.id === ${JSON.stringify(globalThis.__revId)}),
     forgotten: !!cog.state.forgotten[${JSON.stringify(globalThis.__revId)}],
   })`);
-  // 默认档只进弃牌堆（BAL.reviewStrict 关着）；开着的时候才整场作废
-  const ok = st.dc === globalThis.__dcBeforeRev + 1 && st.rev === globalThis.__phaseAtAsk + 1
-    && st.back === false;
+  // 复习模式只进弃牌堆，不作废卡种
+  const ok = st.dc === globalThis.__dcBeforeRev + 1 && st.miss === globalThis.__missAtAsk + 1
+    && st.back === false && st.forgotten === false;
   if (!ok) throw new Error('实际状态：' + JSON.stringify(st));
   return true;
+});
+
+// 测试模式那一档：答错不该补格挡，而且这个卡种本场直接作废。
+await boot(URL_ + '?dev=battle');
+await step('测试模式答错 → 卡种作废且不补格挡', async () => {
+  if (!await waitFor('card')) throw new Error('手牌一直没落位');
+  const idx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
+  globalThis.__testIdx = idx;
+  globalThis.__testId = await S(`cog.state.hand[${idx}].id`);
+  await evalJs("cog.state.mode = 'test'");
+  globalThis.__blkBeforeTest = await S('cog.state.block');
+  await clickLabel('card', idx);
+  const pick = await evalJs(`(() => {
+    const v = cog.state.panel.view;
+    return { wrong: (v.answer + 1) % v.options.length };
+  })()`);
+  globalThis.__missBeforeTest = await evalJs('cog.state.runBad');
+  await clickLabel('opt', pick.wrong);
+  if (!await waitFor('继续')) throw new Error('测试模式答错后反馈面板没出现');
+}, async () => {
+  const st = await evalJs(`({
+    blk: cog.state.block,
+    miss: cog.state.runBad,
+    forgotten: !!cog.state.forgotten[${JSON.stringify(globalThis.__testId)}],
+    dc: cog.state.discard.length,
+  })`);
+  return st.blk === globalThis.__blkBeforeTest
+    && st.miss === globalThis.__missBeforeTest + 1
+    && st.forgotten === true && st.dc === 1;
 });
 
 // ── 第二阶段：三个弹层各自点一次，确认按钮真的能按 ──
@@ -394,13 +452,16 @@ await step('事件 → 选一个选项', () => clickLabel('eventopt', 0), async 
   (await S('cog.state.panel.k')) !== 'event');
 
 await boot(URL_ + '?dev=report');
-await step('结算 → 再来一局', async () => {
+await step('结算 → 再来一局 → 重新选模式', async () => {
   globalThis.__floorBefore = await S('cog.state.floors');
   await clickLabel('再来一局');
+  if (!await waitFor('mode:review')) throw new Error('再来一局没有回到模式选择');
+  await clickLabel('mode:review');
 }, async () => {
   const p = await S('cog.state.panel.k');
   const floor = await S('cog.state.floors');
-  return p === 'none' && floor === 0;
+  const mode = await S('cog.state.mode');
+  return p === 'none' && floor === 0 && mode === 'review';
 });
 
 ws.close();

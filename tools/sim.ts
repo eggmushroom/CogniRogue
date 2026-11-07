@@ -11,10 +11,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { BAL } from '../src/core/model';
+import { BAL, MODES } from '../src/core/model';
+import type { RunMode } from '../src/core/model';
 import {
   G, PACK, answer, availableNodes, bankQuestionCount, canAsk, chooseEventOption, defOf, dismissFeedback,
-  endTurn, enterNode, isUnlocked, loadQuestionBank, playPower, playUnlocked, resetMemory, restHeal,
+  endTurn, enterNode, isUnlocked, loadQuestionBank, playBasic, playPower, playUnlocked, resetMemory, restHeal,
   quickPlay, skipReward, startRun, takeCard, takePower, askCard, mergePacks,
 } from '../src/core';
 
@@ -26,6 +27,8 @@ import {
 let RUNS = 300;
 /** 战后是否拿奖励卡。默认不拿 —— 那是旧基线，留着才能对比 */
 let TAKE = false;
+/** 这一局按哪档答错价码跑。三种模式各自有一条技巧曲线，默认跑中间那档。 */
+let MODE: RunMode = 'review';
 /**
  * 每个水平开跑前清空记忆。
  *
@@ -37,25 +40,25 @@ let FRESH = false;
 let FRESH_RUN = false;
 
 for (const arg of process.argv.slice(2)) {
-  const m = /^--(hp|dmg|ap|hand|runs|free|miss|start|calm|take|rf|learn|strict|stab|fresh|freshrun)=([\d.-]+)$/.exec(arg);
+  const m = /^--(hp|dmg|ap|hand|runs|free|start|calm|take|rf|stab|fresh|freshrun|mode)=([\w.-]+)$/.exec(arg);
   if (!m) continue;
   const v = Number(m[2]);
   if (m[1] === 'runs') { RUNS = Math.round(v); continue; }
   if (m[1] === 'take') { TAKE = v > 0; continue; }
   if (m[1] === 'fresh') { FRESH = v > 0; continue; }
   if (m[1] === 'freshrun') { FRESH_RUN = v > 0; continue; }
+  if (m[1] === 'mode') {
+    MODE = (m[2] === 'learn' || m[2] === 'test') ? m[2] : 'review';
+    continue;
+  }
   if (m[1] === 'hp') BAL.hp = v;
   else if (m[1] === 'dmg') BAL.dmg = v;
   else if (m[1] === 'ap') { BAL.baseAp = v; }
-  else if (m[1] === 'hand') BAL.handSize = v;
+  else if (m[1] === 'hand') BAL.drawPerTurn = v;
   else if (m[1] === 'free') BAL.freeMult = v;
-  else if (m[1] === 'miss') BAL.missBlock = v;
   else if (m[1] === 'start') BAL.startBlock = v;
-  else if (m[1] === "calm") BAL.calmFirstTurn = v > 0;
-  else if (m[1] === "rf") BAL.refundRight = v > 0;
-  // 学习期 / 复习期这两档惩罚，可以单独关掉，用来量它们各自值多少胜率
-  else if (m[1] === 'learn') BAL.learnForgive = v > 0;
-  else if (m[1] === 'strict') BAL.reviewStrict = v > 0;
+  else if (m[1] === 'calm') BAL.calmFirstTurn = v > 0;
+  else if (m[1] === 'rf') BAL.refundRight = v > 0;
   else if (m[1] === 'stab') BAL.reviewStab = Math.max(1, v);
 }
 
@@ -104,14 +107,15 @@ interface Stat {
   /** 一局里打出增益牌的次数，以及结局牌组里有几张增益牌 */
   powers: number;
   powerCards: number;
-  /** 答错落在学习期 / 复习期各几次。同一个错误两种价码，得分开看 */
-  learnMiss: number;
-  reviewMiss: number;
+  /** 答错了几次。价码由这一局的模式决定，不再按卡片阶段分两档 */
+  misses: number;
+  /** 一局里打出几张基础牌。它衡量"地板"被用得多不多 */
+  basics: number;
 }
 
 function runOne(p: number, st: Stat) {
   if (FRESH_RUN) resetMemory();
-  startRun();
+  startRun(MODE);
   let guard = 0;
   let answers = 0;
   let right = 0;
@@ -120,6 +124,7 @@ function runOne(p: number, st: Stat) {
   let battles = 0;
   let turns = 0;
   let plays = 0;
+  let basics = 0;
 
   while (guard++ < 6000) {
     const panel = G.panel;
@@ -167,8 +172,12 @@ function runOne(p: number, st: Stat) {
         // 前两回合建库，后面用 ×1.5 的免答牌把它花掉。
         const ask = G.hand.findIndex((c) => canAsk(c));
         if (ask >= 0) { askCard(ask); continue; }
-        const ready = G.hand.findIndex((c) => !c.junk && isUnlocked(c.id));
+        const ready = G.hand.findIndex((c) => !c.junk && defOf(c).kind === 'knowledge' && isUnlocked(c.id));
         if (ready >= 0) { free += 1; playUnlocked(ready); continue; }
+        // 基础牌：不答题、不可退款，但总比让行动力烂掉好。
+        // 它是这一局的地板，模拟不打出它，会把低水平的胜率算得比实际更狠。
+        const bas = G.hand.findIndex((c) => !c.junk && defOf(c).kind === 'basic');
+        if (bas >= 0) { basics += 1; playBasic(bas); continue; }
         // 手里只剩打不出的牌（答错锁住的、复习期作废的）时，真人是会快攻的：
         // 半额伤害也是伤害，总比把行动力扔掉好。不模拟这一手，会把惩罚算得比实际更狠。
         const dead = G.hand.findIndex((c) => !c.junk && !defOf(c).power);
@@ -194,8 +203,8 @@ function runOne(p: number, st: Stat) {
   st.turns += turns;
   st.powers += plays;
   st.powerCards += G.deck.filter((e) => e.id.startsWith('pow:')).length;
-  st.learnMiss += G.learnMiss;
-  st.reviewMiss += G.reviewMiss;
+  st.basics += basics;
+  st.misses += G.runBad;
 }
 
 const LEVELS = [
@@ -205,9 +214,9 @@ const LEVELS = [
   { name: '精通', p: 0.88 },
 ];
 
-console.log(`\nCogniRogue 无头模拟 · 每组 ${RUNS} 局 · 内置 ${PACK.cards.length} 张卡 / 题库 ${bankQuestionCount()} 道题\n`);
+console.log(`\nCogniRogue 无头模拟 · 每组 ${RUNS} 局 · ${MODES[MODE].name}模式 · 内置 ${PACK.cards.length} 张卡 / 题库 ${bankQuestionCount()} 道题\n`);
 
-const header = ['水平', '基础正确率', '胜率', '平均到层', '答题/局', '实际正确率', '免答/局', '答题占比', '答错 学/复'];
+const header = ['水平', '基础正确率', '胜率', '平均到层', '答题/局', '实际正确率', '免答/局', '答题占比', '答错/局'];
 const widths = [8, 12, 9, 11, 10, 12, 9, 10, 13];
 const fmt = (row: string[]) => row.map((c, i) => pad(c, widths[i])).join(' ');
 
@@ -224,7 +233,7 @@ console.log(widths.map((w) => '─'.repeat(w)).join(' '));
 const summary: Array<{
   level: string; p: number; win: number; deck: number; kinds: number;
   turns: number; battles: number; powers: number; powerCards: number;
-  learnMiss: number; reviewMiss: number;
+  misses: number; basics: number;
 }> = [];
 
 for (const lv of LEVELS) {
@@ -232,7 +241,7 @@ for (const lv of LEVELS) {
   const st: Stat = {
     wins: 0, floors: 0, answers: 0, right: 0, runs: 0, free: 0,
     deck: 0, kinds: 0, battles: 0, turns: 0, powers: 0, powerCards: 0,
-    learnMiss: 0, reviewMiss: 0,
+    misses: 0, basics: 0,
   };
   for (let i = 0; i < RUNS; i++) runOne(lv.p, st);
   const win = (st.wins / st.runs) * 100;
@@ -242,7 +251,7 @@ for (const lv of LEVELS) {
     deck: st.deck / st.runs, kinds: st.kinds / st.runs,
     turns: st.turns / Math.max(1, st.battles), battles: st.battles / st.runs,
     powers: st.powers / st.runs, powerCards: st.powerCards / st.runs,
-    learnMiss: st.learnMiss / st.runs, reviewMiss: st.reviewMiss / st.runs,
+    misses: st.misses / st.runs, basics: st.basics / st.runs,
   });
   console.log(fmt([
     lv.name,
@@ -253,7 +262,7 @@ for (const lv of LEVELS) {
     `${acc.toFixed(0)}%`,
     (st.free / st.runs).toFixed(1),
     `${(100 * st.answers / Math.max(1, st.answers + st.free)).toFixed(0)}%`,
-    `学${(st.learnMiss / st.runs).toFixed(1)}/复${(st.reviewMiss / st.runs).toFixed(1)}`,
+    (st.misses / st.runs).toFixed(1),
   ]));
 }
 
@@ -262,11 +271,10 @@ if (mid) {
   console.log('');
   console.log(`构筑：熟练结局 ${mid.deck.toFixed(1)} 张 / ${mid.kinds.toFixed(1)} 种`);
   console.log(`节奏：${mid.battles.toFixed(1)} 场 × ${mid.turns.toFixed(1)} 回合`);
-  console.log(`增益：结局牌组 ${mid.powerCards.toFixed(1)} 张 · 一局打出 ${mid.powers.toFixed(1)} 次`
-    + `（${(mid.powers / Math.max(0.1, mid.battles)).toFixed(1)} 次/场）`);
-  console.log(`答错：学习期 ${mid.learnMiss.toFixed(1)} 次/局 · 复习期 ${mid.reviewMiss.toFixed(1)} 次/局`
-    + `（学习期 ${BAL.learnForgive ? '牌回牌堆' : '进弃牌堆'}，复习期 ${BAL.reviewStrict ? '整场作废' : '只进弃牌堆'}`
-    + `，稳固度 ${BAL.reviewStab} 起算复习期）`);
+  console.log(`初始牌组：一局打出 ${mid.basics.toFixed(1)} 张基础牌`
+    + `（另 ${mid.powers.toFixed(1)} 次增益牌）`);
+  console.log(`答错：${MODES[MODE].name}模式 ${mid.misses.toFixed(1)} 次/局`
+    + `（${MODES[MODE].cardLabel}；稳固度答错 ×${MODES[MODE].stabDrop}，答对 ×${MODES[MODE].stabGain}）`);
   console.log(`取卡：${TAKE ? '战后拿卡' : '战后跳过'}（--take=1 打开）` + ` · 记忆：${FRESH_RUN ? '每局重置' : FRESH ? '每个水平重置' : '跨局累积'}`);
 }
 

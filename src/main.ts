@@ -222,7 +222,7 @@ declare global {
       /** 调试/截图用：直接打出手牌里第 i 张增益牌 */
       power: (i: number) => void;
       /**
-       * 调试/自动化用：直接改一张卡的记忆（答对次数）。复习期的规则全由这个数决定，
+       * 调试/自动化用：直接改一张卡的记忆（稳固度）。模式只决定答错时掉多少，
        * 冒烟测试没有时间去真的答对两次，所以开一个后门。
        */
       markMem: (id: string, ok: number, bad?: number) => void;
@@ -299,6 +299,11 @@ window.cog = {
 function devJump() {
   const d = new URLSearchParams(location.search).get('dev');
   if (!d || d === 'title') return;
+  // 调试/截图可以指定模式：?dev=battle&mode=test
+  const qm = new URLSearchParams(location.search).get('mode');
+  if (qm === 'learn' || qm === 'review' || qm === 'test') G.mode = qm;
+  // 模式选择面板本身（首页点"开始新的一局"会到这里）
+  if (d === 'mode') { G.panel = { k: 'mode' }; return; }
   // 素材图集：不需要开局，是一张独立的质量检验页
   if (d === 'atlas') { G.screen = 'atlas'; return; }
   if (d === 'map') { startRun(); return; }
@@ -359,24 +364,9 @@ function devJump() {
     return;
   }
 
-  // 一半牌在复习期、一半在学习期：用来并排对照卡面下沿那两句规则
-  if (d === 'phase') {
-    startRun();
-    G.deck.forEach((e, i) => {
-      const m = memOf(e.id);
-      const rev = i % 2 === 1;
-      m.ok = rev ? 5 : 0;
-      m.bad = rev ? 0 : 2;
-      m.stab = rev ? 14 : 1;
-      m.due = rev ? 3 : 0;
-    });
-    enterNode(G.map[0][0].key);
-    return;
-  }
-
-  // 全部卡都已经学过：用来对照「复习 · 答错作废」那一档卡面，和学习期一眼分得开
+  // 复习模式：卡面下沿写「复习 · 答错等洗牌」
   if (d === 'review') {
-    startRun();
+    startRun('review');
     G.deck.forEach((e) => { const m = memOf(e.id); m.ok = 3; m.stab = 14; m.due = 3; });
     enterNode(G.map[0][0].key);
     return;

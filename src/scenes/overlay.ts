@@ -2,13 +2,13 @@ import { g, roundRect, VH, VW, wrapText } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, topicColor, withAlpha } from '../gfx/theme';
 import { action, drawCard, squeeze, text } from '../gfx/ui';
 import { consumeWheel, hover, onClick } from '../input';
-import { BAL, EFFS, EFF_KEYS, effSummary } from '../core/model';
+import { BAL, EFFS, MODE_KEYS, MODES, effSummary } from '../core/model';
 import { clamp, G } from '../core/infra';
-import { BANK, bankQuestionCount, bankTopics, isReview, memOf, memRatio } from '../core/library';
-import { cardKind, defOf, statOf } from '../core/cards';
+import { BANK, bankQuestionCount, bankTopics, memOf, memRatio } from '../core/library';
+import { cardKind, cardType, CARD_TYPE_META, defOf, statOf } from '../core/cards';
 import { answer, cancelPanel, quickPlay } from '../core/combat';
 import {
-  chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal,
+  chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal, startRun,
   skipPower, skipReward, takeCard, takePower, upgradeCard,
 } from '../core/journey';
 import type { CardInst, Question, QView } from '../core/model';
@@ -105,6 +105,7 @@ export function drawOverlay(t: number) {
   const p = G.panel;
   switch (p.k) {
     case 'question': return drawQuestion(p.idx, p.q, p.view);
+    case 'mode': return drawMode();
     case 'feedback': return drawFeedback();
     case 'reward': return drawReward();
     case 'power': return drawPowerPick();
@@ -155,10 +156,13 @@ function drawQuestion(idx: number, q: Question, view: QView) {
   box(x, y, w, h, withAlpha(col, 0.5));
 
   // 标题 = 牌名（杀戮尖塔式游戏名，如「折半之刃」）。牌名不是知识点，摆出来不泄题，
-  // 还能让玩家把「这手牌」和「这道题」对上号。副标题交代主题与随机抽题的规则。
+  // 还能让玩家把「这手牌」和「这道题」对上号。
+  // 副标题只写类别与"随机抽题"这条规则 —— 主题名从牌面和这一屏都撤掉了：
+  // 它会在看清题之前先告诉你"这题考的是哪一块"，等于提前漏一半答案。
   text(card.name, x + 34, y + 48, { size: 22, weight: 700, family: FONT_TITLE, color: C.ink });
-  text(`${card.topic} · 从题库随机抽一题`, x + 34, y + 74, {
-    size: 13, color: topicColor(card.topic), weight: 600,
+  const ct = CARD_TYPE_META[cardType(card)];
+  text(`${ct.name}牌 · 从题库随机抽一题`, x + 34, y + 74, {
+    size: 13, color: ct.color, weight: 600,
   });
 
   const st = statOf(ent);
@@ -234,12 +238,10 @@ function drawQuestion(idx: number, q: Question, view: QView) {
   text('不打这道 · 快攻', qx + 95, by + 21, { size: 14, align: 'center', color: qhv ? C.ink : C.dim });
   onClick(qx, by, 190, 42, () => quickPlay(idx), 'quick');
 
-  // 这一行只在"手指已经按下去"的那一刻有用，所以它必须先说清答错的代价 ——
-  // 而代价取决于是学习期还是复习期，两张卡在同一把手里就可能不一样。
-  text(isReview(card.id)
-    ? '答对不花行动力并解锁；这张卡你复习过 —— 答错它进弃牌堆，这一场不会再自动回来。'
-    : '答对不花行动力并解锁；这张卡还在学习期 —— 答错这一手作废，牌会回到牌堆。',
-    x + 250, by + 21, { size: 13, color: C.dim });
+  // 这一行只在"手指已经按下去"的那一刻有用，所以它先说清这一局的答错价码 ——
+  // 模式是开局选定的，整局不变，不再按这张卡自己的阶段分两句。
+  text(MODES[G.mode].hint,
+    x + 250, by + 21, { size: 13, color: C.dim, maxW: w - 270 });
 }
 
 /* ── 答题结果 ─────────────────────────────────────────────── */
@@ -374,7 +376,7 @@ function drawReward() {
     const px = cx0 + i * (cw + gap);
     const hv = hover(px, cy, cw, ch);
     const lift = hv ? -10 : 0;
-    drawCard(px, cy + lift, cw, ch, c, c.atk, c.blk, { glow: hv, mem: memRatio(c.id), sub: c.kp });
+    drawCard(px, cy + lift, cw, ch, c, c.atk, c.blk, { glow: hv });
     const m = memOf(c.id);
     const mast = m.reps ? `掌握 ${Math.round(memRatio(c.id) * 100)}%` : '还没答过';
     text(mast, px + cw / 2, cy + ch + 22, { size: 13, align: 'center', color: hv ? C.gold : C.dim });
@@ -491,7 +493,9 @@ function drawCardPick(mode: 'up' | 'rm') {
 
   const items = G.deck
     .map((e, i) => ({ e, i, d: defOf(e) }))
-    // 增益牌没有数值可精炼 —— 它要么在，要么不在。所以精炼列表里不出现它（移除列表里保留）
+    // 基础牌是初始牌组的保底：不可精炼、不可删除，所以两个列表里都不出现它。
+    // 增益牌没有数值可精炼（要么在要么不在），只在"遗忘"列表里保留。
+    .filter((o) => cardKind(o.d) !== 'basic')
     .filter((o) => mode === 'rm' || cardKind(o.d) !== 'power')
     .sort((a, b) => a.d.topic.localeCompare(b.d.topic) || statOf(a.e).atk - statOf(b.e).atk);
 
@@ -514,10 +518,7 @@ function drawCardPick(mode: 'up' | 'rm') {
     const py = area.y + row * (ch + gapy);
     const hv = hover(px, py, cw, ch);
     const st = statOf(o.e);
-    drawCard(px, py, cw, ch, o.d, st.atk, st.blk, {
-      up: !!o.e.up, glow: hv, mem: cardKind(o.d) === 'power' ? undefined : memRatio(o.e.id),
-      sub: o.d.kp,
-    });
+    drawCard(px, py, cw, ch, o.d, st.atk, st.blk, { up: !!o.e.up, glow: hv });
     onClick(px, py, cw, ch, () => (mode === 'up' ? upgradeCard(o.i) : forgetCard(o.i)));
   });
   area.restore();
@@ -605,15 +606,85 @@ function drawGallery(title: string, list: CardInst[]) {
     const py = area.y + row * (ch + gapy);
     const d = defOf(e);
     const st = statOf(e);
-    drawCard(px, py, cw, ch, d, st.atk, st.blk, {
-      up: !!e.up, mem: cardKind(d) === 'power' ? undefined : memRatio(e.id), sub: d.kp,
-    });
+    drawCard(px, py, cw, ch, d, st.atk, st.blk, { up: !!e.up });
   });
   area.restore();
 
   if (!list.length) {
     text('空的。', x + w / 2, y + h / 2, { size: 18, align: 'center', color: C.faint });
   }
+}
+
+/* ── 开局前：选模式 ───────────────────────────────────────── */
+
+/**
+ * 模式选择。它挡在每一局前面（首页的"开始"、结算页的"再来一局"都先到这里），
+ * 因为"这一局是来学、来复习，还是来测"只有玩家自己知道 —— 不该由卡片进度替他决定。
+ */
+function drawMode() {
+  dim(0.84);
+  const w = 1100;
+  const h = 568;
+  const x = (VW - w) / 2;
+  const y = (VH - h) / 2;
+  box(x, y, w, h, withAlpha(C.gold, 0.42));
+  heading('这一局怎么打', x + 48, y + 66,
+    '答对不花行动力并解锁。三种模式只改答错的价码；另外固定带 3 张不答题的基础牌做保底。');
+
+  const gap = 24;
+  const cw = (w - 96 - gap * 2) / 3;
+  const ch = 336;
+  const cy = y + 132;
+  MODE_KEYS.forEach((k, i) => {
+    const m = MODES[k];
+    const cx = x + 48 + i * (cw + gap);
+    const hv = hover(cx, cy, cw, ch);
+    roundRect(cx, cy, cw, ch, 14);
+    g.fillStyle = hv ? withAlpha(m.color, 0.13) : 'rgba(255,255,255,.035)';
+    g.fill();
+    g.strokeStyle = withAlpha(m.color, hv ? 0.9 : 0.42);
+    g.lineWidth = hv ? 2 : 1.3;
+    g.stroke();
+
+    // 顶部一道模式色：三张卡片并排，颜色比标题更先被看见
+    roundRect(cx + 1, cy + 1, cw - 2, 4, 3);
+    g.fillStyle = m.color;
+    g.fill();
+
+    text(m.name, cx + 24, cy + 52, { size: 30, weight: 800, family: FONT_TITLE, color: m.color });
+    text(m.tag, cx + 24, cy + 80, { size: 13, color: C.ink2, weight: 600 });
+
+    g.font = font(13, 400, FONT_UI);
+    const dl = wrapText(m.desc, cw - 48).slice(0, 2);
+    dl.forEach((ln, j) => text(ln, cx + 24, cy + 116 + j * 20, { size: 13, color: C.dim }));
+
+    const guard = m.missBlock === 1 ? '答错补全额卡面格挡'
+      : m.missBlock === 0.5 ? '答错补半额卡面格挡' : '答错没有格挡补偿';
+    const dest = m.missDest === 'draw' ? '牌回牌堆，下回合一定再回来'
+      : m.forget ? '牌进弃牌堆，这个卡种本场作废' : '牌进弃牌堆，等洗牌才回来';
+    const rows = [
+      guard,
+      dest,
+      `稳固度：答错 ×${m.stabDrop} · 答对 ×${m.stabGain}`,
+    ];
+    rows.forEach((ln, j) => {
+      const ry = cy + 184 + j * 34;
+      g.beginPath();
+      g.arc(cx + 29, ry - 4, 2.4, 0, Math.PI * 2);
+      g.fillStyle = m.color;
+      g.fill();
+      text(ln, cx + 42, ry, { size: 12.5, color: C.ink2, maxW: cw - 66 });
+    });
+
+    // 卡片底部：点击区域就是整张卡，别再多一个小按钮抢注意力
+    text(hv ? '开始这一局 →' : '点击开始', cx + cw / 2, cy + ch - 24, {
+      size: 13, align: 'center', color: hv ? m.color : C.faint, weight: 700,
+    });
+    onClick(cx, cy, cw, ch, () => startRun(k), `mode:${k}`);
+  });
+
+  text('模式在开局前选定，整局不变；想换模式就重开一局。Esc 返回。',
+    x + 48, y + h - 30, { size: 12, color: C.faint });
 }
 
 /* ── 说明 ─────────────────────────────────────────────────── */
@@ -627,37 +698,43 @@ function drawHelp() {
   const colW = (w - 96 - 36) / 2;
   const cols = [x + 48, x + 48 + colW + 36];
 
-  // 效果表直接从 EFFS 生成：改了倍率这里不会跟着写错
-  const effTable = EFF_KEYS.map((k) => `${EFFS[k].name}·${EFFS[k].tagline}`).join('　');
+  // 效果/类别表不再写死在帮助页：卡面徽章上就印着「类别·效果」，帮助页只讲分工
   const blocks: Array<[string, string[]]> = [
-    ['卡面不说题，点开才出题', [
-      '每张牌有自己的牌名和效果（杀戮尖塔那套牌面读法），但题不印在卡面上 —— 点一下牌，题和选项才出现。',
-      '牌名背后才是知识点，它只在牌组/奖励列表里作小字副标题；题库主题随便写，卡面是内置的。',
+    ['初始牌组：3 张，不答题', [
+      '一局开始就有三张基础牌（两张基础斩击 4 伤、一张基础格挡 6 挡），它们不答题、随时可打、扣 1 点行动力。',
+      '它们不可获取、不可精炼、不可删除 —— 是这一局的"地板"：答错锁卡、测试模式作废之后，至少还有牌能打，不会整手空转。',
+      '数值刻意压得比知识卡低：保底不等于变强，想赢还是得答题、解锁、用 ×1.5 的免答牌。',
     ]],
-    ['六种效果，不是六种数值', [
-      effTable,
-      '同样的攻挡基数，换个效果就是另一种打法：破防、堆挡、回血、分段、接牌。',
-      '效果写在内置卡牌库里，一张卡固定一种；导入题库改不了卡面，精炼只会加数字。',
+    ['四类牌：攻击 / 防御 / 技能 / 能力', [
+      '攻击：猛击、洞察、串联、内化 —— 把行动力换成伤害（内化再按伤害回血）。',
+      '防御：巩固 —— 把行动力换成格挡，伤害减半、格挡翻倍。',
+      '技能：专注 —— 伤害偏低但抽一张牌，处理的是"手上没牌了"这个节奏问题。',
+      '能力：七种增益牌 —— 本场持续改规则（沙漏多 1 点行动力、索引卡多抽一张……）。',
+    ]],
+    ['牌面只讲机械，不讲知识', [
+      '卡面上只有类别、牌名、效果、数值、消耗和解锁状态。颜色按四类走（攻击橙 / 防御蓝 / 技能紫 / 能力金）。',
+      '没有主题名、没有知识点名、没有记忆度、更没有题干 —— 同一个主题的两张牌在牌面上毫无关联。',
+      '所以「折半之刃」背后是哪道题，只能靠点开它知道；答完之后，反馈面板才会告诉你是哪个主题。',
     ]],
     ['答对生效，答错作废', [
       '答对：卡面效果立刻结算，并且这个卡种本场解锁 —— 之后它的每一张副本都能免答直接打出。',
       `免答出牌的伤害是 ×${BAL.freeMult}：记住的东西比当场想起来的更值钱。精炼过的卡开局就是解锁的。`,
-      '答错：效果作废、这个卡种这回合不再问（免得看完答案用副本重答），但会按卡面格挡替你挡一点。',
+      '答错：效果作废、这个卡种这回合不再问（免得看完答案用副本重答）。挡不挡、牌去哪，看本局模式。',
     ]],
-    ['答错的代价看学习阶段', [
-      '每张卡自己在两个阶段之间：记忆条还没过 1/3 是「学习期」，过了是「复习期」。',
-      '学习期答错：这一手作废、花掉 1 点行动力，但牌不进弃牌堆 —— 它退回牌堆，下一回合就抽回来。',
-      '复习期答错：这张牌进弃牌堆，这一场不会再自动回来 —— 想再见到它得等牌堆洗过一轮。',
-      '稳固度会掉：答错一次就退回学习期，所以同一张牌顶多坑你一回。卡面最下面那行写着它现在在哪一档。',
+    ['三种模式，开局前选', [
+      '学习：答错只作废这一手，牌回抽牌堆，下一回合一定再抽到；补全额卡面格挡。适合第一次见这些题。',
+      '复习：答错作废，牌进弃牌堆，要等洗牌才回来；补半额格挡。适合学过一遍、要求稳。',
+      '测试：答错作废，这个卡种本场作废（只能快攻）；没有格挡补偿。答对稳固度涨得更多。',
+      '模式只影响这一局的答错价码，不改卡面数值、不改题库，也不动你已经攒下的记忆。',
     ]],
     ['行动力是唯一的节奏', [
-      `每回合 ${BAL.baseAp} 点行动力、${BAL.handSize} 张手牌，出牌 1 点。`,
+      `每回合 ${BAL.baseAp} 点行动力、抽 ${BAL.drawPerTurn} 张牌，出牌 1 点。`,
       '答对了这一手不花行动力 —— 行动力买的不是"出牌次数"，而是"犯错次数"。',
-      '所以会的人一回合能把整把牌打完，不会的人打两张就没油了。这也是唯一的经济：先答对，再用解锁的牌换伤害。',
+      '基础牌是例外：它不退款。用行动力打基础牌，就是拿这一回合的答题机会换一点保底输出。',
       '键盘：1–4 选选项，空格/回车推进面板，没有面板时空格就是结束回合。',
     ]],
     ['增益牌：也要打出去才算', [
-      '精英战后和部分事件会给你一张增益牌。它没有题，也没有伤害 —— 它改的是这一场的规则：',
+      '精英战后和部分事件会给你一张增益牌（能力牌）。它没有题，也没有伤害 —— 它改的是这一场的规则：',
       '沙漏多 1 点行动力、索引卡多抽一张、长明灯每回合给格挡、错题本把答错变成攻击。',
       '它和知识卡一样占手牌、一样要 1 点行动力。打出后从牌组循环里出去，本场一直生效；下一场要重新打。',
     ]],
@@ -667,9 +744,9 @@ function drawHelp() {
       '牌组越厚，关键卡越难抽到 —— 拿不拿那张增益牌，是这个游戏里最像构筑的决定。',
     ]],
     ['它会记住你', [
-      '复习状态存在本地。下一局的起始牌组，先收逾期的卡，再收没碰过的。',
+      '复习状态存在本地。下一局的起始牌组按模式取：学习先取没碰过的，复习先取逾期的，测试先取已经掌握的。',
       '结算页会告诉你：这一局的伤害里有多少是免答打出去的 —— 那就是"记住了"和"当时蒙对"的差别。',
-      '记住得越多，你的牌组就越"重"：复习期的牌答错代价更高，但答对了它本来也更强。',
+      '模式只改这一局的答错价码；答对/答错攒下的稳固度会跟着你进下一局。',
     ]],
   ];
 

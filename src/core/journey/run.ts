@@ -1,7 +1,8 @@
-import { BAL } from '../model/data';
-import type { GameState } from '../model/types';
+import { BAL, MODES } from '../model/data';
+import type { GameState, RunMode } from '../model/types';
 import { G, log } from '../infra/state';
 import { pick } from '../infra/util';
+import { basicDeck } from '../cards/basics';
 import { startDeck, tickDue } from '../library/memory';
 import { availableNodes, genMap } from '../map/gen';
 import { startBattle } from '../combat/play';
@@ -12,27 +13,29 @@ import { endRun } from './report';
 /**
  * journey/run —— 一局的编排层。
  *
- * 开一局（记忆推进 → 按记忆组牌 → 生成地图）、进入节点、反馈面板关闭后
+ * 开一局（记忆推进 → 按模式组牌 → 生成地图）、进入节点、反馈面板关闭后
  * 决定下一步去哪。它把 library / map / combat 串起来，但自己不实现规则。
  */
-export function startRun() {
+export function startRun(mode: RunMode = G.mode) {
   tickDue();
-  const deck = startDeck();
+  // 初始牌组 = 固定的 5 张基础牌 + 按模式挑的知识卡。
+  // 基础牌不可获取、不可精炼、不可删除 —— 它们是"永远有牌可打"的那半边。
+  const deck = basicDeck().concat(startDeck(mode));
 
   Object.assign(G, {
-    screen: 'map', panel: { k: 'none' }, log: [], deck,
+    screen: 'map', mode, panel: { k: 'none' }, log: [], deck,
     draw: [], discard: [], hand: [],
     map: genMap(), pos: null, seen: {}, node: null,
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0,
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
     powers: [], topicAtk: {}, unlocked: {}, failedTurn: {}, qSeen: {}, forgotten: {},
     topicWrong: {},
-    okThisTurn: 0, topOk: 0, cardsPlayed: 0, binderUsed: false,
+    okThisTurn: 0, topOkTopic: null, cardsPlayed: 0, binderUsed: false,
     frees: 0, unlocks: 0,
-    runOk: 0, runBad: 0, floors: 0, learnMiss: 0, reviewMiss: 0, pending: null, busy: false,
+    runOk: 0, runBad: 0, floors: 0, pending: null, busy: false,
   } satisfies Partial<GameState>);
 
-  log('── 你走进记忆的档案馆 ──', 'turn');
+  log(`── 你走进记忆的档案馆 · ${MODES[mode].name}模式 ──`, 'turn');
 }
 
 export function enterNode(key: string) {
@@ -56,8 +59,13 @@ export function dismissFeedback() {
   else if (G.pending === 'dead') endRun(false);
 }
 
+/**
+ * 「再来一局」不直接复用上一局的模式 —— 回到首页、把模式选择重新摆出来。
+ * 模式是每局开始前的决定，不该被上一局替玩家记住。
+ */
 export function restart() {
-  startRun();
+  backToTitle();
+  G.panel = { k: 'mode' };
 }
 
 export function backToTitle() {

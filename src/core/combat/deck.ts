@@ -15,7 +15,15 @@ export function startTurn() {
   G.ap = G.apMax;
   // 长明灯：格挡不跨回合，所以它每回合都得重新点一次 —— 3 点是"打不空"的下限
   G.block = hasPower('lamp') ? BAL.lampBlock : 0;
+  // 开局缓冲：第一回合额外给 BAL.startBlock 点格挡。
+  // 这段以前写在 startBattle 里，紧接着就被上面这行覆盖成 0 —— 缓冲从来没真的生效过。
+  if (G.turn === 1) {
+    G.block += BAL.startBlock;
+    if (BAL.startBlock) log(`开局 ${BAL.startBlock} 点格挡`, 'hi');
+  }
   G.okThisTurn = 0;
+  // 遗忘 Boss 的 -3 只保一回合：每回合重新等"这一回合你有没有答对它"
+  G.topOkTopic = null;
   G.cardsPlayed = 0;
   G.binderUsed = false;
   // 答错锁的是"这一回合"，新回合重新给机会
@@ -23,7 +31,9 @@ export function startTurn() {
   // 杂念不进入弃牌堆：它是虚无的，回合结束就散
   G.hand.forEach((c) => { if (!c.junk) G.discard.push(c); });
   G.hand = [];
-  drawTo(BAL.handSize + (hasPower('index') ? 1 : 0));
+  // 手牌在回合末尾整把进弃牌堆，所以"抽几张"= 这回合能看见几张。
+  // 默认 5 张（BAL.drawPerTurn）：10 张起手牌组一回合看一半，构筑才有意义。
+  drawTo(BAL.drawPerTurn + (hasPower('index') ? 1 : 0));
   log(`回合 ${G.turn} 开始`, 'turn');
 }
 

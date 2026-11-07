@@ -1,7 +1,7 @@
 import { g, roundRect, VH, VW } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { action, bar, panel, text, wrap } from '../gfx/ui';
-import { BAL, POWER_BY_ID } from '../core/model';
+import { BAL, MODES, POWER_BY_ID } from '../core/model';
 import { backToTitle, restart } from '../core/journey';
 import type { ReportData } from '../core/model';
 
@@ -20,12 +20,13 @@ export function drawReport(d: ReportData) {
   text(d.win ? '你走到了档案馆的尽头' : `这次倒在了第 ${d.floor} 层`, x + 48, y + 68, {
     size: 34, weight: 700, family: FONT_TITLE, color: accent,
   });
-  text('知识等级不会掉。下一局的牌序会自动把该复习的卡排到前面。', x + 48, y + 106, {
+  text('知识等级不会掉。下一局开局前重新选模式，按模式抽牌。', x + 48, y + 106, {
     size: 14, color: C.dim,
   });
 
   const total = d.runOk + d.runBad;
   const stats: Array<[string, string]> = [
+    [MODES[d.mode].name, '本局模式'],
     [`${d.runOk}/${total}`, '本局答题'],
     [`${total ? Math.round((d.runOk / total) * 100) : 0}%`, '正确率'],
     [`${d.floors}`, '走过节点'],
@@ -77,8 +78,8 @@ export function drawReport(d: ReportData) {
     ['答题出牌', `${total2} 次`, `正确 ${acc}%`],
     ['免答出牌', `${d.frees} 次`, `伤害 ×${BAL.freeMult}`],
     ['解锁卡种', `${d.unlocks} 种`, '答对一次解锁一种'],
-    // 同一个"答错"，在学习和复习两个阶段的价码不一样，所以分开数
-    ['答错的牌', `${d.learnMiss + d.reviewMiss} 次`, `学习期 ${d.learnMiss} · 复习期 ${d.reviewMiss}`],
+    // 答错的价码现在由本局模式决定，不再是"学习期 / 复习期"两档
+    ['答错的牌', `${d.runBad} 次`, MODES[d.mode].cardLabel],
     ['牌组', `${d.deckSize} 张`, `${d.kinds} 种卡`],
   ];
   tail.forEach(([k, v, s], i) => {

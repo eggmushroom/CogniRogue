@@ -87,7 +87,8 @@ export interface EffOut {
  */
 export function resolveEff(key: Eff, atk: number, blk: number, mult = 1, mods?: EffMods): EffOut {
   const d = EFFS[key] ?? EFFS.strike;
-  const per = Math.max(1, Math.round(atk * (mods?.atkMul ?? d.atk) * mult));
+  // 底数是 0 就是"这张牌不打伤害"（基础格挡），不要被四舍五入抬成 1 点。
+  const per = atk <= 0 ? 0 : Math.max(1, Math.round(atk * (mods?.atkMul ?? d.atk) * mult));
   return {
     key: d.key,
     hits: Array.from({ length: mods?.times ?? d.times }, () => per),

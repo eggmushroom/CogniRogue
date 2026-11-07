@@ -2,6 +2,7 @@ import { POWERS, POWER_BY_ID } from '../model/data';
 import type { CardDef, CardInst, PowerDef, PowerId } from '../model/types';
 import { G } from '../infra/state';
 import { PACK } from '../library/pack';
+import { basicDef, isBasicId } from './basics';
 import { isPowerCard } from './kinds';
 
 /**
@@ -29,7 +30,8 @@ const POWER_CARD: Record<string, CardDef> = Object.fromEntries(
 export const defOf = (ent: CardInst | null | undefined): CardDef => {
   if (!ent) return JUNK;
   if (ent.junk) return JUNK;
-  return PACK.cards.find((c) => c.id === ent.id) ?? POWER_CARD[ent.id] ?? JUNK;
+  // 基础牌固定在内置表里，不进 PACK（PACK 是"可获取的知识卡池"）
+  return PACK.cards.find((c) => c.id === ent.id) ?? POWER_CARD[ent.id] ?? basicDef(ent.id) ?? JUNK;
 };
 
 export const powerCardOf = (id: PowerId): CardDef => POWER_CARD[powerCardId(id)];
@@ -61,3 +63,6 @@ export function statOf(ent: CardInst) {
 
 /** 这个 id 是不是一张增益牌。奖励池、解锁统计、结算页都要排除它。 */
 export const isPowerId = (id: string) => !!POWER_CARD[id];
+
+/** 这张牌是不是初始牌组里的基础牌（不答题、不可精炼、不可删）。 */
+export const isBasicCardId = (id: string) => isBasicId(id);

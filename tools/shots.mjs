@@ -127,6 +127,7 @@ await send('Emulation.setDeviceMetricsOverride', {
 /** 每一张图 = 一次导航 + 可选的一段准备动作。 */
 const SHOTS = [
   ['title', '', null, 400],
+  ['mode', '?dev=mode', null, 600],
   ['map', '?dev=map', null, 600],
   ['screenshot', '?dev=battle', null, 500],
   ['deck', '?dev=deck', null, 500],
@@ -136,11 +137,9 @@ const SHOTS = [
   ['ask', '?dev=question', null, 400],
   // 答对之后面板要等打击演出演完才出来，所以多等一会
   ['feedback', '?dev=answer', null, 1400],
-  // 答错那一屏：反馈里的说明分成"学习期会回来"和"复习期不再回来"两种价码
+  // 答错那一屏：学习模式的价码写在反馈面板里
   ['wrong', '?dev=wrong', null, 1400],
   ['unlock', '?dev=battle', 'cog.unlockAll()', 700],
-  // 学习期 / 复习期两档并排：一半牌标成复习期，卡面下沿的句子就分开了
-  ['phases', '?dev=phase', null, 700],
   // 光刃飞出去的那一瞬：0.18s 左右正好在半路
   ['strike', '?dev=battle', 'cog.strike()', 180],
   // 敌人回合：真的走一次 endTurn（?dev=foe:xxx 把招式固定成单招循环），

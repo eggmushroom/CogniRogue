@@ -34,8 +34,11 @@ export function moveOf(e: Foe) {
 export function intentText(e: Foe): { icon: 'attack' | 'shield' | 'junk' | 'buff'; text: string } {
   const m = moveOf(e);
   if (m.k === 'atk') {
-    const dmg = Math.round(e.dmg * (m.m ?? 1)) * (m.times ?? 1);
-    return { icon: 'attack', text: `${dmg}${m.times ? `×${m.times}` : ''}` };
+    // 显示「每段 × 段数」，和结算的 round(dmg×m)×times 同源。
+    // 以前这里先乘了 times 再拼 "×times"，12 点攻击的 0.45×3 会显示成 15×3（读起来像 45）。
+    const per = Math.round(e.dmg * (m.m ?? 1));
+    const times = m.times ?? 1;
+    return { icon: 'attack', text: times > 1 ? `${per}×${times}` : `${per}` };
   }
   if (m.k === 'def') return { icon: 'shield', text: `+${m.v ?? 0}` };
   if (m.k === 'jam') return { icon: 'junk', text: `${m.n ?? 1} 杂念` };
@@ -63,7 +66,7 @@ export function endTurn() {
       const t = topTopic();
       if (t) {
         dmg += 4;
-        if (G.topOk > 0) { dmg -= 3; log(`遗忘：你在「${t}」上答对了，它被削弱 -3`, 'hi'); }
+        if (G.topOkTopic === t) { dmg -= 3; log(`遗忘：你在「${t}」上答对了，它被削弱 -3`, 'hi'); }
         else log(`遗忘：你错得最多的主题是「${t}」，它抓住这点 +4`, 'bad');
       }
     }

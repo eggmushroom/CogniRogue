@@ -7,10 +7,9 @@ import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import * as FX from '../gfx/fx';
 import { POWER_BY_ID } from '../core/model';
 import { G } from '../core/infra';
-import { memRatio, phaseOf } from '../core/library';
 import { cardKind, defOf, powerOf, statOf } from '../core/cards';
 import {
-  askCard, canAsk, endTurn, intentText, isForgotten, isUnlocked, playPower,
+  askCard, canAsk, endTurn, intentText, isForgotten, isUnlocked, playBasic, playPower,
   playUnlocked, unlockStats,
 } from '../core/combat';
 import type { CardDef, CardInst, Foe } from '../core/model';
@@ -787,7 +786,7 @@ interface DiscardFx {
   /**
    * 这张牌离手之后去哪。
    *  - discard：飞向左下角的弃牌堆，落地时计数 +1
-   *  - return：学习期答错的牌 **退回抽牌堆** —— 它没离开循环，下一回合就回来，
+   *  - return：学习模式答错的牌 **退回抽牌堆** —— 它没离开循环，下一回合就回来，
    *    所以不能飞进弃牌堆（那个动作读出来是"被收走了"）
    *  - junk：杂念原地化掉（它根本不进取牌堆）
    *  - power：增益牌飞向右上角的增益槽 —— 它已经从牌组循环里出去了，不能飞进弃牌堆，
@@ -861,7 +860,7 @@ function drawHand(t: number, dt: number) {
     handFx.delete(ent);
     const card = defOf(ent);
     if (!card || !fx) continue;
-    // 判断去处的唯一依据是"逻辑层把它放哪了"：学习期答错的牌在 draw 里，
+    // 判断去处的唯一依据是"逻辑层把它放哪了"：学习模式答错的牌在 draw 里，
     // 其余不是弃掉就是离开循环。表现层不重复算一遍规则。
     const kind = cardKind(card);
     const mode: DiscardFx['mode'] = kind === 'power' ? 'power'
@@ -928,37 +927,44 @@ function drawHand(t: number, dt: number) {
     fx.dx = px;
     fx.dy = py;
 
-    // 三种状态：锁着（要答题）/ 已解锁（免答直接打）/ 这回合已经答错过，
-    // 外加一种整场作废（复习期答错）。增益牌不传状态 —— 它不需要证明什么。
+    // 四种状态：基础牌（不答题，随时可打）/ 锁着（要答题）/ 已解锁（免答直接打）/
+    // 这回合已经答错过，外加一种整场作废（测试模式答错）。增益牌不传状态。
     const kind = cardKind(card);
     const isPow = kind === 'power';
     const isJunk = kind === 'junk';
-    const open = !isJunk && !isPow && isUnlocked(card.id);
+    const isBase = kind === 'basic';
+    const open = !isJunk && !isPow && !isBase && isUnlocked(card.id);
     const state = isJunk || isPow ? undefined
-      : open ? 'open'
-        : isForgotten(card.id) ? 'forgotten'
-          : G.failedTurn[card.id] ? 'spent'
-            : 'locked';
+      : isBase ? 'basic'
+        : open ? 'open'
+          : isForgotten(card.id) ? 'forgotten'
+            : G.failedTurn[card.id] ? 'spent'
+              : 'locked';
 
     g.save();
     g.globalAlpha = alpha;
     g.translate(px, py);
     g.rotate(rot);
     drawCard(-w / 2, -h / 2, w, h, card, st.atk, st.blk, {
-      up: !!ent.up, glow: hv, mem: memRatio(ent.id), state,
-      phase: isJunk || isPow ? undefined : phaseOf(card.id),
+      up: !!ent.up, glow: hv, state,
+      mode: isJunk || isPow || isBase ? undefined : G.mode,
     });
     g.restore();
 
     // 还在飞的牌不给热区：那时候它画在半空中，点它等于点空气
     if (flying) continue;
 
-    // 锁着的牌点下去出题，已解锁的牌点下去直接打，增益牌点下去立刻生效 ——
-    // 三种都是"点这张牌"，只是它问你要的东西不一样
+    // 基础牌点下去直接打，锁着的牌点下去出题，已解锁的牌点下去直接打，
+    // 增益牌点下去立刻生效 —— 四种都是"点这张牌"，只是它问你要的东西不一样
     if (isPow) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
         if (G.ap <= 0) { FX.shake(6); return; }
         playPower(s.i);
+      }, 'card');
+    } else if (isBase) {
+      onClick(px - w / 2, py - h / 2, w, h, () => {
+        if (G.ap <= 0) { FX.shake(6); return; }
+        playBasic(s.i);
       }, 'card');
     } else if (!isJunk) {
       onClick(px - w / 2, py - h / 2, w, h, () => {

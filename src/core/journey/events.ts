@@ -45,15 +45,23 @@ export function restHeal() {
 }
 
 export function openCardPick(mode: 'up' | 'rm') {
-  if (mode === 'rm' && G.deck.length <= 5) { log('牌组太薄，不能再删了', ''); return; }
+  // 基础牌不可精炼、不可删除，所以列表里不会出现它们；能不能打开面板，
+  // 要按"真正可动的那几张"算，而不是按牌组总长（基础牌永远占着 3 个位）。
+  const movable = G.deck.filter((e) => cardKind(defOf(e)) !== 'basic');
+  if (mode === 'rm' && movable.length <= 2) { log('牌组太薄，不能再删了', ''); return; }
+  if (mode === 'up' && !movable.some((e) => cardKind(defOf(e)) !== 'power')) {
+    log('没有能精炼的牌', '');
+    return;
+  }
   G.panel = { k: 'cardpick', mode };
 }
 
 export function upgradeCard(i: number) {
   const e = G.deck[i];
   if (!e) return;
-  // 增益牌没有攻/挡可加，精炼它等于白点一次
+  // 增益牌没有攻/挡可加，基础牌是初始牌组的保底（精炼会让它偏离"弱但永远在"的定位）
   if (cardKind(defOf(e)) === 'power') return;
+  if (cardKind(defOf(e)) === 'basic') { log('基础牌不用精炼，它们本来就一直在', ''); finishNode(); return; }
   e.up = 1;
   log(`「${defOf(e).topic}」被精炼：攻 +3、挡 +3`, 'hi');
   finishNode();
@@ -62,6 +70,8 @@ export function upgradeCard(i: number) {
 export function forgetCard(i: number) {
   const d = defOf(G.deck[i]);
   if (!d) return;
+  // 基础牌是这一局的地板：删了它，"永远有牌可打"就不成立了
+  if (cardKind(d) === 'basic') { log('基础牌是初始牌组，不能丢', ''); finishNode(); return; }
   G.deck.splice(i, 1);
   log(`你永久放下了「${d.topic}」`, '');
   finishNode();

@@ -7,6 +7,37 @@
  */
 export type QLevel = 'recall' | 'understand' | 'transfer';
 
+/**
+ * 一局的模式。**每局开始前由玩家选**，不随卡片进度自动切换。
+ *
+ * 三种模式只改「答错这一手要付多少钱」，不改卡面数值、不改题库、不改已经攒下的记忆。
+ * 学习 = 允许犯错；复习 = 要求稳；测试 = 错了要付全价。
+ */
+export type RunMode = 'learn' | 'review' | 'test';
+
+export interface ModeDef {
+  key: RunMode;
+  name: string;
+  tag: string;
+  color: string;
+  desc: string;
+  /** 答错时按卡面格挡补偿的比例：1 = 全额，0.5 = 半额，0 = 不补 */
+  missBlock: number;
+  /** 答错时稳固度乘数 */
+  stabDrop: number;
+  /** 答对时稳固度增益系数：1 = 原来的 ×1.8/+1 */
+  stabGain: number;
+  /** 答错后这张牌去哪 */
+  missDest: 'draw' | 'discard';
+  /** 答错后这个卡种本场是否作废（测试模式） */
+  forget: boolean;
+  /** 卡面下沿那句"这一手值多少" */
+  cardLabel: string;
+  /** 答题面板底部那句提醒 */
+  hint: string;
+}
+
+
 export interface Question {
   q: string;
   options: string[];
@@ -53,7 +84,19 @@ export interface QuestionBank {
  * 以前这一层没有字段，靠 `card.junk` / `card.power` 两个可选标记在十来处
  * 各自推导；现在统一由 `cards/kinds.ts` 的 `cardKind()` 判定。
  */
-export type CardKind = 'knowledge' | 'power' | 'junk';
+export type CardKind = 'knowledge' | 'power' | 'junk' | 'basic';
+
+/**
+ * 卡牌的**类别**：攻击 / 防御 / 技能 / 能力。
+ *
+ * 这是和 `CardKind`（身份）不同的一条轴：
+ *   - 身份回答"这张牌要不要答题、能不能被获取"（基础牌 / 知识卡 / 增益 / 杂念）；
+ *   - 类别回答"它在这一局里干什么"（打伤害 / 堆格挡 / 改节奏 / 本场持续）。
+ *
+ * 知识卡按效果自动归类（见 `cards/kinds.ts` 的 `cardType()`）：
+ * 猛击·洞察·串联·内化 = 攻击，巩固 = 防御，专注 = 技能，增益牌 = 能力。
+ */
+export type CardType = 'attack' | 'defense' | 'skill' | 'power';
 
 /**
  * 卡牌效果。`strike` 是基准，其余五种各偏一门：
@@ -136,6 +179,8 @@ export interface CardDef {
   junk?: boolean;
   /** 身份。工厂与解析层写入；旧 JSON 包没写时由 cardKind() 回落推导。 */
   kind?: CardKind;
+  /** 类别（攻击/防御/技能/能力）。不写就按 kind + eff 自动推导，见 cardType()。 */
+  type?: CardType;
 }
 
 export interface Pack {
@@ -267,6 +312,8 @@ export interface ReportRow { t: string; ok: number; bad: number; mast: number }
 export interface ReportData {
   win: boolean;
   floor: number;
+  /** 这一局玩的模式 —— 结算页要写清楚"刚才那局是按哪档结算的" */
+  mode: RunMode;
   runOk: number;
   runBad: number;
   floors: number;
@@ -279,9 +326,6 @@ export interface ReportData {
   frees: number;
   /** 本局一共解锁过多少种卡 */
   unlocks: number;
-  /** 学习期 / 复习期各答错了几次 —— 同一个错误，两种价码 */
-  learnMiss: number;
-  reviewMiss: number;
   /** 牌组里的增益牌（名字），没有就是空数组 */
   powers: string[];
   verdict: string;
@@ -289,6 +333,8 @@ export interface ReportData {
 
 export type Panel =
   | { k: 'none' }
+  /** 开局前选模式：学习 / 复习 / 测试 */
+  | { k: 'mode' }
   /** `q` 是点开那一刻从题池抽出的题目快照：答题期间题库换不掉这一手 */
   | { k: 'question'; idx: number; qi: number; topic: string; q: Question; view: QView }
   | { k: 'feedback'; fb: Feedback }
@@ -307,6 +353,8 @@ export interface LogLine { msg: string; kind: '' | 'hi' | 'bad' | 'turn' }
 
 export interface GameState {
   screen: 'title' | 'map' | 'battle' | 'report' | 'atlas';
+  /** 这一局开始前选定的模式；整局不变，换模式必须重开一局 */
+  mode: RunMode;
   panel: Panel;
   log: LogLine[];
   deck: CardInst[];
@@ -339,10 +387,10 @@ export interface GameState {
   /** 本回合已经试过并且答错的卡种：这一回合内不能再答（防止看答案后用副本重答） */
   failedTurn: Record<string, boolean>;
   /**
-   * 本场已经作废的卡种 —— 复习期答错的那几张。
+   * 本场已经作废的卡种 —— 测试模式答错的那几张。
    *
-   * 和 `failedTurn` 是两档惩罚：failedTurn 只锁一个回合（学习期答错，下回合再来），
-   * 这一档锁整场（复习期答错 = 这一次你没记住）。作废的牌仍然能快攻，不然手牌会堵死。
+   * 和 `failedTurn` 是两档惩罚：failedTurn 只锁一个回合（看看答案还能再试），
+   * 这一档锁整场（测试模式答错 = 这一次没通过）。作废的牌仍然能快攻，不然手牌会堵死。
    */
   forgotten: Record<string, boolean>;
   /**
@@ -353,7 +401,13 @@ export interface GameState {
   qSeen: Record<string, number[]>;
   topicWrong: Record<string, number>;
   okThisTurn: number;
-  topOk: number;
+  /**
+   * 本回合答对了「本局错得最多的主题」—— 存主题名，不是计数。
+   *
+   * 遗忘 Boss 的 -3 是"这一回合"的，所以每回合清零；存主题而不是布尔，
+   * 是因为 topTopic() 可能在同一回合里被新的错误改写，结算时要重新对一次。
+   */
+  topOkTopic: string | null;
   cardsPlayed: number;
   binderUsed: boolean;
   /** 本局免答出牌次数 / 解锁次数。只给结算页用，不参与任何结算 */
@@ -362,9 +416,6 @@ export interface GameState {
   runOk: number;
   runBad: number;
   floors: number;
-  /** 这一局答错了几次、其中多少次是在复习期答错的。结算页用它解释"哪一类错更贵" */
-  learnMiss: number;
-  reviewMiss: number;
   pending: null | 'clear' | 'win' | 'dead';
   busy: boolean;
 }
