@@ -11,12 +11,12 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { BAL } from '../src/core/data';
+import { BAL } from '../src/core/model';
 import {
-  G, answer, availableNodes, canAsk, chooseEventOption, defOf, dismissFeedback,
-  endTurn, enterNode, isUnlocked, loadPack, playPower, playUnlocked, resetMemory, restHeal,
-  quickPlay, skipReward, startRun, takeCard, takePower, askCard,
-} from '../src/core/game';
+  G, PACK, answer, availableNodes, bankQuestionCount, canAsk, chooseEventOption, defOf, dismissFeedback,
+  endTurn, enterNode, isUnlocked, loadQuestionBank, playPower, playUnlocked, resetMemory, restHeal,
+  quickPlay, skipReward, startRun, takeCard, takePower, askCard, mergePacks,
+} from '../src/core';
 
 /**
  * 参数可覆盖，方便扫参：
@@ -33,7 +33,7 @@ let TAKE = false;
  * 但它会让四个水平跑的其实是四种记忆状态，所以另有这个开关做对照实验。
  */
 let FRESH = false;
-/** 每局都清空记忆：模拟"第一次打开这个知识包"，学习期那档规则只在种状态下才被真的走到 */
+/** 每局都清空记忆：模拟"第一次打开这个题库"，学习期那档规则只在那种状态下才被真的走到 */
 let FRESH_RUN = false;
 
 for (const arg of process.argv.slice(2)) {
@@ -63,8 +63,13 @@ for (const arg of process.argv.slice(2)) {
 (globalThis as unknown as { setTimeout: (fn: () => void) => void }).setTimeout = (fn) => { fn(); };
 
 const here = dirname(fileURLToPath(import.meta.url));
-const md = readFileSync(join(here, '..', 'packs', 'algorithms.md'), 'utf8');
-const loaded = loadPack(md);
+// 和浏览器里的内置题库完全相同：三份 md 走同一个 mergePacks，数值才可比
+const md = mergePacks(
+  ['algorithms.md', 'advanced.md', 'systems.md']
+    .map((f) => readFileSync(join(here, '..', 'packs', f), 'utf8')),
+  '计算机科学 · 精选题库',
+);
+const loaded = loadQuestionBank(md);
 if (!loaded.ok) {
   console.error(loaded.msg);
   process.exitCode = 1;
@@ -120,13 +125,14 @@ function runOne(p: number, st: Stat) {
     const panel = G.panel;
 
     if (panel.k === 'question') {
-      const card = defOf(G.hand[panel.idx]);
-      const q = card.qs[panel.qi];
+      // 模拟「这个水平的玩家」也必须按本次打乱后的视图作答，
+      // 否则读题库里的原始答案会全部判错，技巧曲线就塌了。
+      const view = panel.view;
       const ok = Math.random() < p;
       answers += 1;
       if (ok) right += 1;
-      const wrong = (q.answer + 1 + Math.floor(Math.random() * (q.options.length - 1))) % q.options.length;
-      answer(ok ? q.answer : wrong);
+      const wrong = (view.answer + 1 + Math.floor(Math.random() * (view.options.length - 1))) % view.options.length;
+      answer(ok ? view.answer : wrong);
       continue;
     }
     if (panel.k === 'feedback') { dismissFeedback(); continue; }
@@ -199,7 +205,7 @@ const LEVELS = [
   { name: '精通', p: 0.88 },
 ];
 
-console.log(`\nCogniRogue 无头模拟 · 每组 ${RUNS} 局 · ${md.split('### ').length - 1} 张卡\n`);
+console.log(`\nCogniRogue 无头模拟 · 每组 ${RUNS} 局 · 内置 ${PACK.cards.length} 张卡 / 题库 ${bankQuestionCount()} 道题\n`);
 
 const header = ['水平', '基础正确率', '胜率', '平均到层', '答题/局', '实际正确率', '免答/局', '答题占比', '答错 学/复'];
 const widths = [8, 12, 9, 11, 10, 12, 9, 10, 13];

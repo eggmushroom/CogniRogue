@@ -26,6 +26,26 @@ export const FOES: FoeTpl[] = [
     hint: '它会往你的弃牌堆里塞杂念——占手牌位、打不出去，回合结束才散。',
   },
   {
+    key: 'drift', name: '走神', type: 'fight', art: 'moth', tag: '普通',
+    hp: 46, dmg: 6, moves: [{ k: 'jam', n: 1 }, { k: 'jam', n: 1 }, { k: 'atk', m: 1 }],
+    hint: '一群纸作的飞蛾。它不急着咬你——它在把你的牌堆一点点搅浑。',
+  },
+  {
+    key: 'grub', name: '书蛀', type: 'fight', art: 'grub', tag: '普通',
+    hp: 60, dmg: 7, moves: [{ k: 'atk', m: 0.75 }, { k: 'atk', m: 1 }], mech: 'leech',
+    hint: '你每答错一次，它就啃食这次失误回 4 血。别喂它。',
+  },
+  {
+    key: 'cram', name: '硬背石像', type: 'fight', art: 'shard', hue: 38, tag: '普通',
+    hp: 72, dmg: 9, moves: [{ k: 'def', v: 11 }, { k: 'atk', m: 1.15 }],
+    hint: '先把墙垒起来再出手。举盾那回合攒好火力，别把伤害拍在墙上。',
+  },
+  {
+    key: 'mirage', name: '错觉蜃影', type: 'fight', art: 'examiner', hue: 265, tag: '普通',
+    hp: 52, dmg: 7, moves: [{ k: 'atk', m: 1 }, { k: 'atk', m: 0.45, times: 3 }],
+    hint: '三段轻击，每一段都不重——但漏掉一段就是一整套。数着它的段数防。',
+  },
+  {
     key: 'reviewer', name: '审视者', type: 'elite', art: 'examiner', tag: '精英',
     hp: 92, dmg: 11,
     moves: [{ k: 'atk', m: 1.3 }, { k: 'atk', m: 0.65, times: 2 }, { k: 'def', v: 12 }],
@@ -39,11 +59,31 @@ export const FOES: FoeTpl[] = [
     hint: '无视一半格挡，还会塞杂念。它专门惩罚"只守不攻"。',
   },
   {
+    key: 'inquisitor', name: '主考官', type: 'elite', art: 'inquisitor', tag: '精英',
+    hp: 102, dmg: 12,
+    moves: [{ k: 'atk', m: 1.25 }, { k: 'def', v: 14 }, { k: 'atk', m: 0.7, times: 2 }],
+    mech: 'reviewer',
+    hint: '复习官的上司。赏罚都更重——一回合没认真答对，它会加倍记恨。',
+  },
+  {
+    key: 'tide', name: '题海', type: 'elite', art: 'tide', tag: '精英',
+    hp: 96, dmg: 10,
+    moves: [{ k: 'jam', n: 2 }, { k: 'atk', m: 1.15 }, { k: 'atk', m: 0.6, times: 2 }],
+    hint: '无穷的题目淹过来：杂念占住手牌位，攻击一波接一波。先把源头打碎。',
+  },
+  {
     key: 'oblivion', name: '遗忘', type: 'boss', art: 'oblivion', tag: 'BOSS',
     hp: 150, dmg: 14,
     moves: [{ k: 'atk', m: 1 }, { k: 'atk', m: 0.6, times: 2 }, { k: 'buff', v: 2 }],
     mech: 'oblivion',
     hint: '本局你错得最多的主题，对它伤害 +4；但你在该主题上答对，它本回合 -3。',
+  },
+  {
+    key: 'lethe', name: '忘川', type: 'boss', art: 'lethe', tag: 'BOSS',
+    hp: 158, dmg: 13,
+    moves: [{ k: 'atk', m: 1 }, { k: 'jam', n: 2 }, { k: 'atk', m: 0.65, times: 2 }, { k: 'buff', v: 2 }],
+    mech: 'lethe',
+    hint: '你的每一次答错都会让它永久 +1 攻——它是遗忘本身，喂不得。',
   },
 ];
 
@@ -178,5 +218,5 @@ export const NODE_META: Record<NodeType, { k: string; g: string; color: string }
   elite: { k: '精英', g: '☠', color: '#d9534f' },
   rest: { k: '复习', g: '✦', color: '#4fd6cf' },
   event: { k: '事件', g: '?', color: '#a78bfa' },
-  boss: { k: '遗忘', g: '✺', color: '#e8b64c' },
+  boss: { k: '首领', g: '✺', color: '#e8b64c' },
 };

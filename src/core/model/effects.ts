@@ -1,4 +1,4 @@
-import type { Eff } from './types';
+import type { Eff, EffMods } from './types';
 
 /**
  * 卡牌效果。卡面的攻/挡只是底数，效果决定这些数字怎么花出去。
@@ -7,7 +7,7 @@ import type { Eff } from './types';
  * 洞察 = 看穿表象（无视格挡）、巩固 = 稳住防线、内化 = 把知识变成自己的血、
  * 串联 = 把两件事连起来打、专注 = 少打一下换一张牌。
  *
- * 效果由知识包的 `% 攻 挡 [效果]` 第三列声明，不写就是猛击（默认）。
+ * 效果由内置卡牌库 `cards/catalog.ts` 的 `eff` 字段声明（题库不定义数值）。
  */
 export interface EffDef {
   key: Eff;
@@ -60,7 +60,7 @@ export const EFFS: Record<Eff, EffDef> = {
 
 export const EFF_KEYS = Object.keys(EFFS) as Eff[];
 
-/** 知识包里写中文名也认，写错一律回落到猛击 —— 题库不该因为一个词写错就整包失效。 */
+/** 内置卡牌库里写中文名也认，写错一律回落到猛击 —— 一张卡不该因为一个词写错就失效。 */
 export function toEff(x: string | undefined): Eff {
   const k = (x ?? '').trim();
   if (!k) return 'strike';
@@ -81,22 +81,26 @@ export interface EffOut {
   pierce: boolean;
 }
 
-export function resolveEff(key: Eff, atk: number, blk: number, mult = 1): EffOut {
+/**
+ * 结算一次效果。`mods` 是这张卡自己的签名改动（见 EffMods），逐字段覆盖原型默认 ——
+ * 展示（卡面、答题面板）和结算（出牌）必须传同一份，卡面写的和实际发生的才不会两张皮。
+ */
+export function resolveEff(key: Eff, atk: number, blk: number, mult = 1, mods?: EffMods): EffOut {
   const d = EFFS[key] ?? EFFS.strike;
-  const per = Math.max(1, Math.round(atk * d.atk * mult));
+  const per = Math.max(1, Math.round(atk * (mods?.atkMul ?? d.atk) * mult));
   return {
     key: d.key,
-    hits: Array.from({ length: d.times }, () => per),
-    blk: Math.round(blk * d.blk),
-    healRatio: d.heal ?? 0,
-    draw: d.draw ?? 0,
+    hits: Array.from({ length: mods?.times ?? d.times }, () => per),
+    blk: Math.round(blk * (mods?.blkMul ?? d.blk)),
+    healRatio: mods?.heal ?? d.heal ?? 0,
+    draw: mods?.draw ?? d.draw ?? 0,
     pierce: !!d.pierce,
   };
 }
 
 /** 纯文本描述，给题目面板、帮助面板这类只有一行字的地方用。 */
-export function effSummary(key: Eff, atk: number, blk: number): string {
-  const o = resolveEff(key, atk, blk, 1);
+export function effSummary(key: Eff, atk: number, blk: number, mods?: EffMods): string {
+  const o = resolveEff(key, atk, blk, 1, mods);
   const dmg = o.hits.length > 1 ? `${o.hits[0]}×${o.hits.length} 伤害` : `${o.hits[0]} 伤害`;
   const tail = o.pierce ? '无视格挡'
     : o.blk > 0 ? `${o.blk} 格挡`

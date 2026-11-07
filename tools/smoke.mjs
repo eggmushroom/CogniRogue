@@ -193,12 +193,8 @@ await step('答题面板里没有档位按钮', async () => {
 
 // 答对才会触发打击动画，所以这里点「正确答案」而不是第一个选项
 await step('选对 → 出反馈（此刻面板还没画出来）', async () => {
-  const right = await evalJs(`(() => {
-    const p = cog.state.panel;
-    const inst = cog.state.hand[p.idx];
-    const def = cog.pack.cards.find((c) => c.id === inst.id);
-    return def.qs[p.qi].answer;
-  })()`);
+  // 选项每次出题都会重新排，正确答案的位置只能从本次的 panel.view 里读
+  const right = await evalJs('cog.state.panel.view.answer');
   await clickLabel('opt', right);
 }, async () => {
   const k = await S('cog.state.panel.k');
@@ -227,7 +223,14 @@ await step('结束回合 → 回合数前进，敌人真的演了动作且输入
 // 全都是"数字变了但画面没动"。现在每个分支都发 enemyAct，这里盯两件事：
 // 演出确实在画面上（fx().enemy > 0），以及演完之后飞行单元没残留在屏幕上。
 await step('敌人演完 → 输入解锁、演出单元清空、新回合手牌飞回来', async () => {
-  await sleep(1400);
+  // 演出时长受机器负载影响，固定 sleep(1400) 偶发不够（手牌还没飞回来就断言）。
+  // 轮询等到三个条件同时成立，最多等 4 秒；下面的断言仍会再核一次。
+  const t0 = Date.now();
+  while (Date.now() - t0 < 4000) {
+    const st = await S('({ enemy: cog.fx().enemy, locked: cog.locked(), cards: cog.hots().filter((h) => h.label === "card").length })');
+    if (st.enemy === 0 && !st.locked && st.cards >= 5) return;
+    await sleep(60);
+  }
 }, async () => {
   const st = await S('({ enemy: cog.fx().enemy, locked: cog.locked(), cards: cog.hots().filter((h) => h.label === "card").length })');
   if (st.cards < 5) throw new Error('手牌没有归位：' + JSON.stringify(st));
@@ -305,12 +308,10 @@ await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一
   // 记住这张牌是谁：下一步要查它到底回了牌堆还是进了弃牌堆
   globalThis.__missId = await S('cog.state.hand[0].id');
   await clickLabel('card');
+  // 挑一个「本次视图里」的错误选项：题库里的原始答案位置已经被打乱了
   const pick = await evalJs(`(() => {
-    const p = cog.state.panel;
-    const inst = cog.state.hand[p.idx];
-    const def = cog.pack.cards.find((c) => c.id === inst.id);
-    const t = def.qs[p.qi];
-    return { wrong: (t.answer + 1) % t.options.length };
+    const v = cog.state.panel.view;
+    return { wrong: (v.answer + 1) % v.options.length };
   })()`);
   await clickLabel('opt', pick.wrong);
 }, async () => {
@@ -347,12 +348,10 @@ await step('复习期答错 → 牌进弃牌堆，不再自动回来', async () 
   await evalJs(`cog.markMem(${JSON.stringify(globalThis.__revId)}, 6)`);
   globalThis.__dcBeforeRev = await S('cog.state.discard.length');
   await clickLabel('card', 0);
+  // 挑一个「本次视图里」的错误选项：题库里的原始答案位置已经被打乱了
   const pick = await evalJs(`(() => {
-    const p = cog.state.panel;
-    const inst = cog.state.hand[p.idx];
-    const def = cog.pack.cards.find((c) => c.id === inst.id);
-    const t = def.qs[p.qi];
-    return { wrong: (t.answer + 1) % t.options.length };
+    const v = cog.state.panel.view;
+    return { wrong: (v.answer + 1) % v.options.length };
   })()`);
   globalThis.__phaseAtAsk = await evalJs('cog.state.reviewMiss');
   await clickLabel('opt', pick.wrong);
