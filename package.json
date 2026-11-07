@@ -1,6 +1,6 @@
 {
   "name": "cognirogue",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "把间隔复习做成一场 Roguelike 牌局",

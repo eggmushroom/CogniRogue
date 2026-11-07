@@ -4,7 +4,6 @@ import { action, text } from '../gfx/ui';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { G } from '../core/infra';
 import { BANK, bankQuestionCount, PACK, topics } from '../core/library';
-import { startRun } from '../core/journey';
 
 export function drawTitle(t: number, openHelp: () => void, openPack: () => void) {
   drawBackdrop(t, 0.72);
@@ -47,7 +46,7 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   let by = 452;
   const gap = 76;
 
-  action(bx, by, bw, 60, '开始新的一局', () => startRun(), 'primary', { size: 22 });
+  action(bx, by, bw, 60, '开始新的一局', () => { G.panel = { k: 'mode' }; }, 'primary', { size: 22 });
   by += gap;
   action(bx, by, bw, 56, '这游戏怎么玩', openHelp);
   by += 70;
@@ -62,11 +61,11 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   );
 
   if (G.deck.length) {
-    text('上一次的牌组还在。开新局会重新按到期顺序抽牌。', cx, py + 50, {
+    text('上一次的牌组还在。开新局会按所选模式重新抽牌。', cx, py + 50, {
       size: 12, align: 'center', color: C.faint,
     });
   }
 
-  text('v0.2 · TypeScript + Canvas', 40, VH - 28, { size: 12, color: C.faint });
+  text('v0.4 · TypeScript + Canvas', 40, VH - 28, { size: 12, color: C.faint });
   text('MIT License', VW - 40, VH - 28, { size: 12, color: C.faint, align: 'right' });
 }
