@@ -1,6 +1,11 @@
 import shardUrl from '../../assets/shard.jpg';
 import examinerUrl from '../../assets/examiner.jpg';
 import oblivionUrl from '../../assets/oblivion.jpg';
+import mothUrl from '../../assets/moth.jpg';
+import grubUrl from '../../assets/grub.jpg';
+import inquisitorUrl from '../../assets/inquisitor.jpg';
+import tideUrl from '../../assets/tide.jpg';
+import letheUrl from '../../assets/lethe.jpg';
 import arenaUrl from '../../assets/arena.jpg';
 
 /**
@@ -11,6 +16,11 @@ export interface Art {
   shard: HTMLImageElement;
   examiner: HTMLImageElement;
   oblivion: HTMLImageElement;
+  moth: HTMLImageElement;
+  grub: HTMLImageElement;
+  inquisitor: HTMLImageElement;
+  tide: HTMLImageElement;
+  lethe: HTMLImageElement;
   arena: HTMLImageElement;
 }
 
@@ -24,6 +34,11 @@ export const ART: Art = {
   shard: mk(shardUrl),
   examiner: mk(examinerUrl),
   oblivion: mk(oblivionUrl),
+  moth: mk(mothUrl),
+  grub: mk(grubUrl),
+  inquisitor: mk(inquisitorUrl),
+  tide: mk(tideUrl),
+  lethe: mk(letheUrl),
   arena: mk(arenaUrl),
 };
 

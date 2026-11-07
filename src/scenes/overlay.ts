@@ -2,15 +2,16 @@ import { g, roundRect, VH, VW, wrapText } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, topicColor, withAlpha } from '../gfx/theme';
 import { action, drawCard, squeeze, text } from '../gfx/ui';
 import { consumeWheel, hover, onClick } from '../input';
-import { BAL } from '../core/data';
-import { EFFS, EFF_KEYS, effSummary } from '../core/effects';
+import { BAL, EFFS, EFF_KEYS, effSummary } from '../core/model';
+import { clamp, G } from '../core/infra';
+import { BANK, bankQuestionCount, bankTopics, isReview, memOf, memRatio } from '../core/library';
+import { cardKind, defOf, statOf } from '../core/cards';
+import { answer, cancelPanel, quickPlay } from '../core/combat';
 import {
-  G, answer, cancelPanel, chooseEventOption, defOf, dismissFeedback, forgetCard,
-  isReview, memRatio, memOf, openCardPick, quickPlay, restHeal, skipPower, skipReward, statOf, takeCard,
-  takePower, upgradeCard,
-} from '../core/game';
-import { clamp } from '../core/util';
-import type { CardInst } from '../core/types';
+  chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal,
+  skipPower, skipReward, takeCard, takePower, upgradeCard,
+} from '../core/journey';
+import type { CardInst, Question, QView } from '../core/model';
 import { drawReport } from './report';
 import { requestPackFile, pastePack } from './packio';
 
@@ -18,6 +19,22 @@ import { requestPackFile, pastePack } from './packio';
 
 function dim(a: number) {
   g.fillStyle = `rgba(3,4,8,${a})`;
+  g.fillRect(0, 0, VW, VH);
+}
+
+/**
+ * 只有答题面板用这层薄遮罩。
+ *
+ * 结算、牌组、事件这些是要玩家专注读一屏内容的，背景透出来只会显乱；
+ * 但答题的时候敌人还在对面，把它抹成纯黑等于"换了个页面做题"，
+ * 玩家会忘记自己正在跟谁打。所以这一屏留一条能看见战场的缝。
+ */
+function dimQuestion() {
+  const lg = g.createLinearGradient(0, 0, 0, VH);
+  lg.addColorStop(0, 'rgba(3,4,8,.5)');
+  lg.addColorStop(0.55, 'rgba(3,4,8,.54)');
+  lg.addColorStop(1, 'rgba(3,4,8,.66)');
+  g.fillStyle = lg;
   g.fillRect(0, 0, VW, VH);
 }
 
@@ -39,6 +56,21 @@ function box(x: number, y: number, w: number, h: number, glow: string = C.line) 
   roundRect(x + 1, y + 1, w - 2, 2.4, 16);
   g.fillStyle = 'rgba(255,255,255,.07)';
   g.fill();
+
+  // 顶部一道主题色条：弹层和背景之间给一条明确的边界，也顺手给这个面板定调。
+  // 渐隐两端，不会在圆角外露出方角。
+  g.save();
+  roundRect(x, y, w, h, 18);
+  g.clip();
+  g.globalAlpha = 0.8;
+  const tg = g.createLinearGradient(x, 0, x + w, 0);
+  tg.addColorStop(0, 'rgba(255,255,255,0)');
+  tg.addColorStop(0.18, glow);
+  tg.addColorStop(0.82, glow);
+  tg.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = tg;
+  g.fillRect(x, y, w, 3.5);
+  g.restore();
 
   // 关闭
   const cx = x + w - 34;
@@ -72,7 +104,7 @@ function scrollArea(x: number, y: number, w: number, h: number, contentH: number
 export function drawOverlay(t: number) {
   const p = G.panel;
   switch (p.k) {
-    case 'question': return drawQuestion(p.idx, p.qi);
+    case 'question': return drawQuestion(p.idx, p.q, p.view);
     case 'feedback': return drawFeedback();
     case 'reward': return drawReward();
     case 'power': return drawPowerPick();
@@ -94,52 +126,68 @@ export function drawOverlay(t: number) {
 const QX = 76;
 const QW = 892;
 
-function drawQuestion(idx: number, qi: number) {
+function drawQuestion(idx: number, q: Question, view: QView) {
   const ent = G.hand[idx];
   if (!ent) return;
   const card = defOf(ent);
-  const q = card.qs[qi];
-  if (!q) return;
+  // 题面是点开那一刻从题库抽出的快照，选项顺序来自本次打乱的视图 ——
+  // 反馈面板读的是同一份。卡面本身（card）里没有题。
+  const options = view.options;
 
   const x = QX;
   const w = QW;
   const col = C.blue;
 
-  // 先量后画：面板高度跟着题目走，不留空白也不会顶出屏幕
-  g.font = font(23, 600, FONT_UI);
+  // 先量后画：面板高度跟着题目走，不留空白也不会顶出屏幕。
+  // 题干是这一屏的主视觉，字号比标题更大，所以量行也得用同一个字号。
+  g.font = font(26, 700, FONT_UI);
   const lines = wrapText(q.q, w - 68);
+  const lineH = 36;
   const headH = 132;
   const gap = 12;
-  const n = q.options.length;
-  const fixedH = headH + lines.length * 34 + 24 + 76;
+  const n = options.length;
+  const fixedH = headH + lines.length * lineH + 24 + 76;
   const oh = clamp(Math.floor((VH - 96 - fixedH) / n) - gap, 54, 70);
-  const h = headH + lines.length * 34 + 24 + n * (oh + gap) + 76;
+  const h = headH + lines.length * lineH + 24 + n * (oh + gap) + 76;
   const y = Math.max(48, (VH - h) / 2);
 
-  dim(0.62);
+  dimQuestion();
   box(x, y, w, h, withAlpha(col, 0.5));
 
-  // 标题 = 知识点名，和卡面上写的是同一个名字：点了哪张牌，这里就该是那张牌
-  text(card.name, x + 34, y + 48, { size: 26, weight: 700, family: FONT_TITLE, color: C.ink });
-  text(card.topic, x + 34, y + 74, { size: 13, color: topicColor(card.topic), weight: 600 });
+  // 标题 = 牌名（杀戮尖塔式游戏名，如「折半之刃」）。牌名不是知识点，摆出来不泄题，
+  // 还能让玩家把「这手牌」和「这道题」对上号。副标题交代主题与随机抽题的规则。
+  text(card.name, x + 34, y + 48, { size: 22, weight: 700, family: FONT_TITLE, color: C.ink });
+  text(`${card.topic} · 从题库随机抽一题`, x + 34, y + 74, {
+    size: 13, color: topicColor(card.topic), weight: 600,
+  });
 
   const st = statOf(ent);
   const eff = EFFS[card.eff] ?? EFFS.strike;
   const sumW = 300;
   text('答对就拿到的效果', x + w - 84 - sumW, y + 50, { size: 12, color: C.dim, align: 'left' });
-  text(effSummary(card.eff, st.atk, st.blk), x + w - 84 - sumW, y + 74, {
+  text(effSummary(card.eff, st.atk, st.blk, card.mods), x + w - 84 - sumW, y + 74, {
     size: 13, color: eff.color, weight: 700, align: 'left',
   });
 
-  // 题面
+  // 题面：卡面知识点名已经撤掉，这里就是整个面板的主标题 —— 左沿一根亮条把它托住
   const qy = y + headH;
-  g.font = font(23, 600, FONT_UI);
+  roundRect(x + 24, qy - 8, 3, lines.length * lineH - 10, 2);
+  g.fillStyle = withAlpha(col, 0.9);
+  g.fill();
+  g.font = font(26, 700, FONT_UI);
   g.fillStyle = C.ink;
-  lines.forEach((ln, i) => g.fillText(ln, x + 34, qy + i * 34));
+  lines.forEach((ln, i) => g.fillText(ln, x + 34, qy + i * lineH));
 
   // 选项
-  const oy = qy + lines.length * 34 + 24;
-  q.options.forEach((o, i) => {
+  const oy = qy + lines.length * lineH + 24;
+  // "问"和"选"之间断开：一条细线就够，别让题干和四个选项糊成一整块文字
+  g.beginPath();
+  g.moveTo(x + 34, oy - 12);
+  g.lineTo(x + w - 34, oy - 12);
+  g.strokeStyle = withAlpha(col, 0.2);
+  g.lineWidth = 1;
+  g.stroke();
+  options.forEach((o, i) => {
     const by = oy + i * (oh + gap);
     const hv = hover(x + 34, by, w - 68, oh);
     roundRect(x + 34, by, w - 68, oh, 10);
@@ -148,6 +196,12 @@ function drawQuestion(idx: number, qi: number) {
     g.strokeStyle = hv ? withAlpha(col, 0.8) : C.line;
     g.lineWidth = hv ? 1.8 : 1.2;
     g.stroke();
+    // 悬停时左沿一根亮条：四个选项长得一样，手指落到哪一个要一眼看得出来
+    if (hv) {
+      roundRect(x + 34, by + 8, 3, oh - 16, 2);
+      g.fillStyle = col;
+      g.fill();
+    }
 
     g.beginPath();
     g.arc(x + 68, by + oh / 2, 17, 0, Math.PI * 2);
@@ -320,7 +374,7 @@ function drawReward() {
     const px = cx0 + i * (cw + gap);
     const hv = hover(px, cy, cw, ch);
     const lift = hv ? -10 : 0;
-    drawCard(px, cy + lift, cw, ch, c, c.atk, c.blk, { glow: hv, mem: memRatio(c.id) });
+    drawCard(px, cy + lift, cw, ch, c, c.atk, c.blk, { glow: hv, mem: memRatio(c.id), sub: c.kp });
     const m = memOf(c.id);
     const mast = m.reps ? `掌握 ${Math.round(memRatio(c.id) * 100)}%` : '还没答过';
     text(mast, px + cw / 2, cy + ch + 22, { size: 13, align: 'center', color: hv ? C.gold : C.dim });
@@ -438,7 +492,7 @@ function drawCardPick(mode: 'up' | 'rm') {
   const items = G.deck
     .map((e, i) => ({ e, i, d: defOf(e) }))
     // 增益牌没有数值可精炼 —— 它要么在，要么不在。所以精炼列表里不出现它（移除列表里保留）
-    .filter((o) => mode === 'rm' || !o.d.power)
+    .filter((o) => mode === 'rm' || cardKind(o.d) !== 'power')
     .sort((a, b) => a.d.topic.localeCompare(b.d.topic) || statOf(a.e).atk - statOf(b.e).atk);
 
   // 尺寸是按"开局 10 张刚好两排、不用滚"反推的
@@ -461,7 +515,8 @@ function drawCardPick(mode: 'up' | 'rm') {
     const hv = hover(px, py, cw, ch);
     const st = statOf(o.e);
     drawCard(px, py, cw, ch, o.d, st.atk, st.blk, {
-      up: !!o.e.up, glow: hv, mem: o.d.power ? undefined : memRatio(o.e.id),
+      up: !!o.e.up, glow: hv, mem: cardKind(o.d) === 'power' ? undefined : memRatio(o.e.id),
+      sub: o.d.kp,
     });
     onClick(px, py, cw, ch, () => (mode === 'up' ? upgradeCard(o.i) : forgetCard(o.i)));
   });
@@ -551,7 +606,7 @@ function drawGallery(title: string, list: CardInst[]) {
     const d = defOf(e);
     const st = statOf(e);
     drawCard(px, py, cw, ch, d, st.atk, st.blk, {
-      up: !!e.up, mem: d.power ? undefined : memRatio(e.id),
+      up: !!e.up, mem: cardKind(d) === 'power' ? undefined : memRatio(e.id), sub: d.kp,
     });
   });
   area.restore();
@@ -576,13 +631,13 @@ function drawHelp() {
   const effTable = EFF_KEYS.map((k) => `${EFFS[k].name}·${EFFS[k].tagline}`).join('　');
   const blocks: Array<[string, string[]]> = [
     ['卡面不说题，点开才出题', [
-      '牌上只有知识点名、效果、消耗和记忆度。点一下牌，题和四个选项才出现。',
-      '每张牌背后是一个题库：同一个知识点会被从不同角度问几次，本场问过的不再问。',
+      '每张牌有自己的牌名和效果（杀戮尖塔那套牌面读法），但题不印在卡面上 —— 点一下牌，题和选项才出现。',
+      '牌名背后才是知识点，它只在牌组/奖励列表里作小字副标题；题库主题随便写，卡面是内置的。',
     ]],
     ['六种效果，不是六种数值', [
       effTable,
       '同样的攻挡基数，换个效果就是另一种打法：破防、堆挡、回血、分段、接牌。',
-      '效果由知识包决定，一张卡固定一种，精炼只会加数字，不会改效果。',
+      '效果写在内置卡牌库里，一张卡固定一种；导入题库改不了卡面，精炼只会加数字。',
     ]],
     ['答对生效，答错作废', [
       '答对：卡面效果立刻结算，并且这个卡种本场解锁 —— 之后它的每一张副本都能免答直接打出。',
@@ -652,7 +707,7 @@ function drawHelp() {
   text('快捷键：Esc 取消 · 空格继续 · 数字键选选项', x + 48, y + h - 30, { size: 12, color: C.faint });
 }
 
-/* ── 知识包 ───────────────────────────────────────────────── */
+/* ── 题库 ─────────────────────────────────────────────────── */
 
 function drawPack() {
   const p = G.panel;
@@ -664,16 +719,17 @@ function drawPack() {
   const y = 190;
   box(x, y, w, h, withAlpha(C.cyan, 0.4));
 
-  heading('载入自己的知识包', x + 44, y + 66, 'Markdown 或 JSON 都行，格式见 packs/algorithms.md。');
+  heading('载入自己的题库', x + 44, y + 66,
+    '主题不限，只校验格式。只换题目，卡池恒定；md / JSON 都行，样例见 packs/algorithms.md。');
 
   const lines = [
-    '### 一个问题  →  一张卡',
-    '@ 知识点名（可选，印在卡面上；不写就从题干截）',
-    'A) 选项 / B) 选项 …',
-    '= B  →  正确答案',
-    '+ 解析（可选）',
-    '% 攻 挡（可选，默认 6 5）',
-    '? 再加一道题（同一张卡的题库，最多 5 道）',
+    '## 主题                → 可选，名字随便写，不写就进「未分类」',
+    '### 题干  /  ? 题干    → 一道题',
+    'A) 选项 / B) 选项 …    → 2–4 个',
+    '= B                   → 正确答案字母（不能越过选项数）',
+    '+ 解析（可选，答完会显示）',
+    '点开一张牌 → 优先抽同名题池，没题就抽全部题目',
+    '卡面（83 张 / 攻挡 / 效果）内置，md 改不了',
   ];
   roundRect(x + 44, y + 120, w - 88, 216, 10);
   g.fillStyle = 'rgba(255,255,255,.035)';
@@ -688,9 +744,13 @@ function drawPack() {
   if (p.msg) {
     g.font = font(14, 500, FONT_UI);
     g.fillStyle = p.ok ? C.green : C.red;
-    wrapText(p.msg, w - 88).forEach((ln, i) => g.fillText(ln, x + 44, y + 428 + i * 21));
+    // 底部只留 4 行，超出截断：格式诊断可能很长，别让它顶出面板
+    wrapText(p.msg, w - 88).slice(0, 4).forEach((ln, i) => g.fillText(ln, x + 44, y + 428 + i * 21));
   } else {
-    text('载入后当前的复习进度会保留 —— 它按卡片 id 记录。', x + 44, y + 430, { size: 13, color: C.faint });
+    text(`当前题库：${BANK.name} · ${bankQuestionCount()} 道题 / ${bankTopics().length} 个题池`,
+      x + 44, y + 430, { size: 13, color: C.dim });
+    text('只校验格式：题干、2–4 个选项、= 答案字母；写错会列出第几行。复习进度按内置卡片 id 保存，不会丢。',
+      x + 44, y + 454, { size: 13, color: C.faint });
   }
 }
 

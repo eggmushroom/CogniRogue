@@ -3,9 +3,13 @@ import { C, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { bar, panel, text } from '../gfx/ui';
 import { onClick, hover } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
-import { NODE_META } from '../core/data';
-import { G, MAP_ROWS, availableNodes, deckPowers, enterNode, topics } from '../core/game';
-import type { MapNode } from '../core/types';
+import { NODE_META } from '../core/model';
+import { G } from '../core/infra';
+import { topics } from '../core/library';
+import { deckPowers } from '../core/cards';
+import { MAP_ROWS, availableNodes } from '../core/map';
+import { enterNode } from '../core/journey';
+import type { MapNode } from '../core/model';
 
 
 const TOP_Y = 132;
@@ -35,12 +39,27 @@ export function drawMap(t: number) {
       for (const j of nd.next) {
         const b = { x: xOf(G.map[r + 1][j].col), y: yOf(r + 1) };
         const live = walked || avail.has(`${r + 1}:${j}`);
+        g.save();
         g.beginPath();
         g.moveTo(a.x, a.y);
         g.bezierCurveTo(a.x, a.y - 46, b.x, b.y + 46, b.x, b.y);
-        g.strokeStyle = live ? withAlpha(C.gold, 0.55) : 'rgba(120,138,178,.3)';
-        g.lineWidth = live ? 2.4 : 1.6;
+        if (live) {
+          // 走过的、马上能走的路是一道光：中段最亮，两端收进节点里。
+          // 纯色细线在暗背景上分不出"哪条是我选的"，渐变 + 一点辉光就分得出。
+          const lg = g.createLinearGradient(a.x, a.y, b.x, b.y);
+          lg.addColorStop(0, withAlpha(C.gold, 0.2));
+          lg.addColorStop(0.55, withAlpha(C.gold, 0.82));
+          lg.addColorStop(1, withAlpha(C.gold, 0.34));
+          g.strokeStyle = lg;
+          g.lineWidth = 2.6;
+          g.shadowColor = withAlpha(C.gold, 0.4);
+          g.shadowBlur = 9;
+        } else {
+          g.strokeStyle = 'rgba(132,150,190,.34)';
+          g.lineWidth = 1.6;
+        }
         g.stroke();
+        g.restore();
       }
     }
   }
@@ -99,6 +118,13 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   g.fill();
   g.strokeStyle = avail || seen ? withAlpha(meta.color, 0.85) : withAlpha(meta.color, 0.28);
   g.lineWidth = avail ? 2.4 : 1.6;
+  g.stroke();
+
+  // 内圈细环：底盘从"一个圆"变成"一枚徽章"，图标才不像直接贴在背景上
+  g.beginPath();
+  g.arc(x, y, r - 5, 0, Math.PI * 2);
+  g.strokeStyle = withAlpha(meta.color, avail || seen ? 0.3 : 0.14);
+  g.lineWidth = 1;
   g.stroke();
 
   const col = avail || seen ? meta.color : withAlpha(meta.color, 0.55);
@@ -219,6 +245,9 @@ function header() {
   text('记忆的档案馆', 40, 52, { size: 34, weight: 700, family: FONT_TITLE, color: C.ink });
   const floor = G.pos ? G.pos.r + 1 : 1;
   text(`第 ${floor} / ${MAP_ROWS} 层`, 40, 86, { size: 15, color: C.gold, weight: 600 });
+  // 一道短金线把标题和层级收在一起，和地图里"走过的路"同一个颜色
+  g.fillStyle = withAlpha(C.gold, 0.55);
+  g.fillRect(40, 98, 46, 2);
 }
 
 function leftPanel() {
@@ -257,6 +286,18 @@ function leftPanel() {
   text('增益牌', x + 20, y + 150, { size: 13, color: C.dim, weight: 600 });
   if (!powers.length) {
     text('还没有。精英会掉，事件里也有。', x + 20, y + 176, { size: 12, color: C.faint });
+    // 三个虚线空槽：这一块原本是大片空白，空槽让它读成"还没填的卡位"，而不是没画完
+    for (let i = 0; i < 3; i++) {
+      g.save();
+      roundRect(x + 20 + i * 48, y + 194, 40, 52, 6);
+      g.fillStyle = 'rgba(255,255,255,.018)';
+      g.fill();
+      g.setLineDash([3, 4]);
+      g.strokeStyle = C.line;
+      g.lineWidth = 1;
+      g.stroke();
+      g.restore();
+    }
   } else {
     // 面板高度装得下 5 行；再多就折成一句，别压到下面的图例上
     powers.slice(0, 5).forEach((p, i) => {
@@ -267,6 +308,46 @@ function leftPanel() {
     if (powers.length > 5) {
       text(`等 ${powers.length} 张`, x + 24, y + 168 + 5 * 26 + 8, { size: 12, color: C.faint });
     }
+  }
+
+  // 路径进度：把"走到第几层了"做成一条看得见的轨道，
+  // 顺手填上增益牌和图例之间那两百多像素的空白。
+  const floorNow = G.pos ? G.pos.r + 1 : 1;
+  const py = y + 268;
+  text('路径', x + 20, py, { size: 13, color: C.dim, weight: 600 });
+  text(`${Math.min(MAP_ROWS, floorNow)} / ${MAP_ROWS}`, x + w - 20, py, {
+    size: 12, color: C.gold, align: 'right', weight: 700,
+  });
+  const tx = x + 24;
+  const tw = w - 48;
+  const step = tw / (MAP_ROWS - 1);
+  const ty = py + 30;
+  g.beginPath();
+  g.moveTo(tx, ty);
+  g.lineTo(tx + tw, ty);
+  g.strokeStyle = C.line;
+  g.lineWidth = 2;
+  g.stroke();
+  for (let i = 0; i < MAP_ROWS; i++) {
+    const cx = tx + i * step;
+    const done = i < floorNow - 1;
+    const now = i === floorNow - 1;
+    if (now) {
+      const gl = g.createRadialGradient(cx, ty, 1, cx, ty, 16);
+      gl.addColorStop(0, withAlpha(C.gold, 0.45));
+      gl.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = gl;
+      g.beginPath();
+      g.arc(cx, ty, 16, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.beginPath();
+    g.arc(cx, ty, now ? 6 : 4, 0, Math.PI * 2);
+    g.fillStyle = done ? withAlpha(C.gold, 0.8) : now ? C.gold : C.panel;
+    g.fill();
+    g.strokeStyle = done || now ? C.gold : C.lineHi;
+    g.lineWidth = 1.4;
+    g.stroke();
   }
 
   // 图例

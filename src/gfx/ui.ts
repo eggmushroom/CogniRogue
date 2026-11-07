@@ -1,9 +1,10 @@
 import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
 import { C, font, FONT_UI, FONT_TITLE, topicColor, withAlpha } from './theme';
-import { EFFS, resolveEff } from '../core/effects';
-import { BAL, POWER_BY_ID } from '../core/data';
-import type { CardDef, PowerDef } from '../core/types';
+import { BAL, EFFS, POWER_BY_ID, resolveEff } from '../core/model';
+import { cardKind } from '../core/cards';
+import type { CardDef, PowerDef } from '../core/model';
+import { drawArtIcon } from './art/icons';
 
 
 export function text(
@@ -61,6 +62,19 @@ export function panel(
     g.lineWidth = 1.5;
     g.stroke();
   }
+
+  // 顶面一道内高光：面板像一块浮起来的玻璃，不是贴在背景上的色块。
+  // 裁到圆角里，免得高光从四角漏出去。
+  g.save();
+  roundRect(x, y, w, h, opts.r ?? 14);
+  g.clip();
+  const sheenH = Math.min(70, h * 0.24);
+  const sheen = g.createLinearGradient(0, y, 0, y + sheenH);
+  sheen.addColorStop(0, 'rgba(255,255,255,.07)');
+  sheen.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = sheen;
+  g.fillRect(x, y, w, sheenH);
+  g.restore();
   g.restore();
 }
 
@@ -91,6 +105,11 @@ export function button(
   g.strokeStyle = dis ? C.faint : edge;
   g.lineWidth = 1.5;
   g.stroke();
+  if (hv) {
+    // 悬停时上沿一道细光，比只加底色更容易在暗背景上被看见
+    g.fillStyle = 'rgba(255,255,255,.13)';
+    g.fillRect(x + 12, y + 2, w - 24, 1.5);
+  }
   g.restore();
 
   const cy = opts.sub ? y + h / 2 - 9 : y + h / 2;
@@ -117,7 +136,7 @@ export function action(
 
 export function bar(
   x: number, y: number, w: number, h: number, pct: number,
-  color: string, opts: { bg?: string; ghost?: number; r?: number; label?: string } = {},
+  color: string, opts: { bg?: string; ghost?: number; r?: number; label?: string; ticks?: number } = {},
 ) {
   const r = opts.r ?? h / 2;
   roundRect(x, y, w, h, r);
@@ -141,6 +160,20 @@ export function bar(
     g.fillRect(x, y, w * p, h);
     g.fillStyle = 'rgba(255,255,255,.18)';
     g.fillRect(x, y, w * p, h * 0.4);
+    g.restore();
+  }
+  // 刻度：把长条切成段，血量过了一半没过一半一眼可辨
+  if (opts.ticks && opts.ticks > 1) {
+    g.save();
+    g.strokeStyle = 'rgba(0,0,0,.42)';
+    g.lineWidth = 1.4;
+    for (let i = 1; i < opts.ticks; i++) {
+      const tx = x + (w * i) / opts.ticks;
+      g.beginPath();
+      g.moveTo(tx, y + 2.5);
+      g.lineTo(tx, y + h - 2.5);
+      g.stroke();
+    }
     g.restore();
   }
   roundRect(x, y, w, h, r);
@@ -174,6 +207,12 @@ export interface CardOpts {
    */
   state?: 'locked' | 'open' | 'spent' | 'forgotten';
   /**
+   * 知识点短名副标题（如「二分查找的代价」）。只给牌组 / 奖励 / 精炼列表用：
+   * 那里需要知道这张牌背后是哪个知识点。战斗手牌不传 —— 牌名就够了，
+   * 题目是点开之后才付的代价。
+   */
+  sub?: string;
+  /**
    * 学习期 / 复习期。它决定"答错这件事有多贵"，所以必须画在卡面上 ——
    * 玩家在点开这张牌之前就该知道自己是"还能重来"还是"错了就废"。
    */
@@ -188,12 +227,16 @@ export function drawCard(
   x: number, y: number, w: number, h: number,
   card: CardDef, atk: number, blk: number, opts: CardOpts = {},
 ) {
+  // 身份只问一次：知识卡 / 增益牌 / 杂念。下面所有分支都读这个 kind，
+  // 不再各自去翻 card.junk、card.power —— 加第四种牌时只改 cards/kinds.ts。
+  const kind = cardKind(card);
+
   // 增益牌是另一个物种：没有题、没有伤害，打出去就一直在。卡面必须一眼分得开，
   // 否则手牌里混着一张能力牌，玩家会以为它也要答题。
-  const pc = card.power ? POWER_BY_ID[card.power] : null;
+  const pc = kind === 'power' && card.power ? POWER_BY_ID[card.power] : null;
   if (pc) { drawPowerCard(x, y, w, h, pc, opts); return; }
 
-  const tc = card.junk ? C.faint : topicColor(card.topic);
+  const tc = kind === 'junk' ? C.faint : topicColor(card.topic);
   const r = 12;
 
   g.save();
@@ -209,12 +252,12 @@ export function drawCard(
   g.fill();
   g.restore();
 
-  // 卡面
+  // 卡面：主题色从顶部浸下来，越往下越沉到近黑 —— 牌才有厚度，不是一张平贴纸
   roundRect(x, y, w, h, r);
   const grd = g.createLinearGradient(x, y, x, y + h);
-  grd.addColorStop(0, card.junk ? '#1a1c22' : withAlpha(tc, 0.1));
-  grd.addColorStop(0.45, '#0e1119');
-  grd.addColorStop(1, '#0a0c13');
+  grd.addColorStop(0, kind === 'junk' ? '#1a1c22' : withAlpha(tc, 0.17));
+  grd.addColorStop(0.45, '#101420');
+  grd.addColorStop(1, '#0b0e16');
   g.fillStyle = grd;
   g.fill();
 
@@ -231,16 +274,24 @@ export function drawCard(
   g.stroke();
   g.setLineDash([]);
 
-  // 顶部色条
+  // 顶部色条：一条实色 + 一层往下散的辉光。
+  // 原来只有 3px 细线，手牌摊开时主题色几乎读不出来；加一层浸染后，
+  // 扫一眼就能靠颜色分组，不必逐张去读左上角那两个字。
   g.save();
   roundRect(x, y, w, h, r);
   g.clip();
+  const washH = 34 * (w / 220);
+  const wash = g.createLinearGradient(0, y, 0, y + washH);
+  wash.addColorStop(0, withAlpha(tc, 0.14));
+  wash.addColorStop(1, withAlpha(tc, 0));
+  g.fillStyle = wash;
+  g.fillRect(x, y, w, washH);
   const bar1 = g.createLinearGradient(x, 0, x + w, 0);
-  bar1.addColorStop(0, withAlpha(tc, 0));
-  bar1.addColorStop(0.5, withAlpha(tc, 0.95));
-  bar1.addColorStop(1, withAlpha(tc, 0));
+  bar1.addColorStop(0, withAlpha(tc, 0.12));
+  bar1.addColorStop(0.5, withAlpha(tc, 1));
+  bar1.addColorStop(1, withAlpha(tc, 0.12));
   g.fillStyle = bar1;
-  g.fillRect(x, y, w, 3);
+  g.fillRect(x, y, w, 4);
   g.restore();
 
   const pad = w * 0.09;
@@ -248,12 +299,12 @@ export function drawCard(
 
   // 主题
   g.font = font(Math.round(15 * s), 700, FONT_UI);
-  g.fillStyle = card.junk ? C.dim : tc;
+  g.fillStyle = kind === 'junk' ? C.dim : tc;
   g.textAlign = 'left';
-  g.fillText(squeeze(card.junk ? '杂念' : card.topic, w - pad * 2 - 34 * s), x + pad, y + 24 * s);
+  g.fillText(squeeze(kind === 'junk' ? '杂念' : card.topic, w - pad * 2 - 34 * s), x + pad, y + 24 * s);
 
   // 消耗：所有卡都吃 1 点行动力，画在右上角免得每次都要心算
-  if (!card.junk) {
+  if (kind !== 'junk') {
     const cx = x + w - pad - 9 * s;
     const cy = y + 18 * s;
     g.beginPath();
@@ -266,16 +317,18 @@ export function drawCard(
     text('1', cx, cy + 1, { size: Math.round(13 * s), weight: 800, align: 'center', color: C.gold });
   }
 
-  // ── 正文：效果标签 + 卡名 + 效果 ──────────────────────────
+  // ── 正文：牌名 + 效果徽章 + 效果数字 ──────────────────────
   // 卡面上不出现题目。题目是点开这张牌之后才付的代价，提前看到就等于免了那道坎。
+  // 牌名是杀戮尖塔式的游戏名（折半之刃 / 三度缔约），不是知识点名 —— 大字印在手牌上，
+  // 知识点以 `kp` 小字跟着牌组/奖励/精炼列表的牌名走，手牌上不出现。
   const eff = EFFS[card.eff] ?? EFFS.strike;
-  const out = resolveEff(card.eff, atk, blk, 1);
+  const out = resolveEff(card.eff, atk, blk, 1, card.mods);
   const per = out.hits[0];
   const lh = 25 * s;
   const eh = 21 * s;
 
   // 效果徽章：同一副牌里"洞察/巩固/内化"必须一眼分得开，靠的就是这一小块颜色
-  if (!card.junk) {
+  if (kind !== 'junk') {
     g.font = font(Math.round(11 * s), 700, FONT_UI);
     const lw = g.measureText(eff.name).width + 24 * s;
     const ly = y + 36 * s;
@@ -295,37 +348,44 @@ export function drawCard(
     });
   }
 
+  // 牌名正文：最多两行，超出截断（牌名都控制在七个字以内，两行只是兜底）
   g.font = font(Math.round(21 * s), 700, FONT_UI);
-  const nameLines = card.junk ? ['杂念'] : wrapText(card.name, w - pad * 2).slice(0, 2);
+  const nameLines = kind === 'junk' ? ['杂念'] : wrapText(card.name, w - pad * 2).slice(0, 2);
+  const subH = opts.sub ? 17 * s : 0;
   // 正文在「徽章下沿」和「记忆条上沿」之间居中：两种卡高（手牌 238 / 列表 252）都不会显得头重脚轻
-  const bodyH = nameLines.length * lh + 12 * s + 2 * eh;
+  const bodyH = nameLines.length * lh + subH + 12 * s + 2 * eh;
   const top = y + 58 * s;
   const bot = y + h - 88 * s;
   const by0 = top + Math.max(0, (bot - top - bodyH) / 2) - 6 * s; // 6 是基线补偿
 
-  g.fillStyle = card.junk ? C.dim : C.ink;
+  g.fillStyle = kind === 'junk' ? C.dim : C.ink;
   g.textAlign = 'left';
   nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
+  if (opts.sub) {
+    text(squeeze(opts.sub, w - pad * 2), x + pad, by0 + nameLines.length * lh + 2 * s, {
+      size: Math.round(11 * s), color: C.dim, weight: 500,
+    });
+  }
 
   // 效果：数字单独放大上色，和卡牌游戏里"造成 6 点伤害"的读法一致
-  const ey = by0 + nameLines.length * lh + 9 * s;
+  const ey = by0 + nameLines.length * lh + subH + 9 * s;
   const effLine = (pre: string, num: number, suf: string, yy: number, col: string) => {
     g.textAlign = 'left';
     g.font = font(Math.round(14 * s), 400, FONT_UI);
-    g.fillStyle = card.junk ? C.faint : C.ink2;
+    g.fillStyle = kind === 'junk' ? C.faint : C.ink2;
     g.fillText(pre, x + pad, yy);
     const w1 = g.measureText(pre).width;
     if (num > 0) {
       g.font = font(Math.round(17 * s), 800, FONT_UI);
-      g.fillStyle = card.junk ? C.faint : col;
+      g.fillStyle = kind === 'junk' ? C.faint : col;
       g.fillText(String(num), x + pad + w1, yy);
     }
     const w2 = num > 0 ? g.measureText(String(num)).width : 0;
     g.font = font(Math.round(14 * s), 400, FONT_UI);
-    g.fillStyle = card.junk ? C.faint : C.ink2;
+    g.fillStyle = kind === 'junk' ? C.faint : C.ink2;
     g.fillText(suf, x + pad + w1 + w2, yy);
   };
-  if (card.junk) {
+  if (kind === 'junk') {
     effLine('无法打出', 0, '', ey, C.faint);
     effLine('回合结束自动散去', 0, '', ey + eh, C.faint);
   } else {
@@ -339,22 +399,34 @@ export function drawCard(
     else effLine('分两段结算', 0, '', ey + eh, eff.color);
   }
 
-  // 主题水印：卡面下半部空白多，用主题首字压一个大字，既填了空又给主题一个身份
-  if (!card.junk) {
+  // 效果纹章：按效果原型画一枚小徽记压在右下。六种效果六种形，
+  // 扫手牌时不用读字就能把"串联"和"洞察"分开；杂念是一团乱线。
+  drawArtIcon(
+    kind === 'junk' ? 'junk' : eff.key,
+    x + w - pad - 15 * s, ey + eh * 0.55,
+    (kind === 'junk' ? 25 : 30) * s,
+    kind === 'junk' ? C.faint : eff.color,
+    { alpha: kind === 'junk' ? 0.45 : 0.85 },
+  );
+
+  // 主题水印：卡面下半部空白多，用主题首字压一个大字，既填了空又给主题一个身份。
+  // 原来 alpha 0.035 等于没画；但抬到 0.07 又把牌组画廊糊成一片背景贴图。
+  // 0.05 是刚好能被认出来、又始终待在文字后面的那一档。
+  if (kind !== 'junk') {
     g.save();
-    g.globalAlpha = 0.035;
+    g.globalAlpha = 0.05;
     g.font = `800 ${Math.round(h * 0.52)}px ${FONT_TITLE}`;
     g.fillStyle = tc;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
-    g.fillText(card.topic.slice(0, 1) || '?', x + w * 0.72, y + h * 0.58);
+    g.fillText(card.topic.slice(0, 1) || '?', x + w * 0.74, y + h * 0.6);
     g.restore();
   }
 
   // ── 记忆条：卡面下半部最有信息量的东西 ────────────────────
   // 它回答的是"这张牌我现在有多熟" —— 熟不熟决定的是该不该留着它，而不是该押多大。
   // 手牌底下还要留一行解锁状态，所以记忆条得往上让一格；牌组/奖励没有那一行，就把它压到底。
-  if (!card.junk && opts.mem !== undefined) {
+  if (kind !== 'junk' && opts.mem !== undefined) {
     const my = y + h - (opts.state ? 74 : 44) * s;
     const mw = w - pad * 2;
     const mv = Math.max(0, Math.min(1, opts.mem));
@@ -374,7 +446,20 @@ export function drawCard(
 
   // ── 底部：解锁状态 ────────────────────────────────────────
   // 只有手牌会传状态 —— 牌组和奖励列表关心的是"这张卡是什么"，不是"这一场能不能用"。
-  if (!card.junk && opts.state) {
+  if (kind !== 'junk' && opts.state) {
+    // 底部垫一层向下渐深的底色，把"解锁状态 + 答错代价"从卡面正文里分出来。
+    // 这一行是玩家点牌前唯一能看见的规则，值得单独成一个区块。
+    g.save();
+    roundRect(x, y, w, h, r);
+    g.clip();
+    const footH = 58 * s;
+    const foot = g.createLinearGradient(0, y + h - footH, 0, y + h);
+    foot.addColorStop(0, 'rgba(0,0,0,0)');
+    foot.addColorStop(1, 'rgba(0,0,0,.3)');
+    g.fillStyle = foot;
+    g.fillRect(x, y + h - footH, w, footH);
+    g.restore();
+
     const py = y + h - 34 * s;
     const ly = py - 16 * s;
     g.beginPath();
@@ -562,7 +647,9 @@ export function title(s: string, x: number, y: number, size = 44, color = C.ink)
 /* ── 图标 ───────────────────────────────────────────────────
    emoji 会在不同系统上变成彩色贴纸或方框，UI 里的小图标一律手画。 */
 
-export type IconName = 'attack' | 'shield' | 'junk' | 'buff' | 'check' | 'lock';
+export type IconName =
+  | 'attack' | 'shield' | 'junk' | 'buff' | 'check' | 'lock'
+  | 'heart' | 'flame' | 'cards' | 'discard' | 'turn' | 'floor';
 
 export function icon(name: IconName, cx: number, cy: number, s: number, col: string) {
   g.save();
@@ -593,6 +680,73 @@ export function icon(name: IconName, cx: number, cy: number, s: number, col: str
     g.quadraticCurveTo(cx, cy + s * 0.85, cx - s * 0.52, cy + s * 0.3);
     g.lineTo(cx - s * 0.62, cy - s * 0.42);
     g.closePath();
+    g.stroke();
+    // 中脊：盾的立体感来自这条线，光也从这里读出"防御是有方向的"
+    g.beginPath();
+    g.moveTo(cx, cy - s * 0.7);
+    g.lineTo(cx, cy + s * 0.72);
+    g.stroke();
+  } else if (name === 'heart') {
+    // 实心心：两瓣圆弧收到下尖。生命图标必须实心 —— 描边心在 12px 下读成圆
+    g.beginPath();
+    g.moveTo(cx, cy + s * 0.72);
+    g.bezierCurveTo(cx - s * 1.05, cy - s * 0.05, cx - s * 0.62, cy - s * 0.82, cx, cy - s * 0.28);
+    g.bezierCurveTo(cx + s * 0.62, cy - s * 0.82, cx + s * 1.05, cy - s * 0.05, cx, cy + s * 0.72);
+    g.closePath();
+    g.fill();
+  } else if (name === 'flame') {
+    // 火苗：外焰实心 + 内焰留白，行动力/灯的意象
+    g.beginPath();
+    g.moveTo(cx, cy + s * 0.75);
+    g.bezierCurveTo(cx - s * 0.72, cy + s * 0.45, cx - s * 0.5, cy - s * 0.25, cx + s * 0.02, cy - s * 0.78);
+    g.bezierCurveTo(cx + s * 0.1, cy - s * 0.3, cx + s * 0.3, cy - s * 0.2, cx + s * 0.48, cy + s * 0.05);
+    g.bezierCurveTo(cx + s * 0.68, cy + s * 0.35, cx + s * 0.55, cy + s * 0.62, cx, cy + s * 0.75);
+    g.closePath();
+    g.fill();
+  } else if (name === 'cards') {
+    // 一叠卡：后一张斜垫着，前一张立着 —— 牌堆的"叠"
+    roundRect(cx - s * 0.05, cy - s * 0.62, s * 0.82, s * 1.15, s * 0.12);
+    g.stroke();
+    g.beginPath();
+    g.moveTo(cx - s * 0.32, cy - s * 0.42);
+    g.lineTo(cx - s * 0.5, cy - s * 0.32);
+    g.lineTo(cx - s * 0.28, cy + s * 0.72);
+    g.stroke();
+  } else if (name === 'discard') {
+    // 弃牌：一张卡落进托盘 —— 箭头朝下插进槽里
+    g.beginPath();
+    g.moveTo(cx - s * 0.55, cy + s * 0.05);
+    g.lineTo(cx - s * 0.55, cy + s * 0.6);
+    g.lineTo(cx + s * 0.55, cy + s * 0.6);
+    g.lineTo(cx + s * 0.55, cy + s * 0.05);
+    g.stroke();
+    g.beginPath();
+    g.moveTo(cx, cy - s * 0.72);
+    g.lineTo(cx, cy + s * 0.18);
+    g.moveTo(cx - s * 0.3, cy - s * 0.12);
+    g.lineTo(cx, cy + s * 0.2);
+    g.lineTo(cx + s * 0.3, cy - s * 0.12);
+    g.stroke();
+  } else if (name === 'turn') {
+    // 沙漏：上宽下宽中间收腰，两条横梁压住 —— "这一回合的时间"
+    g.beginPath();
+    g.moveTo(cx - s * 0.5, cy - s * 0.62);
+    g.lineTo(cx + s * 0.5, cy - s * 0.62);
+    g.lineTo(cx + s * 0.08, cy + s * 0.05);
+    g.lineTo(cx + s * 0.5, cy + s * 0.68);
+    g.lineTo(cx - s * 0.5, cy + s * 0.68);
+    g.lineTo(cx - s * 0.08, cy + s * 0.05);
+    g.closePath();
+    g.stroke();
+  } else if (name === 'floor') {
+    // 楼层：三条渐窄的横线叠起来 —— 往下走的层
+    g.beginPath();
+    g.moveTo(cx - s * 0.55, cy - s * 0.42);
+    g.lineTo(cx + s * 0.55, cy - s * 0.42);
+    g.moveTo(cx - s * 0.38, cy + s * 0.02);
+    g.lineTo(cx + s * 0.38, cy + s * 0.02);
+    g.moveTo(cx - s * 0.2, cy + s * 0.46);
+    g.lineTo(cx + s * 0.2, cy + s * 0.46);
     g.stroke();
   } else if (name === 'junk') {
     g.beginPath();

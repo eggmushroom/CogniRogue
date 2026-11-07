@@ -2,7 +2,9 @@ import { g, VH, VW } from '../gfx/canvas';
 import { C, FONT_TITLE, withAlpha } from '../gfx/theme';
 import { action, text } from '../gfx/ui';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
-import { G, PACK, startRun, topics } from '../core/game';
+import { G } from '../core/infra';
+import { BANK, bankQuestionCount, PACK, topics } from '../core/library';
+import { startRun } from '../core/journey';
 
 export function drawTitle(t: number, openHelp: () => void, openPack: () => void) {
   drawBackdrop(t, 0.72);
@@ -36,7 +38,7 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   text('一边打牌，一边把该复习的东西复习掉', cx, 336, {
     size: 21, align: 'center', color: C.ink2, weight: 500,
   });
-  text('牌上只写知识点 · 点开才出题 · 你押的是自己的把握', cx, 372, {
+  text('每张牌有自己的名字和效果 · 题不印在卡面上 · 点开才出题', cx, 372, {
     size: 15, align: 'center', color: C.dim,
   });
 
@@ -49,13 +51,13 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   by += gap;
   action(bx, by, bw, 56, '这游戏怎么玩', openHelp);
   by += 70;
-  action(bx, by, bw, 56, '载入自己的知识包', openPack);
+  action(bx, by, bw, 56, '载入自己的题库', openPack);
 
-  // 当前知识包
+  // 卡池是内置的、题库是可换的，两行分开写才不会让人以为导入会换牌
   const py = 760;
-  text(PACK.name, cx, py, { size: 16, align: 'center', color: C.gold, weight: 700 });
+  text(BANK.name, cx, py, { size: 16, align: 'center', color: C.gold, weight: 700 });
   text(
-    `${PACK.cards.length} 张卡 · ${topics().length} 个主题　|　进度自动存在本地`,
+    `内置 ${PACK.cards.length} 张卡 · ${topics().length} 个主题 · 题库 ${bankQuestionCount()} 道题　|　进度自动存在本地`,
     cx, py + 26, { size: 13, align: 'center', color: C.dim },
   );
 

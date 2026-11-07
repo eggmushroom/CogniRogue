@@ -1,9 +1,9 @@
 import { g, roundRect, VH, VW } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { action, bar, panel, text, wrap } from '../gfx/ui';
-import { BAL, POWER_BY_ID } from '../core/data';
-import { backToTitle, restart } from '../core/game';
-import type { ReportData } from '../core/game';
+import { BAL, POWER_BY_ID } from '../core/model';
+import { backToTitle, restart } from '../core/journey';
+import type { ReportData } from '../core/model';
 
 export function drawReport(d: ReportData) {
   g.fillStyle = 'rgba(3,4,8,.86)';
@@ -30,7 +30,7 @@ export function drawReport(d: ReportData) {
     [`${total ? Math.round((d.runOk / total) * 100) : 0}%`, '正确率'],
     [`${d.floors}`, '走过节点'],
     [`${d.deckSize}`, '牌组张数'],
-    [`${Math.round(d.mastery * 100)}%`, '知识包掌握度'],
+    [`${Math.round(d.mastery * 100)}%`, '卡牌掌握度'],
   ];
   const sw = (w - 96) / stats.length;
   stats.forEach(([v, k], i) => {

@@ -1,24 +1,26 @@
 import './style.css';
 import { BUILTIN_MD } from './core/builtin';
-import { EFFS } from './core/effects';
-import { POWER_BY_ID } from './core/data';
+import { EFFS, POWER_BY_ID } from './core/model';
 import { beginFrame, g, initCanvas, toLogic, toScreen, VH, VW } from './gfx/canvas';
 import { loadArt } from './gfx/assets';
 import * as FX from './gfx/fx';
 import { bindInput, beginInput, endInput, hotRects, keyHandler, setInputLock } from './input';
 import { C } from './gfx/theme';
 import { text } from './gfx/ui';
-import {
-  G, EVENTS, PACK, answer, askCard, loadPack, cancelPanel, defOf, dismissFeedback, endRun,
-  endTurn, enterNode, memOf, onFx, playPower, powerCardOf, startRun,
-} from './core/game';
-import type { Move } from './core/types';
+import { G, onFx } from './core/infra';
+import { BANK, loadQuestionBank, memOf, PACK } from './core/library';
+import { powerCardOf } from './core/cards';
+import { FOES } from './core/model';
+import { answer, askCard, cancelPanel, endTurn, playPower } from './core/combat';
+import { EVENTS, dismissFeedback, endRun, enterNode, startRun } from './core/journey';
+import type { Move } from './core/model';
 import {
   drawBattle, DISCARD_TO, ENEMY, fxCount, HERO, heroHand, resetBattleView, syncBattle,
 } from './scenes/battle';
 import { drawMap } from './scenes/map';
 import { drawOverlay } from './scenes/overlay';
 import { drawTitle } from './scenes/title';
+import { drawAtlas } from './scenes/atlas';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game');
 if (!canvas) throw new Error('#game 不存在');
@@ -122,6 +124,7 @@ keyHandler((k) => {
   const p = G.panel;
   if (panelHold > 0 || enemyHold > 0) return;
   if (k === 'escape') {
+    if (G.screen === 'atlas') { G.screen = 'title'; return; }
     if (p.k === 'question' || p.k === 'deck' || p.k === 'pile' || p.k === 'help' || p.k === 'pack') cancelPanel();
     return;
   }
@@ -160,7 +163,9 @@ function frame(now: number) {
   g.save();
   g.translate(sh.x, sh.y);
 
-  if (G.screen === 'title') {
+  if (G.screen === 'atlas') {
+    drawAtlas(t);
+  } else if (G.screen === 'title') {
     drawTitle(t, () => { G.panel = { k: 'help' }; }, () => { G.panel = { k: 'pack', msg: '', ok: true }; });
   } else if (G.screen === 'map') {
     drawMap(t);
@@ -182,7 +187,8 @@ function frame(now: number) {
 }
 
 function boot() {
-  loadPack(BUILTIN_MD);
+  // 卡面在 cards/catalog.ts 里，启动时只把内置题库灌进 BANK
+  loadQuestionBank(BUILTIN_MD);
   devJump();
   loadArt().then(() => {
     const el = document.querySelector('#boot');
@@ -205,8 +211,10 @@ declare global {
       toScreen: (x: number, y: number) => { x: number; y: number };
       /** 演示/截图用：单独放一次打击动画，不改变任何数值 */
       strike: (kind?: FX.StrikeKind, target?: 'enemy' | 'hero') => void;
-      /** 调试/自动化用：当前知识包，测试靠它算出"正确答案是第几个" */
+      /** 调试用：内置卡牌库（恒定，导入题库不会变） */
       readonly pack: typeof PACK;
+      /** 调试用：当前题库（可换）。题目挂在 Panel 快照上，测试一般不用读这里 */
+      readonly bank: typeof BANK;
       /** 调试/自动化用：直接答题，绕过点击 */
       pick: (i: number) => void;
       /** 调试/自动化用：把所有卡种设为已解锁，用来测「免答出牌」那条点击路径 */
@@ -243,8 +251,9 @@ window.cog = {
     });
     panelHold = Math.max(panelHold, 0.6);
   },
-  // loadPack 会换掉 PACK 这个绑定，快照在这里永远是空的，所以必须走 getter
+  // BANK 是 let 绑定，换题库后要拿到新的那份，所以必须走 getter
   get pack() { return PACK; },
+  get bank() { return BANK; },
   pick: (i: number) => answer(i),
   unlockAll: () => { G.deck.forEach((e) => { G.unlocked[e.id] = true; }); },
   power: (i: number) => playPower(i),
@@ -290,6 +299,8 @@ window.cog = {
 function devJump() {
   const d = new URLSearchParams(location.search).get('dev');
   if (!d || d === 'title') return;
+  // 素材图集：不需要开局，是一张独立的质量检验页
+  if (d === 'atlas') { G.screen = 'atlas'; return; }
   if (d === 'map') { startRun(); return; }
   if (d === 'rest') { startRun(); G.panel = { k: 'rest' }; return; }
   if (d === 'event') { startRun(); G.panel = { k: 'event', ev: EVENTS[0] }; return; }
@@ -298,7 +309,10 @@ function devJump() {
   if (d === 'help') { startRun(); G.panel = { k: 'help' }; return; }
   // 敌人动作截图：把招式表固定成单招循环，头顶意图和演出才是同一件事；
   // 而且真的走一次 endTurn，血量 / 格挡 / 弃牌堆都会跟着变，不是只盖一层特效。
+  // 参数既可以是单招名（atk/jam/def/buff），也可以是 FOES 里的怪物 key，
+  // 后者直接把敌人整个换成那只怪 —— 新怪的立绘 / hint / 意图才能被逐个拍到。
   if (d.startsWith('foe:')) {
+    const arg = d.slice(4);
     const MOVES: Record<string, Move> = {
       atk: { k: 'atk', m: 1 },
       jam: { k: 'jam', n: 2 },
@@ -308,10 +322,19 @@ function devJump() {
     startRun();
     enterNode(G.map[0][0].key);
     if (G.enemy) {
-      G.enemy.moves = [MOVES[d.slice(4)] ?? MOVES.atk];
-      G.enemy.mv = 0;
-      // 穿透 / 复习官这些机制会给攻击加减成，截图要可复现就先摘掉
-      G.enemy.mech = undefined;
+      const tpl = FOES.find((f) => f.key === arg);
+      if (tpl) {
+        Object.assign(G.enemy, {
+          key: tpl.key, name: tpl.name, art: tpl.art, hue: tpl.hue,
+          tag: tpl.tag, hint: tpl.hint, mech: tpl.mech,
+          moves: tpl.moves, mv: 0,
+        });
+      } else {
+        G.enemy.moves = [MOVES[arg] ?? MOVES.atk];
+        G.enemy.mv = 0;
+        // 穿透 / 复习官这些机制会给攻击加减成，截图要可复现就先摘掉
+        G.enemy.mech = undefined;
+      }
     }
     return;
   }
@@ -361,19 +384,18 @@ function devJump() {
 
   startRun();
   enterNode(G.map[0][0].key);
-  const first = G.hand[0];
-
   // 点开第一张牌 —— 和真人点下去看到的东西一致：一道题，四个选项，没有前置选择
   if (d === 'question') askCard(0);
   else if (d === 'answer') {
     askCard(0);
-    const q = G.panel.k === 'question' ? defOf(first).qs[G.panel.qi] : null;
-    if (q) answer(q.answer);
+    // 截图脚本也必须走本次打乱后的视图，否则「正确」那一屏会拍成答错
+    const v = G.panel.k === 'question' ? G.panel.view : null;
+    if (v) answer(v.answer);
   } else if (d === 'wrong') {
     // 只给文档截图用：故意选一个错的，把"答错"那一屏也拍下来
     askCard(0);
-    const q = G.panel.k === 'question' ? defOf(first).qs[G.panel.qi] : null;
-    if (q) answer(q.answer === 0 ? 1 : 0);
+    const v = G.panel.k === 'question' ? G.panel.view : null;
+    if (v) answer(v.answer === 0 ? 1 : 0);
   } else if (d === 'reward') {
     if (G.enemy) G.enemy.hp = 0;
     G.pending = 'clear';

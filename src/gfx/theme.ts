@@ -2,15 +2,17 @@
 export const C = {
   void: '#05060a',
   bg: '#0a0c12',
-  panel: '#11141d',
-  panelHi: '#171b26',
-  line: '#252b3a',
-  lineHi: '#39415a',
+  panel: '#12151f',
+  panelHi: '#1b2030',
+  line: '#2c3346',
+  lineHi: '#485272',
 
-  ink: '#e9edf7',
-  ink2: '#b3bcd0',
-  dim: '#6f7b93',
-  faint: '#454e63',
+  ink: '#eef2fb',
+  ink2: '#c1cadc',
+  // 暗背景上的次级文字原来压得太灰，长句读起来费眼；整体抬一档，
+  // 但仍和 ink / ink2 拉开层级，不乱主次。
+  dim: '#8794ad',
+  faint: '#59647c',
 
   gold: '#e8b64c',
   goldDim: '#8a6b2c',
