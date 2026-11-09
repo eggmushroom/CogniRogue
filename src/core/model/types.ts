@@ -223,7 +223,47 @@ export interface Move {
   times?: number;
 }
 
-export type Mech = 'reviewer' | 'pierce' | 'oblivion' | 'leech' | 'lethe';
+/**
+ * 敌人机制。**一条机制只改一件事**，而且改的是玩家已经会做的那个决定 ——
+ * 这不是"给怪加个被动"，是"逼你换一种打法"。
+ *
+ *   reviewer  一回合没答对，额外打你 3 点      → 不许磨
+ *   pierce    攻击无视一半格挡                 → 不许纯守
+ *   leech     你答错，它回血                    → 错一次赔两次
+ *   oblivion  抓住你错得最多的主题              → 补短板
+ *   lethe     你每错一次，它永久 +1 攻          → 一次都不许错
+ *   thorns    你每次打它，自己被反伤            → 少打薄刀，多打重刀
+ *   bulwark   你答错，它叠格挡                  → 错了就再也打不动
+ *   fog       本场每回合少抽 1 张               → 牌组要薄、要准
+ *   siphon    它打中你，你下回合少 1 点行动力    → 挡不住就连锁崩
+ *   haste     它每回合攻击 +1                   → 拖不得
+ */
+export type Mech =
+  | 'reviewer' | 'pierce' | 'oblivion' | 'leech' | 'lethe'
+  | 'thorns' | 'bulwark' | 'fog' | 'siphon' | 'haste';
+
+/**
+ * 一个「大阶段」（幕）。五幕 = 100 层，每幕 20 层，幕末一只 Boss。
+ *
+ * 为什么按幕分而不是一路线性加强：一局 100 层太长，玩家需要一个能记住的
+ * 结构 —— "我在第三幕，这一带的怪都反伤"比"我在第 47 层"更像一句人话。
+ * 每幕有自己的**色相**和**机制母题**：颜色告诉你换地方了，机制告诉你换打法了。
+ */
+export interface StageDef {
+  /** 1..5 */
+  i: number;
+  key: string;
+  /** 幕名，画在地图标题与战斗顶栏 */
+  name: string;
+  /** 一句话的场地描述，地图左栏用 */
+  sub: string;
+  /** 本幕主色：地图高光、幕名、节点底色都从这里取 */
+  color: string;
+  /** 立绘色相偏移。同一幕的怪共用一个色相，这是"风格"最省的那一层 */
+  hue: number;
+  /** 幕内每层（除去首行与末两行）的节点权重 */
+  mix: { fight: number; event: number; rest: number; elite: number };
+}
 
 /**
  * 敌人立绘。全部是"纯黑底 + 发光主体"的 jpg，screen 混合后黑即透明；
@@ -231,18 +271,28 @@ export type Mech = 'reviewer' | 'pierce' | 'oblivion' | 'leech' | 'lethe';
  */
 export type ArtKey =
   | 'shard' | 'examiner' | 'oblivion'   // 初代三件套
-  | 'moth' | 'grub' | 'inquisitor' | 'tide' | 'lethe';
+  | 'moth' | 'grub' | 'inquisitor' | 'tide' | 'lethe'
+  // 四幕 Boss 的专属立绘：幕末那只必须长得和别处不一样，
+  // 否则"换了一层楼"这件事只能靠血量条察觉
+  | 'cataloguer' | 'devourer' | 'imprinter' | 'bound';
 
 export interface FoeTpl {
   key: string;
   name: string;
   type: 'fight' | 'elite' | 'boss';
   art: ArtKey;
+  /** 属于第几幕（1..5）。同一种怪只在一幕里出现 —— 换幕就换一整套物种。 */
+  stage: number;
   tag: string;
   hp: number;
   dmg: number;
   moves: Move[];
   mech?: Mech;
+  /**
+   * 机制的量。不写就用 `BAL.mech` 里的默认值。
+   * 同一条机制在不同幕可以有不同强度：Boss 的反伤比小怪重，这是最省的一档刻度。
+   */
+  mechV?: number;
   hue?: number;
   hint: string;
 }
@@ -324,7 +374,10 @@ export interface ReportRow { t: string; ok: number; bad: number; mast: number }
 
 export interface ReportData {
   win: boolean;
+  /** 死在第几层（1..100）。Boss 处死掉记的是 Boss 那一层 */
   floor: number;
+  /** 走到第几幕（1..5） */
+  stage: number;
   /** 这一局玩的模式 —— 结算页要写清楚"刚才那局是按哪档结算的" */
   mode: RunMode;
   runOk: number;
@@ -366,6 +419,11 @@ export interface GameState {
   screen: 'title' | 'map' | 'battle' | 'report' | 'atlas';
   /** 这一局开始前选定的模式；整局不变，换模式必须重开一局 */
   mode: RunMode;
+  /**
+   * 当前第几幕（1..5）。地图只装当前这一幕的 20 行 —— 100 层不画成一张图，
+   * 否则一屏 100 个点，等于没有地图。层号用 `floorOf()` 换算成 1..100。
+   */
+  stage: number;
   panel: Panel;
   log: LogLine[];
   deck: CardInst[];
@@ -419,6 +477,14 @@ export interface GameState {
   answerDrawsThisTurn: number;
   /** 本回合靠答错补抽了几张，受 `BAL.missDrawCap` 限制，`startTurn` 清零 */
   missDrawsThisTurn: number;
+  /**
+   * 下回合行动力要扣掉几点（siphon 的账）。敌人命中时记账，`startTurn` 结算并清零。
+   * 它记在"下回合"而不是"这回合"，因为玩家挨打时这回合的行动力早就花完了 ——
+   * 当场扣等于没扣，延迟一回合才真的疼，而且看得见（行动力球会少一格）。
+   */
+  apDown: number;
+  /** 本场每回合少抽几张（fog）。`startBattle` 按怪的机制写入，跨场必须清回 0 */
+  drawCut: number;
   runOk: number;
   runBad: number;
   floors: number;

@@ -3,6 +3,7 @@ import { C, FONT_TITLE, withAlpha } from '../gfx/theme';
 import { action, text } from '../gfx/ui';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { G } from '../core/infra';
+import { resumeRun, runSaveInfo } from '../core/journey';
 import { BANK, bankQuestionCount } from '../core/library';
 import { PACK, topics } from '../core/cards';
 
@@ -45,17 +46,33 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   const bw = 330;
   const bx = cx - bw / 2;
   let by = 452;
-  const gap = 76;
 
-  action(bx, by, bw, 60, '开始新的一局', () => { G.panel = { k: 'mode' }; }, 'primary', { size: 22 });
-  by += gap;
-  action(bx, by, bw, 56, '这游戏怎么玩', openHelp);
-  by += 70;
-  action(bx, by, bw, 56, '载入自己的题库', openPack);
+  // 有断点就把它摆到第一位。100 层的一局接近一小时，首页上「继续」比「开始」更常用；
+  // 反过来，一旦按错「开始新的一局」，代价不是十分钟，是整座塔 ——
+  // 所以破坏性的那个降成次按钮，要点的那个是唯一带金边的。
+  const save = runSaveInfo();
+  if (save) {
+    action(bx, 424, bw, 60, '继续这一局', () => { resumeRun(); }, 'primary', {
+      size: 23, sub: `第 ${save.stage} 幕 · ${save.stageName}`,
+    });
+    text(`第 ${save.floor}/100 层 · ${save.hp}/${save.maxHp} 生命`, cx, 506, {
+      size: 13, align: 'center', color: C.dim,
+    });
+    by = 526;
+    action(bx, by, bw, 50, '开始新的一局', () => { G.panel = { k: 'mode' }; }); by += 62;
+    action(bx, by, bw, 50, '这游戏怎么玩', openHelp); by += 62;
+    action(bx, by, bw, 50, '载入自己的题库', openPack);
+  } else {
+    action(bx, by, bw, 60, '开始新的一局', () => { G.panel = { k: 'mode' }; }, 'primary', { size: 22 });
+    by += 76;
+    action(bx, by, bw, 56, '这游戏怎么玩', openHelp);
+    by += 70;
+    action(bx, by, bw, 56, '载入自己的题库', openPack);
+  }
 
   // 卡池是内置的、题库是可换的，两行分开写才不会让人以为导入会换牌。
   // "进度自动存在本地"撤了：这句话是承诺不是数据，帮助页里讲得比这里清楚。
-  const py = 760;
+  const py = save ? 744 : 760;
   text(BANK.name, cx, py, { size: 16, align: 'center', color: C.gold, weight: 700 });
   text(
     `内置 ${PACK.cards.length} 张卡 · ${topics().length} 个主题 · ${bankQuestionCount()} 道题`,

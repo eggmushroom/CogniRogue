@@ -4,6 +4,8 @@ import { clamp } from '../infra/util';
 import { memOf, saveMem } from '../library/memory';
 import { PACK, topics } from '../cards/pack';
 import { deckPowers, isPowerId } from '../cards/registry';
+import { curFloor } from '../map/gen';
+import { clearRun } from './save';
 
 /**
  * journey/report —— 一局的结算。
@@ -13,6 +15,8 @@ import { deckPowers, isPowerId } from '../cards/registry';
  */
 export function endRun(win: boolean) {
   saveMem();
+  // 一局结束就没有断点了：首页那个「继续」不该继续到一个已经结算的局
+  clearRun();
   const rows: ReportRow[] = topics().map((t) => {
     const cs = PACK.cards.filter((c) => c.topic === t);
     const ok = cs.reduce((n, c) => n + memOf(c.id).ok, 0);
@@ -46,7 +50,8 @@ export function endRun(win: boolean) {
     data: {
       win,
       mode: G.mode,
-      floor: G.node ? G.node.r + 1 : G.pos ? G.pos.r + 1 : 1,
+      stage: G.stage,
+      floor: curFloor(),
       runOk: G.runOk, runBad: G.runBad, floors: G.floors, deckSize: G.deck.length,
       // 增益牌不算卡种：它没有题，混进来会把牌组的多样性说多
       kinds: new Set(G.deck.filter((e) => !isPowerId(e.id)).map((e) => e.id)).size,

@@ -1,4 +1,5 @@
 import { G } from '../infra/state';
+import { saveRun } from './save';
 
 /**
  * journey/nodes —— 一个节点结束后的收尾。
@@ -19,4 +20,6 @@ export function finishNode() {
   G.discard = [];
   G.panel = { k: 'none' };
   G.node = null;
+  // 走完一个节点就存一次：100 层的一局接近一小时，断点只能落在节点之间
+  saveRun();
 }

@@ -127,8 +127,38 @@ await send('Emulation.setDeviceMetricsOverride', {
 /** 每一张图 = 一次导航 + 可选的一段准备动作。 */
 const SHOTS = [
   ['title', '', null, 400],
+  // 有断点时的首页：多一条「继续这一局」，下面才是"开始新的一局"。
+  // 存档不是手写的 JSON —— 先在第三幕里走几行，让 cog.save() 真的写一份，
+  // 刷新之后拍的才是真实存档能长出来的那一屏。
+  ['titlesave', '?dev=map&stage=3', `(() => {
+    const s = cog.state;
+    for (let r = 0; r < 8; r++) for (const nd of s.map[r]) s.seen[nd.key] = true;
+    const nd = s.map[8][0];
+    s.pos = { r: 8, i: nd.i };
+    s.floors = 8;
+    s.maxHp = 70 + 14 * 2;
+    s.hp = 86;
+    cog.save();
+    setTimeout(() => location.replace(location.origin + '/'), 30);
+  })()`, 2600],
   ['mode', '?dev=mode', null, 600],
   ['map', '?dev=map', null, 600],
+  // 五幕各有自己的色相与物种：同一张地图换一幕，光柱、幕名和节点底色都跟着换
+  ['map3', '?dev=map&stage=3', null, 600],
+  ['map5', '?dev=map&stage=5', null, 600],
+  // 幕 Boss 的专属立绘：换皮先过一眼，别让"新怪"其实还是旧图
+  ['boss1', '?dev=foe:cataloguer', `(() => {
+    cog.state.enemy.maxHp = cog.state.enemy.hp = 9999;
+  })()`, 700],
+  ['boss2', '?dev=foe:devourer', `(() => {
+    cog.state.enemy.maxHp = cog.state.enemy.hp = 9999;
+  })()`, 700],
+  ['boss3', '?dev=foe:imprinter', `(() => {
+    cog.state.enemy.maxHp = cog.state.enemy.hp = 9999;
+  })()`, 700],
+  ['boss4', '?dev=foe:bound', `(() => {
+    cog.state.enemy.maxHp = cog.state.enemy.hp = 9999;
+  })()`, 700],
   ['screenshot', '?dev=battle', null, 500],
   ['deck', '?dev=deck', null, 500],
   ['reward', '?dev=reward', null, 500],

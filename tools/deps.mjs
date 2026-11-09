@@ -32,7 +32,7 @@ const EXEMPT = [
   {
     from: 'combat',
     to: 'journey',
-    why: 'endRun / openReward 由 combat 直接调用；P1 的 settle 钩子会把它们挪回 journey 驱动',
+    why: 'settlePending（奖励 / 过幕 / 结算）由 combat 直接调用；下一步要把它挪回 journey 驱动',
   },
 ];
 

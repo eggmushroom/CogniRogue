@@ -1,89 +1,275 @@
-import type { FoeTpl, ModeDef, NodeType, PowerDef, RunMode } from './types';
+import type { FoeTpl, ModeDef, NodeType, PowerDef, RunMode, StageDef } from './types';
+
+/**
+ * 每一幕 20 层。100 层 = 5 × 20。
+ *
+ * 20 这个数不是凑的：一屏地图能舒服地显示 9 行，20 行刚好是"两次滚屏"的量，
+ * 玩家在一幕里能记住"上面还有多少、Boss 在顶上"。再长，一幕就不像一段路，
+ * 而像一条走廊。
+ */
+export const STAGE_ROWS = 20;
+
+/**
+ * 五幕。**每幕换一整套物种，不是把同一只怪加血。**
+ *
+ * 幕与幕之间有三层差别，从便宜到贵：
+ *   1. 色相 —— 同一幕的立绘共用一个 hue，一眼看出"换地方了"；
+ *   2. 招式表 —— 虫蛀区塞杂念、报刊区多段轻击、修复室先叠甲、禁书区抓你的错；
+ *   3. 机制母题 —— 每一幕只教一种新打法（见各幕 mech），玩家一次只学一件事。
+ *
+ * 第一幕刻意什么机制都不教：那一幕只回答"这游戏怎么打"。
+ */
+export const STAGES: StageDef[] = [
+  {
+    i: 1, key: 'catalogue', name: '目录厅', sub: '明亮、整齐，纸还是新的',
+    color: '#4fd6cf', hue: 0,
+    mix: { fight: 0.38, event: 0.2, rest: 0.26, elite: 0.16 },
+  },
+  {
+    i: 2, key: 'stacks', name: '虫蛀的借阅区', sub: '潮气、木屑，书脊里有东西在动',
+    color: '#7fc26a', hue: 130,
+    mix: { fight: 0.34, event: 0.22, rest: 0.28, elite: 0.16 },
+  },
+  {
+    i: 3, key: 'periodicals', name: '报刊与副本', sub: '冷白的灯，铅字的味道，同一页在无限复制',
+    color: '#6f9ee8', hue: 205,
+    mix: { fight: 0.36, event: 0.16, rest: 0.28, elite: 0.2 },
+  },
+  {
+    i: 4, key: 'bindery', name: '修复室', sub: '胶、线、皮革，还有一台从不熄火的熔炉',
+    color: '#e08048', hue: 25,
+    mix: { fight: 0.34, event: 0.14, rest: 0.28, elite: 0.24 },
+  },
+  {
+    i: 5, key: 'forbidden', name: '禁书区', sub: '灯照不到的地方，书页自己在翻',
+    color: '#a78bfa', hue: 320,
+    mix: { fight: 0.32, event: 0.12, rest: 0.28, elite: 0.28 },
+  },
+];
+
+export const stageOf = (i: number): StageDef => STAGES[Math.max(0, Math.min(STAGES.length - 1, i - 1))];
 
 /**
  * 敌人。招式是循环表，玩家能看见下一步要干什么 —— 这样"这回合该攻还是该守"
  * 才是一个能推理的决定，而不是掷骰子。
+ *
+ * 排版说明：按幕分段，一幕之内「小怪 → 精英 → Boss」。
+ * 数值只做一件事 —— 逐幕抬高血线与伤害；**机制才是每一幕的身份**。
  */
 export const FOES: FoeTpl[] = [
+  /* ── 第一幕 · 目录厅 ────────────────────────────────────────
+     这一幕没有机制。它只回答一个问题：一张牌 = 一道题，答对才打得出去。 */
   {
-    key: 'shard', name: '记忆的碎片', type: 'fight', art: 'shard', tag: '普通',
-    hp: 56, dmg: 7, moves: [{ k: 'atk', m: 1 }],
+    key: 'shard', name: '记忆的碎片', type: 'fight', art: 'shard', stage: 1, tag: '普通',
+    hp: 50, dmg: 7, moves: [{ k: 'atk', m: 1 }],
     hint: '它就是来消耗你手牌的。答对就好，别想太多。',
   },
   {
-    key: 'examiner', name: '复习官', type: 'fight', art: 'examiner', tag: '普通',
-    hp: 62, dmg: 8, moves: [{ k: 'atk', m: 1 }], mech: 'reviewer',
+    key: 'examiner', name: '复习官', type: 'fight', art: 'examiner', stage: 1, tag: '普通',
+    hp: 58, dmg: 8, moves: [{ k: 'atk', m: 1 }], mech: 'reviewer',
     hint: '一回合内没有真正答对任何一张卡，它额外打你 3 点 —— 不答题就没有输出。',
   },
   {
-    key: 'echo', name: '回声', type: 'fight', art: 'shard', hue: 130, tag: '普通',
-    hp: 50, dmg: 7, moves: [{ k: 'atk', m: 1 }], mech: 'pierce',
-    hint: '它的攻击无视一半格挡。堆格挡这一套对它不好使。',
+    key: 'grub', name: '书蛀', type: 'fight', art: 'grub', stage: 1, tag: '普通',
+    hp: 56, dmg: 7, moves: [{ k: 'atk', m: 0.75 }, { k: 'atk', m: 1 }], mech: 'leech',
+    hint: '你每答错一次，它就啃食这次失误回 4 血。别喂它。',
   },
   {
-    key: 'entropy', name: '熵', type: 'fight', art: 'examiner', hue: 320, tag: '普通',
-    hp: 58, dmg: 8, moves: [{ k: 'jam', n: 1 }, { k: 'atk', m: 1 }],
-    hint: '它会往你的弃牌堆里塞杂念——占手牌位、打不出去，回合结束才散。',
-  },
-  {
-    key: 'drift', name: '走神', type: 'fight', art: 'moth', tag: '普通',
+    key: 'drift', name: '走神', type: 'fight', art: 'moth', stage: 1, tag: '普通',
     hp: 46, dmg: 6, moves: [{ k: 'jam', n: 1 }, { k: 'jam', n: 1 }, { k: 'atk', m: 1 }],
     hint: '一群纸作的飞蛾。它不急着咬你——它在把你的牌堆一点点搅浑。',
   },
   {
-    key: 'grub', name: '书蛀', type: 'fight', art: 'grub', tag: '普通',
-    hp: 60, dmg: 7, moves: [{ k: 'atk', m: 0.75 }, { k: 'atk', m: 1 }], mech: 'leech',
-    hint: '你每答错一次，它就啃食这次失误回 4 血。别喂它。',
-  },
-  {
-    key: 'cram', name: '硬背石像', type: 'fight', art: 'shard', hue: 38, tag: '普通',
-    hp: 72, dmg: 9, moves: [{ k: 'def', v: 11 }, { k: 'atk', m: 1.15 }],
-    hint: '先把墙垒起来再出手。举盾那回合攒好火力，别把伤害拍在墙上。',
-  },
-  {
-    key: 'mirage', name: '错觉蜃影', type: 'fight', art: 'examiner', hue: 265, tag: '普通',
-    hp: 52, dmg: 7, moves: [{ k: 'atk', m: 1 }, { k: 'atk', m: 0.45, times: 3 }],
-    hint: '三段轻击，每一段都不重——但漏掉一段就是一整套。数着它的段数防。',
-  },
-  {
-    key: 'reviewer', name: '审视者', type: 'elite', art: 'examiner', tag: '精英',
-    hp: 92, dmg: 11,
-    moves: [{ k: 'atk', m: 1.3 }, { k: 'atk', m: 0.65, times: 2 }, { k: 'def', v: 12 }],
-    hint: '它会格挡。想靠一回合爆发带走它，得先把那层挡住。',
-  },
-  {
-    key: 'mirror', name: '镜像', type: 'elite', art: 'shard', hue: 205, tag: '精英',
-    hp: 88, dmg: 10,
-    moves: [{ k: 'atk', m: 1.2 }, { k: 'jam', n: 2 }, { k: 'atk', m: 0.7, times: 2 }],
-    mech: 'pierce',
-    hint: '无视一半格挡，还会塞杂念。它专门惩罚"只守不攻"。',
-  },
-  {
-    key: 'inquisitor', name: '主考官', type: 'elite', art: 'inquisitor', tag: '精英',
-    hp: 102, dmg: 12,
+    key: 'inquisitor', name: '主考官', type: 'elite', art: 'inquisitor', stage: 1, tag: '精英',
+    hp: 96, dmg: 11,
     moves: [{ k: 'atk', m: 1.25 }, { k: 'def', v: 14 }, { k: 'atk', m: 0.7, times: 2 }],
     mech: 'reviewer',
     hint: '复习官的上司。赏罚都更重——一回合没认真答对，它会加倍记恨。',
   },
   {
-    key: 'tide', name: '题海', type: 'elite', art: 'tide', tag: '精英',
-    hp: 96, dmg: 10,
-    moves: [{ k: 'jam', n: 2 }, { k: 'atk', m: 1.15 }, { k: 'atk', m: 0.6, times: 2 }],
-    hint: '无穷的题目淹过来：杂念占住手牌位，攻击一波接一波。先把源头打碎。',
+    key: 'rereader', name: '复读者', type: 'elite', art: 'examiner', stage: 1, tag: '精英',
+    hp: 88, dmg: 9,
+    moves: [{ k: 'atk', m: 1.1 }, { k: 'atk', m: 0.5, times: 3 }, { k: 'jam', n: 2 }],
+    hint: '同一段话读三遍。三段轻击每一段都要挡，漏一段就是一整套。',
   },
   {
-    key: 'oblivion', name: '遗忘', type: 'boss', art: 'oblivion', tag: 'BOSS',
-    hp: 150, dmg: 14,
-    moves: [{ k: 'atk', m: 1 }, { k: 'atk', m: 0.6, times: 2 }, { k: 'buff', v: 2 }],
-    mech: 'oblivion',
-    hint: '本局你错得最多的主题，对它伤害 +4；但你在该主题上答对，它本回合 -3。',
+    key: 'cataloguer', name: '编目者', type: 'boss', art: 'cataloguer', stage: 1, tag: 'BOSS',
+    hp: 112, dmg: 12,
+    moves: [{ k: 'atk', m: 1 }, { k: 'jam', n: 2 }, { k: 'atk', m: 1.3 }],
+    mech: 'reviewer',
+    hint: '它把你这一局学过的东西一条条编上号。一回合不答题，它就把你归档。',
+  },
+
+  /* ── 第二幕 · 虫蛀的借阅区 ──────────────────────────────────
+     母题：**你的牌堆**。塞杂念、少抽牌 —— 它不跟你打，它让你没牌可打。 */
+  {
+    key: 'bookmoth', name: '蠹蛾', type: 'fight', art: 'moth', stage: 2, tag: '普通',
+    hp: 66, dmg: 8, moves: [{ k: 'jam', n: 1 }, { k: 'atk', m: 1 }], mech: 'fog',
+    hint: '它翅膀上的粉让你的视野少一格：本场每回合少抽 1 张。牌组越薄越不怕它。',
   },
   {
-    key: 'lethe', name: '忘川', type: 'boss', art: 'lethe', tag: 'BOSS',
-    hp: 158, dmg: 13,
+    key: 'damp', name: '湿页', type: 'fight', art: 'shard', stage: 2, tag: '普通',
+    hp: 72, dmg: 8, moves: [{ k: 'def', v: 12 }, { k: 'atk', m: 1.1 }],
+    hint: '吸饱水的纸又厚又软：先垒墙再拍你。举盾那回合是它最脆的时候。',
+  },
+  {
+    key: 'grubqueen', name: '书蛀母', type: 'fight', art: 'grub', stage: 2, tag: '普通',
+    hp: 78, dmg: 9, moves: [{ k: 'atk', m: 0.8 }, { k: 'atk', m: 1 }], mech: 'leech',
+    hint: '你每答错一次，它回 4 血。在虫蛀区，错是要被吃掉的。',
+  },
+  {
+    key: 'stitchworm', name: '线虫', type: 'fight', art: 'grub', stage: 2, tag: '普通', hue: 100,
+    hp: 70, dmg: 8, moves: [{ k: 'atk', m: 0.55, times: 2 }, { k: 'atk', m: 1 }],
+    hint: '它把自己缝进书脊里，一抽就是两段。',
+  },
+  {
+    key: 'wormking', name: '蠹王', type: 'elite', art: 'grub', stage: 2, tag: '精英', hue: 150,
+    hp: 120, dmg: 11,
+    moves: [{ k: 'jam', n: 1 }, { k: 'atk', m: 1.2 }, { k: 'atk', m: 0.6, times: 2 }],
+    mech: 'fog',
+    hint: '它坐着不动，让整个借阅区的纸屑往你手里飞：少抽一张，还要挨打。',
+  },
+  {
+    key: 'copyist', name: '抄书吏', type: 'elite', art: 'examiner', stage: 2, tag: '精英', hue: 130,
+    hp: 112, dmg: 10,
+    moves: [{ k: 'atk', m: 1.15 }, { k: 'def', v: 14 }], mech: 'bulwark', mechV: 8,
+    hint: '你答错一次，它就多抄一页、多一层甲。错得越多，它越厚。',
+  },
+  {
+    key: 'devourer', name: '饕餮书虫', type: 'boss', art: 'devourer', stage: 2, tag: 'BOSS', hue: 110,
+    hp: 150, dmg: 12,
+    moves: [{ k: 'atk', m: 1 }, { k: 'jam', n: 2 }, { k: 'atk', m: 0.65, times: 2 }],
+    mech: 'leech',
+    hint: '它吃你的错。每一次答错都是给它上菜 —— 这一场要的不是快，是不出错。',
+  },
+
+  /* ── 第三幕 · 报刊与副本 ────────────────────────────────────
+     母题：**重复**。多段、复印、反伤 —— 一刀切不动，得一次打穿。 */
+  {
+    key: 'ghostprint', name: '影印', type: 'fight', art: 'shard', stage: 3, tag: '普通', hue: 205,
+    hp: 78, dmg: 9, moves: [{ k: 'atk', m: 0.5, times: 3 }], mech: 'thorns', mechV: 1,
+    hint: '每打它一次，你自己被反伤 2 点。三段轻击最怕这种皮 —— 用重刀。',
+  },
+  {
+    key: 'typeblock', name: '铅字块', type: 'fight', art: 'shard', stage: 3, tag: '普通', hue: 220,
+    hp: 92, dmg: 9, moves: [{ k: 'def', v: 14 }, { k: 'atk', m: 1.1 }],
+    hint: '一整块实心铅。它举盾的时候别硬砸。',
+  },
+  {
+    key: 'compositor', name: '排字工', type: 'fight', art: 'examiner', stage: 3, tag: '普通', hue: 205,
+    hp: 84, dmg: 10, moves: [{ k: 'atk', m: 1 }, { k: 'jam', n: 2 }], mech: 'pierce',
+    hint: '它的攻击无视一半格挡，还顺手往你牌堆里排两条乱码。',
+  },
+  {
+    key: 'carbon', name: '复写纸', type: 'fight', art: 'moth', stage: 3, tag: '普通', hue: 205,
+    hp: 76, dmg: 9, moves: [{ k: 'atk', m: 1.1 }, { k: 'atk', m: 1.1 }],
+    hint: '你打它一次，它印出两张同样的脸。一轮两下，都是实的。',
+  },
+  {
+    key: 'duplex', name: '双面印刷机', type: 'elite', art: 'examiner', stage: 3, tag: '精英', hue: 210,
+    hp: 135, dmg: 11,
+    moves: [{ k: 'atk', m: 0.55, times: 3 }, { k: 'def', v: 16 }], mech: 'thorns', mechV: 3,
+    hint: '两面都在印。反伤 + 三段攻击：这一场它逼你把伤害集中在一击里。',
+  },
+  {
+    key: 'stereotype', name: '铅版巨人', type: 'elite', art: 'inquisitor', stage: 3, tag: '精英', hue: 205,
+    hp: 145, dmg: 12,
+    moves: [{ k: 'atk', m: 1.25 }, { k: 'buff', v: 2 }], mech: 'haste',
+    hint: '它每回合都更重一点。拖下去只有一种结局 —— 越早打完越好。',
+  },
+  {
+    key: 'imprinter', name: '压印之主', type: 'boss', art: 'imprinter', stage: 3, tag: 'BOSS', hue: 195,
+    hp: 178, dmg: 13,
+    moves: [{ k: 'atk', m: 1 }, { k: 'atk', m: 0.55, times: 3 }, { k: 'def', v: 18 }],
+    mech: 'thorns', mechV: 3,
+    hint: '它把你的每一击都压回你身上。这一场只有重刀算数，薄刀是在给自己放血。',
+  },
+
+  /* ── 第四幕 · 修复室 ────────────────────────────────────────
+     母题：**甲与时间**。先叠甲、每回合变强 —— 它不急着杀你，它在等你打不动。 */
+  {
+    key: 'gluebeast', name: '胶合兽', type: 'fight', art: 'grub', stage: 4, tag: '普通', hue: 20,
+    hp: 96, dmg: 10, moves: [{ k: 'atk', m: 1 }, { k: 'def', v: 16 }],
+    hint: '一坨没干透的胶。打完记得它下一手是糊自己一身。',
+  },
+  {
+    key: 'stitchdoll', name: '缝线傀儡', type: 'fight', art: 'moth', stage: 4, tag: '普通', hue: 25,
+    hp: 102, dmg: 10, moves: [{ k: 'atk', m: 0.6, times: 2 }, { k: 'buff', v: 2 }], mech: 'haste',
+    hint: '它每回合给自己加一道线，攻击跟着涨。拖不得。',
+  },
+  {
+    key: 'leathercover', name: '皮革封面', type: 'fight', art: 'shard', stage: 4, tag: '普通', hue: 25,
+    hp: 112, dmg: 10, moves: [{ k: 'def', v: 18 }, { k: 'atk', m: 1.2 }], mech: 'bulwark', mechV: 10,
+    hint: '你答错一次，它就多一层皮革。错一次，这一场就厚一截。',
+  },
+  {
+    key: 'gluepot', name: '熔胶炉', type: 'fight', art: 'oblivion', stage: 4, tag: '普通', hue: 30,
+    hp: 90, dmg: 11, moves: [{ k: 'atk', m: 1.2 }, { k: 'atk', m: 1.2 }],
+    hint: '两口滚烫的胶，一次一口。没有花招，就是疼。',
+  },
+  {
+    key: 'binder', name: '装订师', type: 'elite', art: 'examiner', stage: 4, tag: '精英', hue: 25,
+    hp: 150, dmg: 12,
+    moves: [{ k: 'atk', m: 1.2 }, { k: 'def', v: 18 }, { k: 'atk', m: 0.6, times: 2 }],
+    mech: 'bulwark', mechV: 12,
+    hint: '他一边装订一边收拾你。答错会让他把你的手也订进去。',
+  },
+  {
+    key: 'press', name: '压书机', type: 'elite', art: 'inquisitor', stage: 4, tag: '精英', hue: 20,
+    hp: 160, dmg: 13,
+    moves: [{ k: 'atk', m: 1.3 }, { k: 'buff', v: 3 }], mech: 'haste',
+    hint: '每压一次，它就更紧一分。这一场是赛跑。',
+  },
+  {
+    key: 'bound', name: '装订之兽', type: 'boss', art: 'bound', stage: 4, tag: 'BOSS', hue: 25,
+    hp: 205, dmg: 14,
+    moves: [{ k: 'atk', m: 1 }, { k: 'def', v: 20 }, { k: 'atk', m: 0.65, times: 2 }],
+    mech: 'bulwark', mechV: 14,
+    hint: '它把你这一路的错误缝成一本厚书，然后拿它当盾。这一场你得先把它拆开。',
+  },
+
+  /* ── 第五幕 · 禁书区 ────────────────────────────────────────
+     母题：**你的错误**。它知道你哪块最弱，而且每次都往那儿打。 */
+  {
+    key: 'whisperer', name: '低语者', type: 'fight', art: 'examiner', stage: 5, tag: '普通', hue: 320,
+    hp: 110, dmg: 11, moves: [{ k: 'jam', n: 2 }, { k: 'atk', m: 1.15 }], mech: 'siphon',
+    hint: '它打中你一次，你下回合就少 1 点行动力。挡不住，节奏会一路塌下去。',
+  },
+  {
+    key: 'blankleaf', name: '空页', type: 'fight', art: 'shard', stage: 5, tag: '普通', hue: 320,
+    hp: 118, dmg: 11, moves: [{ k: 'atk', m: 1.05 }, { k: 'def', v: 20 }],
+    hint: '什么都没写的一页 —— 你答不出它，它也不会答你。',
+  },
+  {
+    key: 'ashencopy', name: '灰烬的抄本', type: 'fight', art: 'grub', stage: 5, tag: '普通', hue: 300,
+    hp: 105, dmg: 11, moves: [{ k: 'atk', m: 0.6, times: 3 }], mech: 'pierce',
+    hint: '三段，每一段都穿透一半格挡。守不住的那种守。',
+  },
+  {
+    key: 'fgotten', name: '遗忘的读者', type: 'fight', art: 'moth', stage: 5, tag: '普通', hue: 320,
+    hp: 100, dmg: 11,
+    moves: [{ k: 'atk', m: 1 }, { k: 'jam', n: 2 }, { k: 'atk', m: 1 }], mech: 'lethe',
+    hint: '你每错一次，它永久 +1 攻。在禁书区，错误是会长大的。',
+  },
+  {
+    key: 'silencer', name: '缄默者', type: 'elite', art: 'inquisitor', stage: 5, tag: '精英', hue: 320,
+    hp: 165, dmg: 13,
+    moves: [{ k: 'atk', m: 1.15 }, { k: 'atk', m: 0.7, times: 2 }], mech: 'siphon',
+    hint: '它不让你说话，也不让你出牌：每一次命中都抽走你下回合的行动力。',
+  },
+  {
+    key: 'lethe', name: '忘川', type: 'elite', art: 'lethe', stage: 5, tag: '精英',
+    hp: 175, dmg: 13,
     moves: [{ k: 'atk', m: 1 }, { k: 'jam', n: 2 }, { k: 'atk', m: 0.65, times: 2 }, { k: 'buff', v: 2 }],
     mech: 'lethe',
     hint: '你的每一次答错都会让它永久 +1 攻——它是遗忘本身，喂不得。',
+  },
+  {
+    key: 'oblivion', name: '遗忘', type: 'boss', art: 'oblivion', stage: 5, tag: 'BOSS',
+    hp: 260, dmg: 15,
+    moves: [{ k: 'atk', m: 1 }, { k: 'atk', m: 0.6, times: 2 }, { k: 'buff', v: 2 }],
+    mech: 'oblivion',
+    hint: '本局你错得最多的主题，对它伤害 +4；但你在该主题上答对，它本回合 -3。',
   },
 ];
 
@@ -153,7 +339,10 @@ export const POWER_BY_ID = Object.fromEntries(POWERS.map((p) => [p.id, p])) as R
 export const MODES: Record<RunMode, ModeDef> = {
   learn: {
     key: 'learn', name: '学习', tag: '还在学，允许错', color: '#4fd6cf',
-    missBlock: 1, stabDrop: 0.6, stabGain: 1,
+    // 答错补 60% 格挡（原来是全额）。100 层之后，"全额补偿"会变成一台永动机：
+    // 答错不仅不亏，还白得一层甲，于是错得越多越难死 —— 技巧曲线在长局里会反转。
+    // 学习模式的宽恕本来就有两处（牌回抽牌堆、稳固度掉得最少），第三处不必给满。
+    missBlock: 0.6, stabDrop: 0.6, stabGain: 1,
     missDest: 'draw',
     cardLabel: '学习 · 答错会回来',
     hint: '答对退回 1 点行动力；答错这一手作废，牌回牌堆、下回合一定再回来，还按卡面格挡全额挡一下。',
@@ -197,7 +386,7 @@ export const BAL = {
    * 不补这一档，熟练水平的胜率会掉十个百分点以上 —— 掉的不是难度，是"这一回合
    * 明明有牌却打不出去"的憋屈。详见 README「费用是怎么定的」。
    */
-  hp: 1.18, dmg: 1.42, baseHp: 70, baseAp: 3,
+  hp: 1.18, dmg: 1.24, baseHp: 70, baseAp: 3,
   /**
    * 答对退回几点行动力。**一手最多退 1 点，不是全退**。
    *
@@ -271,6 +460,31 @@ export const BAL = {
    * 等于用更少的学习换更强的战斗 —— 正好反过来。
    */
   maxCopies: 3,
+  /**
+   * 过一幕（打死幕 Boss）之后：最大生命加多少、回多少血。
+   *
+   * 100 层不是"8 层 × 12.5"：一局跨 5 幕，血量必须有一个**检查点**，
+   * 否则第四幕开头就一定是残血进新地图，后面全在补血。回到满血是把"这一幕
+   * 结束了"讲清楚的最直接方式，加最大生命则是让后面几幕的伤害曲线有地方落脚。
+   */
+  stageMaxHp: 14,
+  /**
+   * 复习点（rest）回复最大生命的百分之几。
+   *
+   * 这个数是 100 层的**血量水龙头**：一局大约 50 场战斗，每场掉 6–10 点，
+   * 一共要还 400–500 点血。原来 8 层时 0.32 就够（一局两三个复习点），
+   * 现在 0.32 会让玩家在第三幕就把血用完。所以它跟着层级一起放大 ——
+   * 见 README「一百层的血量账」。
+   */
+  restPct: 0.62,
+  /**
+   * 各机制的量。怪身上写了 `mechV` 就用它自己的，没写读这里。
+   *
+   * 这些数都在"一次决定"的量级上：反伤 2 点让你少打薄刀，格挡 8 点让你
+   * 不敢答错，行动力 1 点是半张牌。不要把它们调成"一击必杀"的规模 ——
+   * 机制是换打法的提示，不是随机死亡。
+   */
+  mech: { thorns: 1, bulwark: 8, siphon: 1, haste: 1, leech: 4, reviewer: 3 },
 };
 
 export const NODE_META: Record<NodeType, { k: string; g: string; color: string }> = {

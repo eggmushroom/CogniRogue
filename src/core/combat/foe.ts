@@ -2,7 +2,7 @@ import { BAL } from '../model/data';
 import type { Foe, FoeTpl, NodeType } from '../model/types';
 import { G, checkPending, log, topTopic } from '../infra/state';
 import { emit } from '../infra/events';
-import { endRun } from '../journey/report';
+import { settlePending } from '../journey/run';
 import { startTurn } from './deck';
 
 /**
@@ -11,8 +11,16 @@ import { startTurn } from './deck';
  * 招式是循环表，玩家能看见下一步要干什么 —— 这样"这回合该攻还是该守"
  * 才是一个能推理的决定，而不是掷骰子。
  */
+/**
+ * 造一只怪。
+ *
+ * **跨幕的强度由模板承担，不在这里乘层号。** 100 层如果按层号线性放大，
+ * 第五幕的小怪会变成一堵墙 —— 而玩家那一侧的成长（牌组、增益牌、生命上限）
+ * 是有限且缓慢的。所以每一幕换一套血线写在 `FOES` 里，这里只保留一幕之内
+ * 从入口爬到 Boss 的那一点点斜率。
+ */
 export function makeFoe(tpl: FoeTpl, type: NodeType, r: number): Foe {
-  const k = type === 'boss' ? 1 : type === 'elite' ? 1 + r * 0.055 : 1 + r * 0.075;
+  const k = type === 'boss' ? 1 : 1 + r * 0.018;
   const hp = Math.round(tpl.hp * k * BAL.hp);
   return {
     ...tpl,
@@ -75,6 +83,13 @@ export function endTurn() {
     const absorbed = Math.min(guard, dmg);
     const taken = dmg - absorbed;
     G.hp -= taken;
+    // 吸水：挡住了就不算命中，没挡住才抽走你下回合的行动力。
+    // 「挡得住」因此变成一件有复利的事 —— 一次没挡住，下一回合更挡不住。
+    if (e.mech === 'siphon' && taken > 0) {
+      const n = e.mechV ?? BAL.mech.siphon;
+      G.apDown += n;
+      log(`${e.name} 抽走了你 ${n} 点行动力（下回合）`, 'bad');
+    }
     log(
       `${e.name} 攻击 ${dmg}${m.times ? `（${m.times} 段）` : ''} 点` +
         (absorbed ? `，格挡吸收 ${absorbed}` : '') +
@@ -98,9 +113,15 @@ export function endTurn() {
   }
 
   e.mv = (e.mv || 0) + 1;
+  // 加速：每回合自己变强一点。它不逼你这一回合做什么，它只让"再拖一回合"变贵。
+  if (e.mech === 'haste') {
+    const n = e.mechV ?? BAL.mech.haste;
+    e.dmg += n;
+    log(`${e.name} 又紧了一分，攻击 +${n}`, 'bad');
+  }
   checkPending();
   if (!G.pending) { G.turn += 1; startTurn(); }
   G.busy = false;
 
-  if (G.pending === 'dead') setTimeout(() => { if (G.pending === 'dead') endRun(false); }, 700);
+  if (G.pending === 'dead') setTimeout(() => { if (G.pending === 'dead') settlePending(); }, 700);
 }

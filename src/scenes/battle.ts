@@ -5,8 +5,9 @@ import { bar, drawCard, icon, panel, squeeze, text } from '../gfx/ui';
 import { onClick, hover } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import * as FX from '../gfx/fx';
-import { MODES, POWER_BY_ID } from '../core/model';
+import { MODES, POWER_BY_ID, stageOf } from '../core/model';
 import { G } from '../core/infra';
+import { curFloor } from '../core/map';
 import { canPay, cardKind, costOf, defOf, isXCost, powerOf, statOf } from '../core/cards';
 import {
   askCard, canAsk, endTurn, intentText, playBasic, playPower,
@@ -100,10 +101,13 @@ function topBar(t: number) {
     text(String(G.block), bx + 37, 31, { size: 20, weight: 800, color: C.blue });
   }
 
-  // 楼层：图标 + 文字，比一行裸字多一个可辨识的锚点
-  const floor = G.node ? G.node.r + 1 : G.pos ? G.pos.r + 1 : 1;
+  // 楼层：图标 + 文字，比一行裸字多一个可辨识的锚点。
+  // 100 层之后，光有层号不够用 —— 下面补一行幕名，玩家才知道自己在哪一带，
+  // 而"这一带的怪会反伤还是要塞杂念"是能影响这一手怎么打的。
+  const st = stageOf(G.stage);
   icon('floor', 424, 31, 9, C.dim);
-  text(`第 ${floor} 层`, 438, 31, { size: 17, color: C.ink2, weight: 600 });
+  text(`第 ${curFloor()} 层`, 438, 31, { size: 17, color: C.ink2, weight: 600 });
+  text(`${st.i} · ${st.name}`, 438, 52, { size: 11, color: st.color, weight: 600 });
 
   // 模式胶囊：整局不变，所以只说一次。它原来印在每张手牌的下沿 ——
   // 一句话重复五遍，等于没说。敌人等级不放在这里：名字下面已经标了，两处重复。
@@ -156,7 +160,9 @@ function topBar(t: number) {
 function drawEnemy(e: Foe, t: number) {
   const bob = Math.sin(t * 1.5) * 9;
   const breathe = 1 + Math.sin(t * 1.5 + 1) * 0.012;
-  const size = 430 * breathe;
+  // Boss 大一号：一局只有五只，幕末那只必须在体量上就不一样。
+  // 只放大立绘，不动它头顶的意图和血条 —— 那两样要留在同一个高度上。
+  const size = (e.type === 'boss' ? 512 : 430) * breathe;
   const art = ART[e.art];
 
   // 出招和被击退都是身体的位移：冲出去 90，挨打退 34

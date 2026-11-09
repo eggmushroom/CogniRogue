@@ -688,6 +688,59 @@ await boot(URL_ + '?dev=event');
 await step('事件 → 选一个选项', () => clickLabel('eventopt', 0), async () =>
   (await S('cog.state.panel.k')) !== 'event');
 
+// ── 断点 ───────────────────────────────────────────────────
+// 100 层的一局接近一小时，存档不是附加功能，是"这局能不能玩完"的一部分。
+// 这里走完整条路：写一份断点 → 真的刷新一次 → 首页出现「继续这一局」
+// → 点它回到同一幕同一层，血、牌组、走过的路都还在。
+// 刷新的那一次走的是没有 dev 参数的首页 —— 除了「继续」按钮，`saveRun()` 在
+// 别的画面上一个字都不会写。
+await boot(URL_ + '?dev=map&stage=3');
+globalThis.__snap = await evalJs(`(() => {
+  const s = cog.state;
+  const nd = s.map[6][0];
+  s.pos = { r: 6, i: nd.i };
+  s.floors = 6;
+  s.hp = 41;
+  cog.save();
+  const raw = localStorage.getItem('cognirogue.run.v1');
+  return { len: raw ? raw.length : 0, deck: s.deck.length, hp: s.hp };
+})()`);
+await boot(URL_);
+await step('断点：刷新之后首页能「继续这一局」，回到同一幕同一层', async () => {
+  if (!globalThis.__snap.len) throw new Error('cog.save() 什么都没写进去');
+  // 首页的两个按钮是"有存档 / 没存档"两套版式，位置不同 —— 按标签找，不猜坐标
+  if (!await waitFor('继续这一局')) throw new Error('刷新后首页没有「继续这一局」');
+  await clickLabel('继续这一局');
+}, async () => {
+  const st = await S(`({
+    screen: cog.state.screen, stage: cog.state.stage,
+    r: cog.state.pos ? cog.state.pos.r : -1,
+    hp: cog.state.hp, deck: cog.state.deck.length,
+    panel: cog.state.panel.k, pending: cog.state.pending,
+  })`);
+  const ok = st.screen === 'map' && st.stage === 3 && st.r === 6
+    && st.hp === globalThis.__snap.hp && st.deck === globalThis.__snap.deck
+    && st.panel === 'none' && st.pending === null;
+  if (!ok) throw new Error('实际状态：' + JSON.stringify(st));
+  return true;
+});
+
+// 开新局必须把断点清掉，否则死了以后首页会举着一个「继续」骗人点进去 ——
+// 点进去还是那座已经塌了的塔。这里走真实的清档路径（startRun 第一行就 clearRun）。
+await boot(URL_);
+await step('开新的一局 → 断点清掉，再刷新首页不再提「继续」', async () => {
+  if (!await waitFor('开始新的一局')) throw new Error('首页没有「开始新的一局」');
+  await clickLabel('开始新的一局');
+  if (!await waitFor('mode:review')) throw new Error('模式选择没有出现');
+  await clickLabel('mode:review');
+  if ((await S('cog.state.screen')) !== 'map') throw new Error('没有进入地图');
+  // 再刷一次：首页应该退回"没有存档"的那套版式
+  await boot(URL_);
+}, async () => {
+  const n = await evalJs(`cog.hots().filter((h) => h.label === '继续这一局').length`);
+  return n === 0 && (await S('cog.state.screen')) === 'title';
+});
+
 await boot(URL_ + '?dev=report');
 await step('结算 → 再来一局 → 重新选模式', async () => {
   globalThis.__floorBefore = await S('cog.state.floors');

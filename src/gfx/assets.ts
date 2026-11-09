@@ -6,6 +6,10 @@ import grubUrl from '../../assets/grub.jpg';
 import inquisitorUrl from '../../assets/inquisitor.jpg';
 import tideUrl from '../../assets/tide.jpg';
 import letheUrl from '../../assets/lethe.jpg';
+import cataloguerUrl from '../../assets/cataloguer.jpg';
+import devourerUrl from '../../assets/devourer.jpg';
+import imprinterUrl from '../../assets/imprinter.jpg';
+import boundUrl from '../../assets/bound.jpg';
 import arenaUrl from '../../assets/arena.jpg';
 
 /**
@@ -21,6 +25,10 @@ export interface Art {
   inquisitor: HTMLImageElement;
   tide: HTMLImageElement;
   lethe: HTMLImageElement;
+  cataloguer: HTMLImageElement;
+  devourer: HTMLImageElement;
+  imprinter: HTMLImageElement;
+  bound: HTMLImageElement;
   arena: HTMLImageElement;
 }
 
@@ -39,6 +47,10 @@ export const ART: Art = {
   inquisitor: mk(inquisitorUrl),
   tide: mk(tideUrl),
   lethe: mk(letheUrl),
+  cataloguer: mk(cataloguerUrl),
+  devourer: mk(devourerUrl),
+  imprinter: mk(imprinterUrl),
+  bound: mk(boundUrl),
   arena: mk(arenaUrl),
 };
 

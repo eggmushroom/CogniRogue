@@ -12,7 +12,9 @@ import { BANK, loadQuestionBank, memOf } from './core/library';
 import { costNow, defOf, PACK, powerCardOf } from './core/cards';
 import { FOES } from './core/model';
 import { answer, askCard, cancelPanel, canAsk, endTurn, playPower } from './core/combat';
-import { EVENTS, dismissFeedback, endRun, enterNode, startRun } from './core/journey';
+import { EVENTS, dismissFeedback, endRun, enterNode, saveRun, startRun } from './core/journey';
+import { genStage } from './core/map';
+import { STAGES } from './core/model';
 import type { Move } from './core/model';
 import {
   drawBattle, DISCARD_TO, ENEMY, fxCount, handSettled, HERO, heroHand, resetBattleView, syncBattle,
@@ -230,6 +232,8 @@ declare global {
        * 冒烟测试没有时间去真的答对两次，所以开一个后门。
        */
       markMem: (id: string, ok: number, bad?: number) => void;
+      /** 调试/截图用：把当前这一局写成断点（首页「继续这一局」的那条存档） */
+      save: () => void;
       /** 调试/自动化用：还在飞的单元数（抽牌 / 弃牌 / 敌人动作），用来盯"飞行单元漏清" */
       fx: () => { hand: number; discard: number; enemy: number };
       /** 调试/自动化用：这张卡此刻的实际费用（X 费牌 = 当前行动力） */
@@ -288,6 +292,9 @@ window.cog = {
   },
   endTurn: () => endTurn(),
   locked: () => enemyHold > 0 || panelHold > 0,
+  // 截图用：把当前这一局写成断点，然后刷新回首页就能拍"继续这一局"那屏。
+  // 只有"在地图上、且没有面板"时才写得进去（和真实存档同一个门槛）。
+  save: () => saveRun(),
   grid: () => {
     beginFrame();
     g.strokeStyle = 'rgba(255,255,255,.06)';
@@ -316,7 +323,17 @@ function devJump() {
   if (d === 'mode') { G.panel = { k: 'mode' }; return; }
   // 素材图集：不需要开局，是一张独立的质量检验页
   if (d === 'atlas') { G.screen = 'atlas'; return; }
-  if (d === 'map') { startRun(); return; }
+  // 地图/战斗的截图要能指定幕：?dev=map&stage=4
+  const qs = Number(new URLSearchParams(location.search).get('stage') || 0);
+  const stageArg = Number.isInteger(qs) && qs >= 1 && qs <= STAGES.length ? qs : 0;
+  const gotoStage = (n: number) => {
+    if (!n) return;
+    G.stage = n;
+    G.map = genStage(n);
+    G.pos = null;
+    G.seen = {};
+  };
+  if (d === 'map') { startRun(); gotoStage(stageArg); return; }
   if (d === 'rest') { startRun(); G.panel = { k: 'rest' }; return; }
   if (d === 'event') { startRun(); G.panel = { k: 'event', ev: EVENTS[0] }; return; }
   if (d === 'deck') { startRun(); G.panel = { k: 'deck' }; return; }
@@ -341,7 +358,7 @@ function devJump() {
       if (tpl) {
         Object.assign(G.enemy, {
           key: tpl.key, name: tpl.name, art: tpl.art, hue: tpl.hue,
-          tag: tpl.tag, hint: tpl.hint, mech: tpl.mech,
+          tag: tpl.tag, hint: tpl.hint, mech: tpl.mech, mechV: tpl.mechV,
           moves: tpl.moves, mv: 0,
         });
       } else {
@@ -421,6 +438,7 @@ function devJump() {
     G.runOk = 12;
     G.runBad = 6;
     G.floors = 5;
+    G.stage = 3;
     G.deck.push({ id: 'pow:log', up: 0 }, { id: 'pow:lamp', up: 0 });
     endRun(true);
   }

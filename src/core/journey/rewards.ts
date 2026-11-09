@@ -55,19 +55,22 @@ export function skipReward() {
  */
 function afterReward() {
   const t = G.node?.type;
-  if (t === 'elite') { openPowerReward(); return; }
-  if (t === 'fight' && Math.random() < BAL.powerDrop) { openPowerReward(); return; }
+  if (t === 'elite') { openBossReward(); return; }
+  if (t === 'fight' && Math.random() < BAL.powerDrop) { openBossReward(); return; }
   finishNode();
 }
 
 /**
- * 精英战后的奖励。原来是"选一件遗物，直接生效一辈子"，现在变成
+ * 精英 / 幕 Boss 战后的奖励。原来是"选一件遗物，直接生效一辈子"，现在变成
  * "选一张增益牌塞进牌组"——你要抽到它、付得起它的费用、打出它，它才开始工作。
  *
  * 代价换来两件事：牌组会因此变厚（稀释知识卡，这是真实的构筑成本），
  * 以及每场战斗都要重新做一次"先答题还是先点灯"的决定。
+ *
+ * 幕 Boss 也走这里：100 层里有 5 个 Boss，如果过幕什么都不给，第 4、5 幕的
+ * 牌组会和第 1 幕一样薄，而敌人已经厚了一倍。
  */
-function openPowerReward() {
+export function openBossReward() {
   const owned: Record<string, boolean> = {};
   G.deck.forEach((e) => { owned[e.id] = true; });
   const pool = shuffle(POWERS.filter((p) => !owned[powerCardId(p.id)])).slice(0, 3);

@@ -15,8 +15,9 @@ import { BAL, MODES } from '../src/core/model';
 import type { CardInst, RunMode } from '../src/core/model';
 import {
   G, PACK, answer, availableNodes, bankQuestionCount, canAsk, canPay, chooseEventOption, defOf, dismissFeedback,
-  endTurn, enterNode, loadQuestionBank, playBasic, playPower, resetMemory, restHeal,
-  skipReward, startRun, takeCard, takePower, askCard, mergePacks,
+  endTurn, enterNode, loadQuestionBank, openCardPick, playBasic, playPower, resetMemory, restHeal,
+  skipReward, startRun, takeCard, takePower, askCard, mergePacks, upgradeCard, cardKind,
+  moveOf,
 } from '../src/core';
 
 /**
@@ -38,9 +39,17 @@ let MODE: RunMode = 'review';
 let FRESH = false;
 /** 每局都清空记忆：模拟"第一次打开这个题库"，学习期那档规则只在那种状态下才被真的走到 */
 let FRESH_RUN = false;
+/**
+ * 复习点怎么用：血低于这个比例就休息，否则精炼一张牌。
+ *
+ * 100 层是长局，"回血"和"变强"必须抢同一个格子 —— 一直回血的人打不到第五幕，
+ * 一直精炼的人第三幕就死了。默认按 0.55 这条线切换，`--smart=0` 退回"只回血"
+ * 的老基线（8 层时那样跑是对的，那时牌组根本长不到需要精炼）。
+ */
+let SMART = true;
 
 for (const arg of process.argv.slice(2)) {
-  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|rf|stab|fresh|freshrun|mode)=([\w.-]+)$/.exec(arg);
+  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|rf|stab|fresh|freshrun|mode|rest|sm|smart)=([\w.-]+)$/.exec(arg);
   if (!m) continue;
   const v = Number(m[2]);
   if (m[1] === 'runs') { RUNS = Math.round(v); continue; }
@@ -62,6 +71,9 @@ for (const arg of process.argv.slice(2)) {
   else if (m[1] === 'calm') BAL.calmFirstTurn = v > 0;
   else if (m[1] === 'rf') BAL.refund = v > 0 ? 1 : 0;
   else if (m[1] === 'stab') BAL.reviewStab = Math.max(1, v);
+  else if (m[1] === 'smart') { SMART = v > 0; }
+  else if (m[1] === 'rest') BAL.restPct = v;
+  else if (m[1] === 'sm') BAL.stageMaxHp = v;
 }
 
 // 让"死亡后延迟结算"在模拟里同步发生，不然几千局会跑成几分钟
@@ -115,6 +127,13 @@ interface Stat {
   basics: number;
 }
 
+/** 第 idx 张手牌该怎么打：知识卡答题、基础牌直接打。 */
+function advance(idx: number) {
+  const c = G.hand[idx];
+  if (!c) return;
+  if (cardKind(defOf(c)) === 'basic') playBasic(idx); else askCard(idx);
+}
+
 function runOne(p: number, st: Stat) {
   if (FRESH_RUN) resetMemory();
   startRun(MODE);
@@ -148,7 +167,25 @@ function runOne(p: number, st: Stat) {
       continue;
     }
     if (panel.k === 'power') { takePower(panel.pool[0].id); continue; }
-    if (panel.k === 'rest') { restHeal(); continue; }
+    if (panel.k === 'rest') {
+      // 复习点：血线够就精炼，不够就休息。精炼是这一版唯一的"变强"路径 ——
+      // 卡面 +3 攻/+3 挡，一副 15 张牌精炼一半，输出就翻了半倍。
+      const upg = G.deck.findIndex((e) => {
+        const k = cardKind(defOf(e));
+        return k !== 'basic' && k !== 'power' && e.up === 0;
+      });
+      if (SMART && G.hp > G.maxHp * 0.55 && upg >= 0) { openCardPick('up'); continue; }
+      restHeal();
+      continue;
+    }
+    if (panel.k === 'cardpick') {
+      const upg = G.deck.findIndex((e) => {
+        const k = cardKind(defOf(e));
+        return k !== 'basic' && k !== 'power' && e.up === 0;
+      });
+      if (upg >= 0) upgradeCard(upg); else { G.panel = { k: 'rest' }; restHeal(); }
+      continue;
+    }
     if (panel.k === 'event') { chooseEventOption(panel.ev.opts.length - 1); continue; }
     if (panel.k === 'report') break;
 
@@ -168,6 +205,20 @@ function runOne(p: number, st: Stat) {
       // 连题都点不开。所有候选都要过一遍 canPay，否则模拟会卡在原地点同一张牌。
       const pay = (c: CardInst) => canPay(defOf(c));
       if (G.ap > 0 && G.hand.length) {
+        // 挡不挡得住，是这个游戏每一回合真正的决定。机器人必须会挡 ——
+        // 只会打输出的话，模拟出来的"掉血量"是半个玩家，数值就全被带偏了。
+        const mv = G.enemy ? moveOf(G.enemy) : null;
+        const inc = mv && mv.k === 'atk' ? Math.round(G.enemy!.dmg * (mv.m ?? 1)) * (mv.times ?? 1) : 0;
+        if (inc - G.block >= 6) {
+          const gd = G.hand.findIndex((c) => {
+            const d = defOf(c);
+            if (c.junk || !pay(c) || d.power) return false;
+            const k = cardKind(d);
+            if (k === 'knowledge') return d.eff === 'guard' && canAsk(c);
+            return k === 'basic' && (d.blk || 0) > 0;
+          });
+          if (gd >= 0) { advance(gd); continue; }
+        }
         // 增益牌先打：它花行动力，但本场剩下每回合都在还。
         // 不先打的话，这张牌在手里就是一张废纸，模拟会把它的价值算成 0。
         const pw = G.hand.findIndex((c) => !!defOf(c).power && pay(c));

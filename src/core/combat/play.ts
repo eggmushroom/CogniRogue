@@ -10,8 +10,7 @@ import { shuffleOptions } from '../library/question';
 import { defOf, hasPower, powerOf, statOf } from '../cards/registry';
 import { canPay, costNow, isXCost, refundOf } from '../cards/cost';
 import { cardKind } from '../cards/kinds';
-import { endRun } from '../journey/report';
-import { openReward } from '../journey/rewards';
+import { settlePending } from '../journey/run';
 import { drawCards, startTurn } from './deck';
 import { makeFoe } from './foe';
 
@@ -32,8 +31,10 @@ import { makeFoe } from './foe';
 const join = (a: string, b: string) => (a ? a + ' ' : '') + b;
 
 export function startBattle(nd: MapNode) {
-  const pool = FOES.filter((f) => f.type === nd.type);
-  const e = makeFoe(pick(pool.length ? pool : FOES), nd.type, nd.r);
+  // 按「这一幕 + 这个节点类型」取怪：一幕一套物种，换幕就换一整套。
+  // 找不到时回退到全表（自定义题库 / 调试场景），不让一场战斗因为数据缺失开不起来。
+  const pool = FOES.filter((f) => f.stage === G.stage && f.type === nd.type);
+  const e = makeFoe(pick(pool.length ? pool : FOES.filter((f) => f.type === nd.type)), nd.type, nd.r);
 
   G.screen = 'battle';
   G.enemy = e;
@@ -56,6 +57,10 @@ export function startBattle(nd: MapNode) {
   G.qSeen = {};
   G.answerDrawsThisTurn = 0;
   G.missDrawsThisTurn = 0;
+  // 蠹蛾这类怪不封牌，它只是让你少看见一张：本场每回合的抽牌数 -1。
+  // 记在场上而不是临时减 —— 手牌上限、抽牌动画、日志都得读同一个数。
+  G.drawCut = e.mech === 'fog' ? (e.mechV ?? 1) : 0;
+  G.apDown = 0;
 
   // 增益牌每场都要重新打一遍。这一行就是"遗物 → 牌"的整个差别所在。
   G.powers = [];
@@ -175,6 +180,22 @@ function strikeWith(ent: CardInst, mult: number, repeat = 1) {
   return { out, dmg, absorbed, blk: out.blk, heal, drawn, parts };
 }
 
+/**
+ * 反伤。你打它一下，它回你一下 —— **格挡挡不住**，因为它不是攻击，
+ * 是纸割手。这条机制只惩罚"数量"：一回合打三张 1 费牌，就挨三次；
+ * 打一张 3 费牌，只挨一次。所以它逼的是"把伤害集中"。
+ */
+function thornsBack(dealt: number) {
+  const e = G.enemy;
+  if (!e || e.mech !== 'thorns' || dealt <= 0) return 0;
+  const n = Math.min(G.hp - 1, e.mechV ?? BAL.mech.thorns);
+  if (n <= 0) return 0;
+  G.hp -= n;
+  log(`${e.name} 的反伤：你受到 ${n} 点伤害`, 'bad');
+  emit({ t: 'hurt', n });
+  return n;
+}
+
 export function answer(choice: number) {
   if (G.panel.k !== 'question' || G.busy) return;
   const { idx, qi, q, view } = G.panel;
@@ -219,6 +240,9 @@ export function answer(choice: number) {
     parts = r.parts;
     if (xcost) apNote = join(apNote, `耗尽 ${spent} 点行动力，效果结算 ${repeat} 次。`);
     if (drawn) apNote = join(apNote, `专注：抽 ${drawn} 张。`);
+    // 反伤在这张牌结算完之后收：先看见自己打了多少，再看见手上被割了一道。
+    const back = thornsBack(dmg);
+    if (back) apNote = join(apNote, `反伤：你受到 ${back} 点。`);
 
     // 答对抽一张：想起来的越多，这一回合看到的牌越多。走的是信息，不是倍率 ——
     // 所以卡面数值才能保持 1:1，不用再靠全局血量去补偿。
@@ -306,6 +330,13 @@ export function answer(choice: number) {
         G.enemy.dmg += 1;
         apNote = join(apNote, '忘川吞下这次遗忘：它的攻击永久 +1。');
         log('忘川吞下这次遗忘，攻击 +1', 'bad');
+      } else if (G.enemy.mech === 'bulwark') {
+        // 答错 = 它多一层甲。这条机制把"不会"变成"打不动"，
+        // 而不是变成扣血 —— 惩罚落在节奏上，不落在血量上。
+        const n = G.enemy.mechV ?? BAL.mech.bulwark;
+        G.enemy.block += n;
+        apNote = join(apNote, `它趁机加固：获得 ${n} 点格挡。`);
+        log(`${G.enemy.name} 加固了 ${n} 点格挡`, 'bad');
       }
     }
 
@@ -472,6 +503,7 @@ export function playBasic(idx: number) {
 
   const spent = costNow(card);
   const r = strikeWith(ent, 1);
+  thornsBack(r.dmg);
   G.ap -= spent;
   G.cardsPlayed += 1;
   G.ap = clamp(G.ap, 0, 10);
@@ -499,9 +531,7 @@ export function playBasic(idx: number) {
   G.busy = true;
   setTimeout(() => {
     G.busy = false;
-    if (G.pending === 'clear') openReward();
-    else if (G.pending === 'win') endRun(true);
-    else if (G.pending === 'dead') endRun(false);
+    settlePending();
   }, 200);
 }
 

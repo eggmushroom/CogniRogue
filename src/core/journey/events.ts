@@ -37,7 +37,7 @@ function hurtBy(n: number) {
 }
 
 export function restHeal() {
-  const n = Math.round(G.maxHp * 0.32);
+  const n = Math.round(G.maxHp * BAL.restPct);
   G.hp = Math.min(G.maxHp, G.hp + n);
   log(`休息，回复 ${n} 点生命`, 'hi');
   emit({ t: 'heal', n });

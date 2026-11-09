@@ -1,7 +1,7 @@
 import { g, roundRect, VH, VW } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { action, bar, panel, text, wrap } from '../gfx/ui';
-import { MODES, POWER_BY_ID } from '../core/model';
+import { MODES, POWER_BY_ID, stageOf } from '../core/model';
 import { backToTitle, restart } from '../core/journey';
 import type { ReportData } from '../core/model';
 
@@ -17,7 +17,8 @@ export function drawReport(d: ReportData) {
   panel(x, y, w, h, { r: 18, fill: 'rgba(12,15,22,.98)', stroke: withAlpha(d.win ? C.gold : C.line, 0.55) });
 
   const accent = d.win ? C.gold : C.red;
-  text(d.win ? '你走到了档案馆的尽头' : `这次倒在了第 ${d.floor} 层`, x + 48, y + 68, {
+  const st = stageOf(d.stage);
+  text(d.win ? '你走到了档案馆的尽头' : `这次倒在了第 ${d.floor} 层 · ${st.name}`, x + 48, y + 68, {
     size: 34, weight: 700, family: FONT_TITLE, color: accent,
   });
   text('知识等级不会掉。下一局开局前重新选模式，按模式抽牌。', x + 48, y + 106, {
@@ -29,7 +30,7 @@ export function drawReport(d: ReportData) {
     [MODES[d.mode].name, '本局模式'],
     [`${d.runOk}/${total}`, '本局答题'],
     [`${total ? Math.round((d.runOk / total) * 100) : 0}%`, '正确率'],
-    [`${d.floors}`, '走过节点'],
+    [`第 ${d.stage} 幕`, '走到哪里'],
     [`${d.deckSize}`, '牌组张数'],
     [`${Math.round(d.mastery * 100)}%`, '卡牌掌握度'],
   ];
