@@ -9,8 +9,7 @@ import { MODES, POWER_BY_ID } from '../core/model';
 import { G } from '../core/infra';
 import { canPay, cardKind, costOf, defOf, isXCost, powerOf, statOf } from '../core/cards';
 import {
-  askCard, canAsk, endTurn, intentText, isForgotten, isUnlocked, playBasic, playPower,
-  playUnlocked, unlockStats,
+  askCard, canAsk, endTurn, intentText, playBasic, playPower,
 } from '../core/combat';
 import type { CardDef, CardInst, Foe } from '../core/model';
 
@@ -118,24 +117,6 @@ function topBar(t: number) {
     g.lineWidth = 1.2;
     g.stroke();
     text(`${md.name}模式`, 524 + tw / 2, 31, { size: 14, color: md.color, weight: 700, align: 'center' });
-  }
-
-  // 解锁进度：这一场真正的资源。它比伤害数字更该一眼看见 ——
-  // 玩家每一手的取舍都是"要不要花行动力去解锁"。
-  const us = unlockStats();
-  if (us.total) {
-    const full = us.n >= us.total;
-    const col = full ? C.gold : C.cyan;
-    const pulse = full ? 1 : 1 + Math.sin(t * 5) * 0.03;
-    g.save();
-    g.translate(700, 26);
-    g.scale(pulse, pulse);
-    icon(full ? 'check' : 'lock', 0, 5, 9, col);
-    text(`${us.n}/${us.total}`, 16, 6, { size: 18, weight: 800, color: col });
-    text('已解锁', 62, 7, { size: 12, color: C.dim });
-    g.restore();
-    // 计数下面一条迷你进度：不占地方，但"还差几个"不用心算了
-    bar(700, 44, 92, 4, us.n / us.total, col, { r: 2 });
   }
 
   // 本场已打出的增益牌。它不再是"装备栏"：每场开头清空、每场重新打，
@@ -977,19 +958,16 @@ function drawHand(t: number, dt: number) {
     fx.dx = px;
     fx.dy = py;
 
-    // 四种状态：基础牌（不答题，随时可打）/ 锁着（要答题）/ 已解锁（免答直接打）/
-    // 这回合已经答错过，外加一种整场作废（测试模式答错）。增益牌不传状态。
+    // 三种状态：基础牌（不答题，随时可打）/ 要答题 / 这回合已经答错过。
+    // 没有"锁着"这一档了 —— 本场解锁删掉之后，知识卡从第一回合起就能打，只是要答题。
     const kind = cardKind(card);
     const isPow = kind === 'power';
     const isJunk = kind === 'junk';
     const isBase = kind === 'basic';
-    const open = !isJunk && !isPow && !isBase && isUnlocked(card.id);
     const state = isJunk || isPow ? undefined
       : isBase ? 'basic'
-        : open ? 'open'
-          : isForgotten(card.id) ? 'forgotten'
-            : G.failedTurn[card.id] ? 'spent'
-              : 'locked';
+        : G.failedTurn[card.id] ? 'spent'
+          : 'ask';
 
     g.save();
     g.globalAlpha = alpha;
@@ -997,7 +975,6 @@ function drawHand(t: number, dt: number) {
     g.rotate(rot);
     drawCard(-w / 2, -h / 2, w, h, card, st.atk, st.blk, {
       up: !!ent.up, glow: hv, hovered: hv, state,
-      mode: isJunk || isPow || isBase ? undefined : G.mode,
       // 付不起的牌把费用球点红：这一手现在打不出去，得在点之前就看得出来
       afford: isJunk || canPay(card),
     });
@@ -1019,8 +996,8 @@ function drawHand(t: number, dt: number) {
       return false;
     };
 
-    // 基础牌点下去直接打，锁着的牌点下去出题，已解锁的牌点下去直接打，
-    // 增益牌点下去立刻生效 —— 四种都是"点这张牌"，只是它问你要的东西不一样
+    // 基础牌点下去直接打，知识卡点下去出题，增益牌点下去立刻生效 ——
+    // 三种都是"点这张牌"，只是它问你要的东西不一样
     if (isPow) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
         if (!payUp()) return;
@@ -1034,15 +1011,10 @@ function drawHand(t: number, dt: number) {
     } else if (!isJunk) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
         if (!payUp()) return;
-        if (open) { playUnlocked(s.i); return; }
-        if (isForgotten(card.id)) {
-          // 作废的牌打不出去 —— 但不说明白，玩家会以为自己点不动它
-          FX.shake(4);
-          FX.floatText(HAND.cx, HAND.cy - 54, '这一场它已经作废了 —— 打不出去', C.red, 20, { vy: -34 });
-          return;
-        }
         if (canAsk(ent)) { askCard(s.i); return; }
-        FX.shake(5);
+        // 走不到这里才怪：这一回合这个卡种已经答错过。说清楚，而不是抖一下了事。
+        FX.shake(4);
+        FX.floatText(HAND.cx, HAND.cy - 54, '这一回合这个卡种已经答错过了 —— 下回合再试', C.red, 18, { vy: -34 });
       }, 'card', s.i);
     } else {
       onClick(px - w / 2, py - h / 2, w, h, () => {

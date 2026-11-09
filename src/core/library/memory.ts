@@ -7,7 +7,8 @@ import { PACK } from '../cards/pack';
  * library/memory —— FSRS-lite 复习调度。
  *
  * 只管「记不记得」：持久化、稳固度、到期日、按记忆状态组起手牌组。
- * 战斗中的解锁 / 作废是**本场**状态，归 combat/unlock，不要和这里混在一起。
+ * 战斗中"这一回合答错过没有"是**本场**状态，归 combat/play 的 `G.failedTurn`，
+ * 不要和这里混在一起。
  */
 function loadMem(): Record<string, MemEntry> {
   try {

@@ -28,10 +28,10 @@ export function startRun(mode: RunMode = G.mode) {
     map: genMap(), pos: null, seen: {}, node: null,
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0,
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
-    powers: [], topicAtk: {}, unlocked: {}, failedTurn: {}, qSeen: {}, forgotten: {},
+    powers: [], topicAtk: {}, failedTurn: {}, qSeen: {},
     topicWrong: {},
     okThisTurn: 0, topOkTopic: null, cardsPlayed: 0, binderUsed: false,
-    frees: 0, unlocks: 0,
+    answerDraws: 0, answerDrawsThisTurn: 0, missDrawsThisTurn: 0,
     runOk: 0, runBad: 0, floors: 0, pending: null, busy: false,
   } satisfies Partial<GameState>);
 

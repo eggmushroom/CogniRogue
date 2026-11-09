@@ -26,15 +26,14 @@ export function endRun(win: boolean) {
   // 这一局的伤害里，多少是你记住的，多少是你当时蒙对的那一下。
   const asks = G.runOk + G.runBad;
   const acc = asks ? G.runOk / asks : 0;
-  const share = asks + G.frees ? G.frees / (asks + G.frees) : 0;
   let verdict: string;
   if (!asks) {
     verdict = '这一局你一道题都没答。战斗不是靠躲过去的 —— 下一局先点开一张牌。';
   } else if (acc >= 0.8) {
-    verdict = `你答对了 ${Math.round(acc * 100)}%，${Math.round(share * 100)}% 的出牌是免答打出去的。`
-      + '后半场你不是在赌，是在用记住的东西打仗 —— 这就是这套机制想要的状态。';
+    verdict = `你答对了 ${Math.round(acc * 100)}%。`
+      + '后半场你不是在赌，是在用记住的东西打仗 —— 答对退回的行动力和多抽的那张牌，都是这么来的。';
   } else if (acc >= 0.6) {
-    verdict = `你答对了 ${Math.round(acc * 100)}%。这个区间是"半懂"：卡能解锁，但每场都要重新证明一次。`
+    verdict = `你答对了 ${Math.round(acc * 100)}%。这个区间是"半懂"：牌打得出去，但每一手都要重新想一次。`
       + '把错得最多的那个主题连着答两轮，比换一副更强的牌有用。';
   } else {
     verdict = `你答对了 ${Math.round(acc * 100)}%。牌面够强，题没记住 —— 这副牌现在是借来的。`
@@ -51,7 +50,7 @@ export function endRun(win: boolean) {
       runOk: G.runOk, runBad: G.runBad, floors: G.floors, deckSize: G.deck.length,
       // 增益牌不算卡种：它没有题，混进来会把牌组的多样性说多
       kinds: new Set(G.deck.filter((e) => !isPowerId(e.id)).map((e) => e.id)).size,
-      mastery: total, rows, frees: G.frees, unlocks: G.unlocks,
+      mastery: total, rows, answerDraws: G.answerDraws,
       verdict, powers: deckPowers().map((p) => p.name),
     },
   };

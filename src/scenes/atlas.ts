@@ -59,7 +59,7 @@ export function drawAtlas(_t: number) {
   const uy = gy + 2 * (ch + 18) + 10;
   text('UI 基础图标', gx, uy, { size: 16, weight: 700, color: C.ink2 });
   const names = [
-    'attack', 'shield', 'junk', 'buff', 'check', 'lock',
+    'attack', 'shield', 'junk', 'buff', 'check',
     'heart', 'flame', 'cards', 'discard', 'turn', 'floor',
   ] as const;
   names.forEach((n, i) => {

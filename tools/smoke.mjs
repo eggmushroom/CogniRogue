@@ -442,31 +442,49 @@ await step('打出增益牌 → 不出题、不进弃牌堆、进入本场增益
   return true;
 });
 
-// 免答出牌是新机制唯一的点击路径：解锁之后点牌不该再出题，而是直接结算。
-// 用 dev=battle 开局（10 张牌全是不同卡种，正常打不到重复），再手动全解锁。
+// 答错的两条新规则：这一手作废（费用不退）、但**手牌补一张**，
+// 而且这个卡种这一回合不能再答 —— 最后这一条是唯一的锁，靠 failedTurn 记。
+// 一次点击同时验三件事，因为它们本来就是同一个动作的三个后果。
 await boot(URL_ + '?dev=battle');
-await step('免答出牌 → 不出题，只扣这张牌的费用', async () => {
-  await evalJs('cog.unlockAll()');
+await step('答错 → 费用不退、补抽 1 张、这个卡种这回合不能再答', async () => {
   if (!await waitHand()) throw new Error('手牌一直没落位');
-  globalThis.__apBefore = await S('cog.state.ap');
-  // 基础牌本来就不出题，这条要测的是"知识卡解锁后也不出题"，所以必须挑知识卡。
-  // 免答不退款，所以扣的就是这张牌的整份费用 —— 挑 1 费牌最好断言，挑不到就按实际费用算。
-  const know = await evalJs(`(() => {
-    const h = cog.state.hand;
-    const one = h.findIndex((c) => !c.id.startsWith("base:") && cog.costOf(c.id) === 1);
-    return one >= 0 ? one : h.findIndex((c) => !c.id.startsWith("base:"));
+  const idx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
+  if (idx < 0) throw new Error('手里没有知识卡');
+  // 挑 1 费牌，这样"费用不退"的断言不用管 X 费那种活价
+  const one = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:") && cog.costOf(c.id) === 1)');
+  const pick = one >= 0 ? one : idx;
+  globalThis.__missHand = await evalJs('cog.state.hand.length');
+  globalThis.__missAp = await S('cog.state.ap');
+  globalThis.__missCost = await evalJs(`cog.costOf(cog.state.hand[${pick}].id)`);
+  globalThis.__missId = await S(`cog.state.hand[${pick}].id`);
+  await clickCard(pick);
+  if (!await waitFor('opt')) throw new Error('点牌之后没有出题');
+  const wrong = await evalJs(`(() => {
+    const v = cog.state.panel.view;
+    return { wrong: (v.answer + 1) % v.options.length };
   })()`);
-  if (know < 0) throw new Error('手里没有知识卡');
-  globalThis.__freeCost = await evalJs(`cog.costOf(cog.state.hand[${know}].id)`);
-  await clickCard(know);
+  globalThis.__badBefore = await evalJs('cog.state.runBad');
+  await clickLabel('opt', wrong.wrong);
+  await expectFeedback('答错后');
 }, async () => {
-  const ap = await S('cog.state.ap');
-  const k = await S('cog.state.panel.k');
-  return k === 'none' && ap === globalThis.__apBefore - globalThis.__freeCost;
+  const st = await evalJs(`({
+    hand: cog.state.hand.length,
+    ap: cog.state.ap,
+    bad: cog.state.runBad,
+    failed: !!cog.state.failedTurn[${JSON.stringify(globalThis.__missId)}],
+  })`);
+  // 手牌数不变 = 打出去一张（那一手作废了）+ 补抽一张进来。
+  // 不断言弃牌堆：学习模式那张牌会回抽牌堆，补抽也可能抽到同一种，堆的计数会飘。
+  const ok = st.hand === globalThis.__missHand
+    && st.ap === globalThis.__missAp - globalThis.__missCost
+    && st.bad === globalThis.__badBefore + 1
+    && st.failed === true;
+  if (!ok) throw new Error('实际状态：' + JSON.stringify(st));
+  return true;
 });
 
 // 初始牌组：点基础牌不弹题，直接结算，并且扣 1 点行动力。
-// 它是这一局的"地板"——答错锁卡、测试模式作废之后，至少还有牌能打。
+// 它是这一局的"地板"——答错之后至少还有牌能打。
 // 13 张牌只带 2 张基础斩击，开局不一定抽到；这里直接塞一张进手牌，
 // 测的是"点基础牌不走答题"，不是抽牌概率。
 await boot(URL_ + '?dev=battle');
@@ -609,18 +627,18 @@ await step('复习模式答错 → 牌进弃牌堆，不再自动回来', async 
     dc: cog.state.discard.length,
     miss: cog.state.runBad,
     back: cog.state.draw.some((c) => c.id === ${JSON.stringify(globalThis.__revId)}),
-    forgotten: !!cog.state.forgotten[${JSON.stringify(globalThis.__revId)}],
   })`);
-  // 复习模式只进弃牌堆，不作废卡种
+  // 复习模式只进弃牌堆，不回牌堆
   const ok = st.dc === globalThis.__dcBeforeRev + 1 && st.miss === globalThis.__missAtAsk + 1
-    && st.back === false && st.forgotten === false;
+    && st.back === false;
   if (!ok) throw new Error('实际状态：' + JSON.stringify(st));
   return true;
 });
 
-// 测试模式那一档：答错不该补格挡，而且这个卡种本场直接作废。
+// 测试模式那一档：三种模式里唯一不给垫子的 —— 答错补的格挡是 0。
+// （它原来还有"卡种本场作废"，那条已经删掉：没收工具会让玩家只敢绕开不会的牌。）
 await boot(URL_ + '?dev=battle');
-await step('测试模式答错 → 卡种作废且不补格挡', async () => {
+await step('测试模式答错 → 不补任何格挡', async () => {
   if (!await waitHand()) throw new Error('手牌一直没落位');
   const idx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
   globalThis.__testIdx = idx;
@@ -640,12 +658,12 @@ await step('测试模式答错 → 卡种作废且不补格挡', async () => {
   const st = await evalJs(`({
     blk: cog.state.block,
     miss: cog.state.runBad,
-    forgotten: !!cog.state.forgotten[${JSON.stringify(globalThis.__testId)}],
+    failed: !!cog.state.failedTurn[${JSON.stringify(globalThis.__testId)}],
     dc: cog.state.discard.length,
   })`);
   return st.blk === globalThis.__blkBeforeTest
     && st.miss === globalThis.__missBeforeTest + 1
-    && st.forgotten === true && st.dc === 1;
+    && st.failed === true && st.dc >= 1;
 });
 
 // ── 第二阶段：三个弹层各自点一次，确认按钮真的能按 ──

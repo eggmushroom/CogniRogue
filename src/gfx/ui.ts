@@ -1,9 +1,9 @@
 import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
 import { C, font, FONT_UI, FONT_TITLE, withAlpha } from './theme';
-import { EFFS, MODES, POWER_BY_ID, resolveEff } from '../core/model';
+import { EFFS, POWER_BY_ID, resolveEff } from '../core/model';
 import { cardKind, cardType, costGlyph, isXCost, CARD_TYPE_META } from '../core/cards';
-import type { CardDef, PowerDef, RunMode } from '../core/model';
+import type { CardDef, PowerDef } from '../core/model';
 import { drawArtIcon } from './art/icons';
 
 
@@ -198,22 +198,17 @@ export interface CardOpts {
   /** 隐藏底部的攻/挡 */
   bare?: boolean;
   /**
-   * 战斗中的解锁状态。只有手牌会传 —— 牌组/奖励列表传了没意义，
-   * 那两个界面关心的是"这张卡是什么"，不是"这一场能不能用"。
+   * 这张牌此刻在战斗里的状态。只有手牌会传 —— 牌组/奖励列表传了没意义，
+   * 那两个界面关心的是"这张卡是什么"，不是"这一手能不能打"。
    *
-   * 牌面上它由两件事共同表达：右上角那枚锁章（合锁 / 开锁），
-   * 以及正文的明暗（锁着的牌名与效果整体压一档）。不写文字 ——
-   * "这张能不能打"是一个字的状态，不值得占一整条。
+   * `ask` = 点下去会出题（知识卡的常态）；`spent` = 这一回合这个卡种已经答错过，
+   * 本回合不能再答；`basic` = 初始牌组，不答题、随时可打。
    *
-   * `forgotten` 是测试模式答错的结果：这一场这个卡种作废了（既不能答题，也打不出去）。
-   * `basic` 是初始牌组：不参与解锁，所以不画章、正文保持全亮。
+   * 只有 `spent` 会被压暗。**没有"锁着"这一档了** —— 本场解锁删掉之后，
+   * 知识卡从第一回合起就是能打的，只是要答题；一张牌"能不能打"不再取决于历史，
+   * 只取决于费用和这一回合有没有答错。
    */
-  state?: 'locked' | 'open' | 'spent' | 'forgotten' | 'basic';
-  /**
-   * 本局模式。整局不变，不写进牌面文字，只决定锁章的冷暖色 ——
-   * 学习灰、复习橙、测试红，扫一眼就知道这一局答错要付多少。
-   */
-  mode?: RunMode;
+  state?: 'ask' | 'spent' | 'basic';
   /**
    * 现在付不付得起这张牌的费用。只有手牌会传 false —— 牌组、奖励、牌堆列表里
    * 不存在"此刻能不能打"这个问题，传了反而是噪音。
@@ -306,13 +301,12 @@ export function drawCard(
   g.fillStyle = grd;
   g.fill();
 
-  // 内描边 + 主题色外框。锁着的卡把边框压暗并改成虚线 —— 一眼就能看出"封印"
-  // 这张牌现在能不能用，只有一种判断；边框、暗幕、正文都用它。
-  const sealed = opts.state === 'locked' || opts.state === 'spent' || opts.state === 'forgotten';
+  // 内描边 + 主题色外框。
+  // 这张牌现在能不能打，只有一种判断（`sealed`）；边框、暗幕、正文都用它。
+  // 唯一被压暗的状态是"这一回合答错过了" —— 它是临时的，新回合就恢复。
+  const sealed = opts.state === 'spent';
 
-  // 锁着的牌整体压一层暗幕。只把正文字变灰不够：字暗了，牌面还是亮的，
-  // 整张卡看上去依旧"可以打"。画在底色之后、边框之前 —— 边框和右上角的锁章
-  // 要留在暗幕之上，否则连"它锁着"这件事都被自己盖住。
+  // 压暗一层。只把正文变灰不够：字暗了，牌面还是亮的，整张卡看上去依旧"可以打"。
   if (sealed) {
     g.save();
     roundRect(x, y, w, h, r);
@@ -324,12 +318,10 @@ export function drawCard(
 
   roundRect(x + 1.5, y + 1.5, w - 3, h - 3, r - 1);
   g.strokeStyle = opts.up ? withAlpha(C.gold, 0.85)
-    : opts.state === 'open' ? withAlpha(C.gold, 0.5)
-    : opts.state === 'forgotten' ? withAlpha(C.red, 0.5)
     : sealed ? withAlpha(tc, 0.26)
     : withAlpha(tc, opts.hovered ? 0.95 : 0.5);
-  g.lineWidth = opts.up ? 2.2 : opts.state === 'open' ? 1.8 : 1.5;
-  if (opts.state === 'locked' || opts.state === 'forgotten') g.setLineDash([6, 4]);
+  g.lineWidth = opts.up ? 2.2 : 1.5;
+  if (sealed) g.setLineDash([6, 4]);
   g.stroke();
   g.setLineDash([]);
 
@@ -489,45 +481,6 @@ export function drawCard(
     drawArtIcon(eff.key, x + w * 0.58, y + h * 0.73, h * 0.42, tc, { alpha: 0.085 });
   }
 
-  // ── 右上角：这张牌现在能不能直接打 ─────────────────────────
-  // 以前这件事写在牌面下沿一条通栏状态带里，一整条只为说一个字的状态。
-  // 现在收成一枚角章：合锁 = 要先答题，开锁 = 免答可打。
-  // 基础牌不参与解锁（顶栏的解锁进度也不算它），所以不画章 ——
-  // 有章 / 无章本身就区分了"这张牌在不在解锁系统里"。
-  if (kind !== 'junk' && opts.state && opts.state !== 'basic') {
-    const mode = opts.mode ? MODES[opts.mode] : null;
-    const open = opts.state === 'open';
-    const forgot = opts.state === 'forgotten';
-    // 三档沿用原来的语义：学习冷、复习暖、测试红，扫一眼就知道这局犯错多贵
-    const col = open ? C.gold
-      : forgot ? C.red
-        : opts.state === 'spent' ? C.orange
-          : mode?.key === 'test' ? withAlpha(C.red, 0.9)
-            : mode?.key === 'review' ? withAlpha(C.orange, 0.9)
-              // 学习模式没有"贵"的含义，但锁本身要读得出，所以不是 dim 而是 ink2
-              : C.ink2;
-    const cx = x + w - pad - 9 * s;
-    const cy = y + 18 * s;
-    // 近黑实心底：和卡面数字同一个手法 —— 这枚章要能从任何类别色的牌面上立起来
-    g.beginPath();
-    g.arc(cx, cy, 12 * s, 0, Math.PI * 2);
-    g.fillStyle = open ? withAlpha(C.gold, 0.2) : 'rgba(6,8,13,.86)';
-    g.fill();
-    g.strokeStyle = withAlpha(col, open ? 0.85 : 0.6);
-    g.lineWidth = 1.2;
-    g.stroke();
-    icon(open ? 'unlock' : 'lock', cx, cy, 8.5 * s, col);
-    // 本场作废再加一道斜杠：锁是"这回合不行"，划掉才是"这场没了"
-    if (forgot) {
-      g.beginPath();
-      g.moveTo(cx - 7.5 * s, cy + 7.5 * s);
-      g.lineTo(cx + 7.5 * s, cy - 7.5 * s);
-      g.strokeStyle = withAlpha(C.red, 0.9);
-      g.lineWidth = 1.6;
-      g.stroke();
-    }
-  }
-
   // 精炼标记
   if (opts.up) {
     g.font = font(Math.round(14 * s), 800, FONT_UI);
@@ -669,7 +622,7 @@ export function title(s: string, x: number, y: number, size = 44, color = C.ink)
    emoji 会在不同系统上变成彩色贴纸或方框，UI 里的小图标一律手画。 */
 
 export type IconName =
-  | 'attack' | 'shield' | 'junk' | 'buff' | 'check' | 'lock' | 'unlock'
+  | 'attack' | 'shield' | 'junk' | 'buff' | 'check'
   | 'heart' | 'flame' | 'cards' | 'discard' | 'turn' | 'floor';
 
 export function icon(name: IconName, cx: number, cy: number, s: number, col: string) {
@@ -784,26 +737,6 @@ export function icon(name: IconName, cx: number, cy: number, s: number, col: str
     g.lineTo(cx, cy - s * 0.58);
     g.lineTo(cx + s * 0.38, cy - s * 0.12);
     g.stroke();
-  } else if (name === 'lock' || name === 'unlock') {
-    // 锁体 + 锁孔两态共用，只有锁梁不一样：
-    // 合锁是全拱（扣在锁体上），开锁只留左半边并往上翘 —— 梁弹起来了。
-    const bw = s * 0.9;
-    const bh = s * 0.62;
-    const by = cy - s * 0.04;
-    g.beginPath();
-    g.moveTo(cx - bw / 2, by);
-    g.lineTo(cx + bw / 2, by);
-    g.lineTo(cx + bw / 2, by + bh);
-    g.lineTo(cx - bw / 2, by + bh);
-    g.closePath();
-    g.stroke();
-    g.beginPath();
-    if (name === 'lock') g.arc(cx, by, s * 0.33, Math.PI, Math.PI * 2);
-    else g.arc(cx + s * 0.05, by - s * 0.1, s * 0.3, Math.PI, Math.PI * 1.6);
-    g.stroke();
-    g.beginPath();
-    g.arc(cx, by + bh * 0.46, s * 0.09, 0, Math.PI * 2);
-    g.fill();
   } else {
     g.beginPath();
     g.moveTo(cx - s * 0.45, cy + s * 0.02);

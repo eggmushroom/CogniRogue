@@ -139,7 +139,12 @@ const SHOTS = [
   ['feedback', '?dev=answer', null, 1400],
   // 答错那一屏：学习模式的价码写在反馈面板里
   ['wrong', '?dev=wrong', null, 1400],
-  ['unlock', '?dev=battle', 'cog.unlockAll()', 700],
+  // 这一回合答错过的牌：压暗 + 虚线边框。这是战斗里**唯一**还留着的"不能打"状态，
+  // 直接写 failedTurn 比真去答错一道题稳定（不用等反馈面板收场）。
+  ['spent', '?dev=battle', `(() => {
+    const i = cog.state.hand.findIndex((c) => !c.id.startsWith('base:'));
+    if (i >= 0) cog.state.failedTurn[cog.state.hand[i].id] = true;
+  })()`, 600],
   // 光刃飞出去的那一瞬：0.18s 左右正好在半路
   ['strike', '?dev=battle', 'cog.strike()', 180],
   // 敌人回合：真的走一次 endTurn（?dev=foe:xxx 把招式固定成单招循环），

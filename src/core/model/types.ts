@@ -28,9 +28,7 @@ export interface ModeDef {
   stabGain: number;
   /** 答错后这张牌去哪 */
   missDest: 'draw' | 'discard';
-  /** 答错后这个卡种本场是否作废（测试模式） */
-  forget: boolean;
-  /** 卡面下沿那句"这一手值多少" */
+  /** 答错价码的一句话，结算页用；卡面不再印它 */
   cardLabel: string;
   /** 答题面板底部那句提醒 */
   hint: string;
@@ -337,10 +335,8 @@ export interface ReportData {
   kinds: number;
   mastery: number;
   rows: ReportRow[];
-  /** 免答出牌次数：这一局有多少输出是"已经会了"直接兑现的 */
-  frees: number;
-  /** 本局一共解锁过多少种卡 */
-  unlocks: number;
+  /** 这一局靠"答对"额外抽到的张数：知识变输出的那条线走的是信息，不是倍率 */
+  answerDraws: number;
   /** 牌组里的增益牌（名字），没有就是空数组 */
   powers: string[];
   verdict: string;
@@ -394,20 +390,12 @@ export interface GameState {
   seen: Record<string, boolean>;
   topicAtk: Record<string, number>;
   /**
-   * 本场战斗里已经解锁的卡种（key 是 card id，不是牌组里的那一张）。
-   * 上锁 → 必须答对一次才能用；解锁 → 同种的所有副本都可以免答直接打出。
-   * 每场战斗重来一次，精炼过的卡（up）开局就是解锁状态。
-   */
-  unlocked: Record<string, boolean>;
-  /** 本回合已经试过并且答错的卡种：这一回合内不能再答（防止看答案后用副本重答） */
-  failedTurn: Record<string, boolean>;
-  /**
-   * 本场已经作废的卡种 —— 测试模式答错的那几张。
+   * 本回合已经试过并且答错的卡种：这一回合内不能再答。
    *
-   * 和 `failedTurn` 是两档惩罚：failedTurn 只锁一个回合（看看答案还能再试），
-   * 这一档锁整场（测试模式答错 = 这一次没通过）。作废的牌既不能答题、也打不出去，只能等这一场结束。
+   * 这是**唯一**留在战斗里的"锁"，而且它不是惩罚，是堵漏：不锁的话，看完正确答案
+   * 再用同种的副本重答一遍，等于没答错。它每回合清空，所以代价只是"这一回合少一张牌"。
    */
-  forgotten: Record<string, boolean>;
+  failedTurn: Record<string, boolean>;
   /**
    * 本场战斗里每份题池已经问过的题号。key 是 `poolFor()` 返回的键：
    * 命中主题池时是主题名，回退到全部题目时是 `GLOBAL_QKEY`。
@@ -425,9 +413,12 @@ export interface GameState {
   topOkTopic: string | null;
   cardsPlayed: number;
   binderUsed: boolean;
-  /** 本局免答出牌次数 / 解锁次数。只给结算页用，不参与任何结算 */
-  frees: number;
-  unlocks: number;
+  /** 本局靠"答对"额外抽到的张数。只给结算页用，不参与任何结算 */
+  answerDraws: number;
+  /** 本回合靠答对抽了几张，受 `BAL.answerDrawCap` 限制，`startTurn` 清零 */
+  answerDrawsThisTurn: number;
+  /** 本回合靠答错补抽了几张，受 `BAL.missDrawCap` 限制，`startTurn` 清零 */
+  missDrawsThisTurn: number;
   runOk: number;
   runBad: number;
   floors: number;

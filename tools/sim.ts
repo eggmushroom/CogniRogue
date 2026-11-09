@@ -5,8 +5,8 @@
  *
  * 它回答两个问题：
  *   1. 水平更高的人，是不是一定赢更多？（这是验收标准，不是口号）
- *   2. 一次出牌 1 点行动力、答对解锁 ×1.5 免答，这套节奏撑不撑得住？
- *      （押注机制已经拿掉，所以这里不再扫"押哪一档"，只扫水平与强度旋钮）
+ *   2. 费用 + 答对退回 1 点 + 答对抽一张，这套节奏撑不撑得住？
+ *      （押注、解锁、免答 ×1.5 都已经拿掉，这里只扫水平与强度旋钮）
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,7 @@ import { BAL, MODES } from '../src/core/model';
 import type { CardInst, RunMode } from '../src/core/model';
 import {
   G, PACK, answer, availableNodes, bankQuestionCount, canAsk, canPay, chooseEventOption, defOf, dismissFeedback,
-  endTurn, enterNode, isUnlocked, loadQuestionBank, playBasic, playPower, playUnlocked, resetMemory, restHeal,
+  endTurn, enterNode, loadQuestionBank, playBasic, playPower, resetMemory, restHeal,
   skipReward, startRun, takeCard, takePower, askCard, mergePacks,
 } from '../src/core';
 
@@ -40,7 +40,7 @@ let FRESH = false;
 let FRESH_RUN = false;
 
 for (const arg of process.argv.slice(2)) {
-  const m = /^--(hp|dmg|ap|hand|runs|free|start|calm|take|rf|stab|fresh|freshrun|mode)=([\w.-]+)$/.exec(arg);
+  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|rf|stab|fresh|freshrun|mode)=([\w.-]+)$/.exec(arg);
   if (!m) continue;
   const v = Number(m[2]);
   if (m[1] === 'runs') { RUNS = Math.round(v); continue; }
@@ -55,7 +55,9 @@ for (const arg of process.argv.slice(2)) {
   else if (m[1] === 'dmg') BAL.dmg = v;
   else if (m[1] === 'ap') { BAL.baseAp = v; }
   else if (m[1] === 'hand') BAL.drawPerTurn = v;
-  else if (m[1] === 'free') BAL.freeMult = v;
+  else if (m[1] === 'ad') BAL.answerDraw = v;
+  else if (m[1] === 'cap') BAL.answerDrawCap = v;
+  else if (m[1] === 'md') { BAL.missDraw = v; if (!v) BAL.missDrawCap = 0; }
   else if (m[1] === 'start') BAL.startBlock = v;
   else if (m[1] === 'calm') BAL.calmFirstTurn = v > 0;
   else if (m[1] === 'rf') BAL.refund = v > 0 ? 1 : 0;
@@ -95,8 +97,8 @@ function bestNode(): string | null {
 
 interface Stat {
   wins: number; floors: number; answers: number; right: number; runs: number;
-  /** 免答出牌的次数。和 answers 一起决定"这一局还有多少时间在答题" */
-  free: number;
+  /** 靠"答对"额外抽到的张数。它和 answers 一起说明"知识有没有真的变成选择" */
+  draws: number;
   /** 结束时的牌组张数，看"构筑"到底有没有发生 */
   deck: number;
   /** 一局里见过的不同卡种数 */
@@ -119,7 +121,6 @@ function runOne(p: number, st: Stat) {
   let guard = 0;
   let answers = 0;
   let right = 0;
-  let free = 0;
   let wasBattle = false;
   let battles = 0;
   let turns = 0;
@@ -171,12 +172,10 @@ function runOne(p: number, st: Stat) {
         // 不先打的话，这张牌在手里就是一张废纸，模拟会把它的价值算成 0。
         const pw = G.hand.findIndex((c) => !!defOf(c).power && pay(c));
         if (pw >= 0) { playPower(pw); plays += 1; continue; }
-        // 再解锁（投资），没得答了再用已解锁的卡收割。这就是这套机制的标准打法：
-        // 前两回合建库，后面用 ×1.5 的免答牌把它花掉。
+        // 先打增益（本场持续），再答题出牌。答题没有"之后就能免答"这回事了 ——
+        // 每次出知识卡都要重新答，所以机器人的策略就是"能答就答"。
         const ask = G.hand.findIndex((c) => canAsk(c) && pay(c));
         if (ask >= 0) { askCard(ask); continue; }
-        const ready = G.hand.findIndex((c) => !c.junk && defOf(c).kind === 'knowledge' && isUnlocked(c.id) && pay(c));
-        if (ready >= 0) { free += 1; playUnlocked(ready); continue; }
         // 基础牌：不答题、不可退款，但总比让行动力烂掉好。
         // 它是这一局的地板，模拟不打出它，会把低水平的胜率算得比实际更狠。
         const bas = G.hand.findIndex((c) => !c.junk && defOf(c).kind === 'basic' && pay(c));
@@ -197,7 +196,7 @@ function runOne(p: number, st: Stat) {
   st.floors += rep ? rep.floor : 0;
   st.answers += answers;
   st.right += right;
-  st.free += free;
+  st.draws += G.answerDraws;
   st.deck += G.deck.length;
   st.kinds += new Set(G.deck.map((e) => e.id)).size;
   st.battles += battles;
@@ -217,8 +216,8 @@ const LEVELS = [
 
 console.log(`\nCogniRogue 无头模拟 · 每组 ${RUNS} 局 · ${MODES[MODE].name}模式 · 内置 ${PACK.cards.length} 张卡 / 题库 ${bankQuestionCount()} 道题\n`);
 
-const header = ['水平', '基础正确率', '胜率', '平均到层', '答题/局', '实际正确率', '免答/局', '答题占比', '答错/局'];
-const widths = [8, 12, 9, 11, 10, 12, 9, 10, 13];
+const header = ['水平', '基础正确率', '胜率', '平均到层', '答题/局', '实际正确率', '答对抽牌/局', '答错/局'];
+const widths = [8, 12, 9, 11, 10, 12, 14, 13];
 const fmt = (row: string[]) => row.map((c, i) => pad(c, widths[i])).join(' ');
 
 function pad(s: string, w: number) {
@@ -240,7 +239,7 @@ const summary: Array<{
 for (const lv of LEVELS) {
   if (FRESH) resetMemory();
   const st: Stat = {
-    wins: 0, floors: 0, answers: 0, right: 0, runs: 0, free: 0,
+    wins: 0, floors: 0, answers: 0, right: 0, runs: 0, draws: 0,
     deck: 0, kinds: 0, battles: 0, turns: 0, powers: 0, powerCards: 0,
     misses: 0, basics: 0,
   };
@@ -261,8 +260,7 @@ for (const lv of LEVELS) {
     (st.floors / st.runs).toFixed(2),
     (st.answers / st.runs).toFixed(1),
     `${acc.toFixed(0)}%`,
-    (st.free / st.runs).toFixed(1),
-    `${(100 * st.answers / Math.max(1, st.answers + st.free)).toFixed(0)}%`,
+    (st.draws / st.runs).toFixed(1),
     (st.misses / st.runs).toFixed(1),
   ]));
 }

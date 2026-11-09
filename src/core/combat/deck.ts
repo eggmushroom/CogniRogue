@@ -26,6 +26,9 @@ export function startTurn() {
   G.topOkTopic = null;
   G.cardsPlayed = 0;
   G.binderUsed = false;
+  // 答对抽牌的每回合上限在 startTurn 归零，不是"每场"
+  G.answerDrawsThisTurn = 0;
+  G.missDrawsThisTurn = 0;
   // 答错锁的是"这一回合"，新回合重新给机会
   G.failedTurn = {};
   // 杂念不进入弃牌堆：它是虚无的，回合结束就散

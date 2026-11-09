@@ -7,24 +7,27 @@ import { clamp, pick, shuffle } from '../infra/util';
 import { poolFor } from '../library/bank';
 import { memOf, saveMem } from '../library/memory';
 import { shuffleOptions } from '../library/question';
-import { defOf, hasPower, isBasicCardId, isPowerId, powerOf, statOf } from '../cards/registry';
+import { defOf, hasPower, powerOf, statOf } from '../cards/registry';
 import { canPay, costNow, isXCost, refundOf } from '../cards/cost';
 import { cardKind } from '../cards/kinds';
 import { endRun } from '../journey/report';
 import { openReward } from '../journey/rewards';
 import { drawCards, startTurn } from './deck';
 import { makeFoe } from './foe';
-import { isUnlocked, unlockStats } from './unlock';
 
 /**
  * combat/play —— 一场战斗的开局，以及玩家出牌的全部路径。
  *
- * 出牌有四条路：答题（answer）、免答（playUnlocked）、基础牌（playBasic）
- * 和增益牌（playPower）。前三条都把卡面数字经 `strikeWith` 结算，
- * 数值才不会出现"卡面和结算对不上"；增益牌不打伤害，只改本场规则。
+ * 出牌有三条路：答题（answer）、基础牌（playBasic）和增益牌（playPower）。
+ * 前两条都把卡面数字经 `strikeWith` 结算，数值才不会出现"卡面和结算对不上"；
+ * 增益牌不打伤害，只改本场规则。
  *
- * 四条路**都要先付得起**（`canPay`），也都要在付完之后才动牌堆 —— 一条先扣牌、
+ * 三条路**都要先付得起**（`canPay`），也都要在付完之后才动牌堆 —— 一条先扣牌、
  * 再发现行动力不够的路径，会凭空吃掉玩家一张牌。
+ *
+ * 答题是**唯一**能吃到"答对"奖励的路径，而奖励只有两条：退回 1 点行动力、
+ * 抽一张牌。都在机制内，没有第三层倍率 —— 卡面写的 8 点就是 8 点。
+ * 原来的"答对解锁本场免答 ×1.5"整条删掉了，理由见 DESIGN.md。
  */
 const join = (a: string, b: string) => (a ? a + ' ' : '') + b;
 
@@ -46,12 +49,13 @@ export function startBattle(nd: MapNode) {
   G.discard = [];
   G.hand = [];
 
-  // 全部上锁，只有精炼过的卡例外 —— 精炼 = 这个知识已经证明过，开局就能用
-  G.unlocked = {};
+  // 战斗里只剩一种锁：这一回合答错过的卡种不能再答（每回合清空）。
+  // "本场解锁"和"本场作废"两档都删了 —— 一场只有 3.3 回合，前者来不及兑现，
+  // 后者等于没收工具。理由见 DESIGN.md 的「已经删掉的东西」。
   G.failedTurn = {};
-  G.forgotten = {};
   G.qSeen = {};
-  G.deck.forEach((ent) => { if (ent.up) G.unlocked[ent.id] = true; });
+  G.answerDrawsThisTurn = 0;
+  G.missDrawsThisTurn = 0;
 
   // 增益牌每场都要重新打一遍。这一行就是"遗物 → 牌"的整个差别所在。
   G.powers = [];
@@ -61,9 +65,7 @@ export function startBattle(nd: MapNode) {
   // 模式已经在顶栏标了一次，这一行不再复读。"卡是锁着的"只在第一次战斗里说：
   // 那是教学，不是战报 —— 打到第八层还在播同一句，就是把日志的位置浪费掉了。
   log(`── ${e.name} 出现了 ──`, 'turn');
-  const pre = unlockStats().n;
-  if (pre) log(`${pre} 张精炼过的卡开局即可使用`, 'hi');
-  else if ((G.node?.r ?? 0) === 0) log('所有卡都是锁着的 —— 答对才能解锁', 'turn');
+  if ((G.node?.r ?? 0) === 0) log('点一张知识卡 = 答一道题；答对才打得出去', 'turn');
   // 开局格挡在 startTurn 里给（那里才知道是不是第一回合）—— 写在这里会被 startTurn 清零
   startTurn();
 }
@@ -84,7 +86,21 @@ function pickQi(key: string, n: number): number {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-/** 点一张锁着的牌 = 从题库里抽一道题。押注没了，所以点下去没有中间那一步。 */
+/**
+ * 这张牌现在点下去会不会出题。
+ *
+ * 只有一条限制：这一回合这个卡种已经答错过。费用够不够是另一回事（`canPay`），
+ * 两者都要过，点牌才算数 —— 所以战斗画面判定"能不能点"时两个都要问。
+ */
+export function canAsk(ent: CardInst | null | undefined): boolean {
+  if (!ent) return false;
+  const card = defOf(ent);
+  // 与 askCard 用同一条取池规则：主题没题会回退到全部题目，别在这里把入口关掉
+  if (cardKind(card) !== 'knowledge' || !poolFor(card.topic).list.length) return false;
+  return !G.failedTurn[card.id];
+}
+
+/** 点一张知识卡 = 从题库里抽一道题。押注没了，所以点下去没有中间那一步。 */
 export function askCard(idx: number) {
   if (G.busy || G.panel.k !== 'none') return;
   const ent = G.hand[idx];
@@ -97,8 +113,9 @@ export function askCard(idx: number) {
   // 只要题库里还有一道题，任何知识卡都点得开。
   const { key, list } = poolFor(card.topic);
   if (cardKind(card) !== 'knowledge' || !list.length) return;
-  // 已解锁的卡不出题，走 playUnlocked；这回合答错过、或整场已作废的卡种也不能再答
-  if (G.unlocked[card.id] || G.failedTurn[card.id] || G.forgotten[card.id]) return;
+  // 这回合这个卡种已经答错过就不能再答 —— 不拦的话，看完答案用同种副本重答，
+  // "每回合每种卡一次机会"这条规则就白设了
+  if (G.failedTurn[card.id]) return;
   const qi = pickQi(key, list.length);
   // 题号在"点开"这一下就记下，不等答完。否则玩家可以点开看一眼、Esc 关掉、再点开换一道，
   // 等于免费挑题 —— 和押注时代"读完三档再挑最好答的那道"是同一个漏洞。
@@ -127,10 +144,10 @@ function damageEnemy(raw: number, pierce = false) {
 }
 
 /**
- * 一张卡真正打出去的那一下。mult 是倍率（未解锁的答题出牌传 1，
- * 已解锁的免答出牌传 BAL.freeMult），repeat 是 X 费牌花掉的点数 ——
- * 一张牌结算几遍只看这一个参数，所以"卡面写 8 点伤害 ×X"和实际打出的段数
- * 永远由同一份 `resolveEff` 决定。
+ * 一张卡真正打出去的那一下。`mult` 现在是常数 1（答对就是全额，不再有
+ * "免答 ×1.5"那种卡面之外的倍率），保留这个参数是因为 X 费的 `repeat` 走同一条路；
+ * `repeat` 是 X 费牌花掉的点数 —— 一张牌结算几遍只看这一个参数，所以
+ * "卡面写 8 点伤害 ×X"和实际打出的段数永远由同一份 `resolveEff` 决定。
  */
 function strikeWith(ent: CardInst, mult: number, repeat = 1) {
   const card = defOf(ent);
@@ -203,11 +220,19 @@ export function answer(choice: number) {
     if (xcost) apNote = join(apNote, `耗尽 ${spent} 点行动力，效果结算 ${repeat} 次。`);
     if (drawn) apNote = join(apNote, `专注：抽 ${drawn} 张。`);
 
-    // 答对就是解锁：之后这个卡种的所有副本都可以免答打出（×BAL.freeMult）
-    if (!G.unlocked[card.id]) {
-      G.unlocked[card.id] = true;
-      G.unlocks += 1;
-      apNote = join(apNote, `「${card.topic}」已解锁，本场免答可用。`);
+    // 答对抽一张：想起来的越多，这一回合看到的牌越多。走的是信息，不是倍率 ——
+    // 所以卡面数值才能保持 1:1，不用再靠全局血量去补偿。
+    //
+    // 这条**默认关闭**，只有双面镜在场才开：实测把它做成常驻规则时，
+    // 每回合白抽一张会把熟练档从 55% 抬到 66%、精通档抬到 95%（800 局），
+    // 顶格没有余量。做成一张增益牌提供的规则之后，它便成了"这一场我选择多看见一点"
+    // 的构筑决定，而不是人人都吃的隐形补强。
+    const cap = hasPower('mirrorcard') ? BAL.answerDrawCap : 0;
+    if (G.answerDrawsThisTurn < cap && drawCards(BAL.answerDraw)) {
+      G.answerDrawsThisTurn += BAL.answerDraw;
+      G.answerDraws += BAL.answerDraw;
+      drawn += BAL.answerDraw;
+      apNote = join(apNote, `答对：抽 ${BAL.answerDraw} 张（本回合 ${G.answerDrawsThisTurn}/${cap}）。`);
     }
 
     G.okThisTurn += 1;
@@ -244,13 +269,21 @@ export function answer(choice: number) {
       // 惩罚只剩"这一手作废"，不没收工具：还在学的东西，该让你再试一次。
       backToDraw = true;
       apNote = join(apNote, '学习模式：牌回到牌堆，下一回合会再抽到它。');
-    } else if (M.forget) {
-      // 测试：这个卡种本场作废 —— 不能再答题，也打不出去。错了就是错了。
-      G.forgotten[card.id] = true;
-      apNote = join(apNote, '测试模式：这个卡种本场作废，这一场它打不出去。');
     } else {
-      // 复习：这张牌进弃牌堆，这一场它不再自动回来 —— 想再见它得等洗牌。
-      apNote = join(apNote, '复习模式：它进了弃牌堆，要等洗牌才回来。');
+      // 复习 / 测试：这张牌进弃牌堆，这一场它不再自动回来 —— 想再见它得等洗牌。
+      apNote = join(apNote, '它进了弃牌堆，要等洗牌才回来。');
+    }
+
+    // 补抽一张：答错的那张牌要离开手牌，不补位的话，一个中等正确率的人两回合就把手牌
+    // 打空了 —— 那时他不是"答不对"，是"没牌可答"。补的是位置，不是奖励：
+    // 这一手照样作废、行动力照样不退。
+    if (BAL.missDraw && G.missDrawsThisTurn < BAL.missDrawCap) {
+      const got = drawCards(BAL.missDraw);
+      if (got) {
+        G.missDrawsThisTurn += got;
+        drawn += got;
+        apNote = join(apNote, `补抽 ${got} 张 —— 位置不空着。`);
+      }
     }
 
     G.topicWrong[card.topic] = (G.topicWrong[card.topic] || 0) + 1;
@@ -321,7 +354,7 @@ export function answer(choice: number) {
 
   const effName = EFFS[card.eff].name;
   const shape = hits.length > 1 ? `${hits.join('+')} 伤害` : `${dmg} 伤害`;
-  const missNote = backToDraw ? '，牌回牌堆' : G.forgotten[card.id] ? '，本场作废' : '，进弃牌堆';
+  const missNote = backToDraw ? '，牌回牌堆' : '，进弃牌堆';
   log(
     `「${effName}·${card.topic}」${right ? '答对' : '答错'}` +
       (right
@@ -366,61 +399,6 @@ export function answer(choice: number) {
 }
 
 /**
- * 已解锁的卡种直接打出去：不出题、不写记忆、伤害按 BAL.freeMult 放大。
- *
- * 这是"答对了之后这场战斗里它就归你"的那一半。没有反馈面板 —— 收割阶段
- * 要快，一下接一下，中间不能再插一个要按的框。
- */
-export function playUnlocked(idx: number) {
-  if (G.busy || G.panel.k !== 'none') return;
-  const ent = G.hand[idx];
-  if (!ent) return;
-  const card = defOf(ent);
-  if (cardKind(card) !== 'knowledge' || !isUnlocked(card.id)) return;
-  if (!canPay(card)) return;
-
-  // 免答出牌没有"答对"，所以整份费用一分不退。X 费牌在这里同样按当下的行动力结算。
-  const spent = costNow(card);
-  const repeat = isXCost(card) ? Math.max(1, spent) : 1;
-  const r = strikeWith(ent, BAL.freeMult, repeat);
-  G.ap -= spent;
-  G.cardsPlayed += 1;
-  G.frees += 1;
-  G.ap = clamp(G.ap, 0, 10);
-
-  G.discard.push(ent);
-  G.hand.splice(idx, 1);
-  checkPending();
-
-  const shape = r.out.hits.length > 1 ? `${r.out.hits.join('+')} 伤害` : `${r.dmg} 伤害`;
-  log(
-    `「${EFFS[card.eff].name}·${card.topic}」免答 ×${BAL.freeMult} —— ${shape}` +
-      (isXCost(card) ? `（X=${repeat}）` : '') +
-      (r.blk ? `，${r.blk} 格挡` : '') +
-      (r.heal ? `，回 ${r.heal}` : '') +
-      (r.drawn ? `，抽 ${r.drawn}` : ''),
-    'hi',
-  );
-
-  r.parts.forEach((p, i) => {
-    const fire = () => emit({ t: 'dmg', n: p.d, absorbed: p.a, eff: card.eff, seq: i });
-    if (i === 0) fire(); else setTimeout(fire, i * 150);
-  });
-  if (r.blk) setTimeout(() => emit({ t: 'blk', n: r.blk }), 60);
-  if (r.heal) setTimeout(() => emit({ t: 'heal', n: r.heal }), 60);
-
-  // 没有反馈面板兜底，得自己锁一小会儿输入：不然连点会误花第二点行动力，
-  // 而且这一下还没演完就接了下一手。顺带把击杀后的推进接上。
-  G.busy = true;
-  setTimeout(() => {
-    G.busy = false;
-    if (G.pending === 'clear') openReward();
-    else if (G.pending === 'win') endRun(true);
-    else if (G.pending === 'dead') endRun(false);
-  }, 240);
-}
-
-/**
  * 打出一张增益牌：付它标的费用，本场战斗剩下的时间里一直亮着。
  *
  * 它**不进弃牌堆**。洗回去的话，同一张牌每洗一次就能再打一次，
@@ -461,15 +439,9 @@ export function playPower(idx: number) {
     G.block += blk;
     note = `获得 ${blk} 点格挡。`;
   } else if (p.id === 'mirrorcard') {
-    // 只照"知识卡"：基础牌不是靠答对解锁的，照到它等于给一个空奖励
-    const ids = [...new Set(G.deck.map((e) => e.id))]
-      .filter((id) => !G.unlocked[id] && !isPowerId(id) && !isBasicCardId(id));
-    if (ids.length) {
-      const id = pick(ids);
-      G.unlocked[id] = true;
-      G.unlocks += 1;
-      note = `「${defOf({ id, up: 0 }).topic}」已解锁。`;
-    }
+    // 它不改数值，只把"答对抽牌"的上限从 2 抬到 3 —— 效果在 answer() 里读 hasPower。
+    // 之所以做成"改规则"而不是"当场发一次收益"：增益牌本来就是本场持续的东西。
+    note = '本场答对后抽 1 张（每回合一次）。';
   }
   G.ap = clamp(G.ap, 0, 10);
 
@@ -485,7 +457,7 @@ export function playPower(idx: number) {
 /**
  * 打出一张**基础牌**：初始牌组里的那三张，不答题、不退款、不进记忆调度。
  *
- * 它是这一局的地板：答错、卡种作废、抽到的全是够不着的知识卡时，
+ * 它是这一局的地板：答错、抽到的全是够不着的知识卡时，
  * 玩家至少还能把行动力换成一点伤害或格挡，不至于整回合空转。
  * 数值刻意低于知识卡 —— 保底 ≠ 变强。**而且它和知识卡一样花 1 点**：
  * 拿这一回合的答题机会换一点保底输出，这才是"地板"该有的价钱。

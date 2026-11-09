@@ -52,8 +52,8 @@ export function endTurn() {
   const m = moveOf(e);
 
   if (m.k === 'atk' && G.turn === 1 && BAL.calmFirstTurn) {
-    // 第一回合所有卡都锁着，玩家几乎叠不出格挡。给它留一个观察期，
-    // 不然"解锁"这件事从第一回合起就是在拿血换。
+    // 第一回合手里全是没答过的卡，玩家几乎叠不出格挡。给它留一个观察期，
+    // 不然"答错"从第一回合起就是在拿血换。
     log(`${e.name} 还在观察你，这一回合没有出手`, 'hi');
     emit({ t: 'enemyAct', k: 'calm', n: 0 });
   } else if (m.k === 'atk') {

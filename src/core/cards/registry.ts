@@ -61,7 +61,7 @@ export function statOf(ent: CardInst) {
   };
 }
 
-/** 这个 id 是不是一张增益牌。奖励池、解锁统计、结算页都要排除它。 */
+/** 这个 id 是不是一张增益牌。奖励池、结算页都要排除它。 */
 export const isPowerId = (id: string) => !!POWER_CARD[id];
 
 /** 这张牌是不是初始牌组里的基础牌（不答题、不可精炼、不可删）。 */

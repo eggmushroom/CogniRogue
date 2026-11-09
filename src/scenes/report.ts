@@ -1,7 +1,7 @@
 import { g, roundRect, VH, VW } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { action, bar, panel, text, wrap } from '../gfx/ui';
-import { BAL, MODES, POWER_BY_ID } from '../core/model';
+import { MODES, POWER_BY_ID } from '../core/model';
 import { backToTitle, restart } from '../core/journey';
 import type { ReportData } from '../core/model';
 
@@ -76,8 +76,7 @@ export function drawReport(d: ReportData) {
   text('这一局怎么打的', cx, ly, { size: 15, weight: 700, color: C.ink2 });
   const tail: Array<[string, string, string]> = [
     ['答题出牌', `${total2} 次`, `正确 ${acc}%`],
-    ['免答出牌', `${d.frees} 次`, `伤害 ×${BAL.freeMult}`],
-    ['解锁卡种', `${d.unlocks} 种`, '答对一次解锁一种'],
+    ['答对抽牌', `${d.answerDraws} 张`, '想起来的越多，看到的牌越多'],
     // 答错的价码现在由本局模式决定，不再是"学习期 / 复习期"两档
     ['答错的牌', `${d.runBad} 次`, MODES[d.mode].cardLabel],
     ['牌组', `${d.deckSize} 张`, `${d.kinds} 种卡`],
@@ -92,7 +91,7 @@ export function drawReport(d: ReportData) {
     text(k, cx, yy, { size: 14, color: C.ink2 });
     text(v, cx + 140, yy, {
       size: 15, weight: 800,
-      color: i === 1 && d.frees > 0 ? C.gold : C.ink,
+      color: i === 1 && d.answerDraws > 0 ? C.gold : C.ink,
     });
     text(s, cx + 250, yy, { size: 12, color: C.dim });
   });

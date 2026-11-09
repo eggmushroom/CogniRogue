@@ -223,8 +223,6 @@ declare global {
       readonly bank: typeof BANK;
       /** 调试/自动化用：直接答题，绕过点击 */
       pick: (i: number) => void;
-      /** 调试/自动化用：把所有卡种设为已解锁，用来测「免答出牌」那条点击路径 */
-      unlockAll: () => void;
       /** 调试/截图用：直接打出手牌里第 i 张增益牌 */
       power: (i: number) => void;
       /**
@@ -266,7 +264,6 @@ window.cog = {
   get pack() { return PACK; },
   get bank() { return BANK; },
   pick: (i: number) => answer(i),
-  unlockAll: () => { G.deck.forEach((e) => { G.unlocked[e.id] = true; }); },
   power: (i: number) => playPower(i),
   // X 费牌的费用是活的，读的是"此刻"——冒烟测试断言扣了几点时用它，别去猜卡表
   costOf: (id: string) => costNow(defOf({ id, up: 0 })),
@@ -420,8 +417,7 @@ function devJump() {
       m.bad = i % 2;
       m.stab = 13 + ((i * 5) % 12);
     });
-    G.frees = 26;
-    G.unlocks = 9;
+    G.answerDraws = 14;
     G.runOk = 12;
     G.runBad = 6;
     G.floors = 5;
