@@ -23,7 +23,7 @@ export const powerCardId = (id: PowerId) => 'pow:' + id;
 const POWER_CARD: Record<string, CardDef> = Object.fromEntries(
   POWERS.map((p): [string, CardDef] => [powerCardId(p.id), {
     id: powerCardId(p.id), topic: '增益', name: p.name,
-    atk: 0, blk: 0, eff: 'strike', power: p.id, kind: 'power',
+    atk: 0, blk: 0, cost: p.cost, eff: 'strike', power: p.id, kind: 'power',
   }]),
 );
 

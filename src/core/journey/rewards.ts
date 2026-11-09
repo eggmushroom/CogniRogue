@@ -62,7 +62,7 @@ function afterReward() {
 
 /**
  * 精英战后的奖励。原来是"选一件遗物，直接生效一辈子"，现在变成
- * "选一张增益牌塞进牌组"——你要抽到它、花 1 点行动力打出它，它才开始工作。
+ * "选一张增益牌塞进牌组"——你要抽到它、付得起它的费用、打出它，它才开始工作。
  *
  * 代价换来两件事：牌组会因此变厚（稀释知识卡，这是真实的构筑成本），
  * 以及每场战斗都要重新做一次"先答题还是先点灯"的决定。
@@ -80,7 +80,7 @@ export function takePower(cardId: string) {
   if (!G.panel.pool.some((c) => c.id === cardId)) return;
   G.deck.push({ id: cardId, up: 0 });
   const p = powerById(cardId.replace('pow:', ''));
-  log(`「${p?.name ?? '增益'}」加入牌组 —— 抽到它，花 1 点行动力打出，本场生效`, 'hi');
+  log(`「${p?.name ?? '增益'}」加入牌组 —— 抽到它，付费用打出，本场生效`, 'hi');
   finishNode();
 }
 

@@ -2,7 +2,7 @@ import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
 import { C, font, FONT_UI, FONT_TITLE, withAlpha } from './theme';
 import { EFFS, MODES, POWER_BY_ID, resolveEff } from '../core/model';
-import { cardKind, cardType, CARD_TYPE_META } from '../core/cards';
+import { cardKind, cardType, costGlyph, isXCost, CARD_TYPE_META } from '../core/cards';
 import type { CardDef, PowerDef, RunMode } from '../core/model';
 import { drawArtIcon } from './art/icons';
 
@@ -214,6 +214,45 @@ export interface CardOpts {
    * 学习灰、复习橙、测试红，扫一眼就知道这一局答错要付多少。
    */
   mode?: RunMode;
+  /**
+   * 现在付不付得起这张牌的费用。只有手牌会传 false —— 牌组、奖励、牌堆列表里
+   * 不存在"此刻能不能打"这个问题，传了反而是噪音。
+   * 付不起时费用球转红：点下去会被拦，那就该在点之前就看出来。
+   */
+  afford?: boolean;
+}
+
+/**
+ * 费用球：牌面左上角那个圆。
+ *
+ * 三种读法要在巴掌大的牌上也站得住：
+ *   - 数字 0–3，或者字母 X（X 费）；
+ *   - 金色 = X 费：它的价格是个**变量**，值得一个特别的颜色；
+ *   - 红色 = 此刻付不起（手牌才会出现），其余是常态的冷白。
+ * 底色永远近黑实心 —— 牌面是从类别色浸下来的，浅色字直接压在橙卡上读不出来。
+ */
+function drawCostOrb(cx: number, cy: number, r: number, glyph: string, o: { x: boolean; afford: boolean }) {
+  const col = !o.afford ? C.red : o.x ? C.gold : C.ink;
+  g.save();
+  g.beginPath();
+  g.arc(cx, cy, r, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(6,8,13,.9)';
+  g.fill();
+  g.strokeStyle = withAlpha(col, o.afford ? 0.72 : 1);
+  g.lineWidth = Math.max(1.2, r * 0.14);
+  g.stroke();
+  // X 费多一道内环：扫手牌时"这张牌吃光我的行动力"要和"这张要两点"一眼分开
+  if (o.x) {
+    g.beginPath();
+    g.arc(cx, cy, r * 0.72, 0, Math.PI * 2);
+    g.strokeStyle = withAlpha(C.gold, 0.35);
+    g.lineWidth = 1;
+    g.stroke();
+  }
+  g.restore();
+  text(glyph, cx, cy + r * 0.37, {
+    size: Math.round(r * 1.3), weight: 800, align: 'center', color: col,
+  });
 }
 
 /**
@@ -317,25 +356,35 @@ export function drawCard(
   const pad = w * 0.09;
   const s = w / 220;
 
-  // 消耗不画在牌上：83 张牌无一例外都是 1 点，印一个"1"在每张牌右上角
-  // 是重复 83 遍同一个常量，不是信息。这条规则说一次就够 —— 行动力环上
-  // 写了「行动力」，帮助页写了「出牌 1 点」。省下的角落留给牌面自己。
+  // ── 费用球：左上角 ─────────────────────────────────────────
+  // 以前 83 张牌全是 1 点，这个角落空着是对的（印 83 遍同一个数不是信息）。
+  // 现在 0/1/2/3/X 并存，价格成了每张牌最该先读到的一个数，位置沿用杀戮尖塔的
+  // 左上角 —— 右上是锁章，左右各占一角，互不打架。
+  // 手牌排得再密，左边的牌也永远盖在这一张下面，所以费用不会被邻牌吃掉。
+  if (kind !== 'junk') {
+    drawCostOrb(x + pad + 5 * s, y + 15 * s, 13 * s, costGlyph(card), {
+      x: isXCost(card), afford: opts.afford !== false,
+    });
+  }
 
   // ── 正文：牌名 + 类别徽章 + 效果数字 ──────────────────────
   // 卡面只有机械信息：叫什么、什么类别、打出去发生什么。
   // 题干、主题、知识点、记忆度一概不出现 —— 那四样都是"知识"，不该在牌面上。
   const lh = 25 * s;
   const eh = 21 * s;
+  const xc = isXCost(card);
 
   // 类别徽章：知识卡写「类别 · 效果」（攻击·洞察 / 防御·巩固 / 技能·专注），
   // 基础牌只写类别（攻击 / 防御）—— 它没有效果原型，只负责把数字换成伤害或格挡。
+  // 起点让开费用球（+20s），否则两者会在左上角叠成一团。
   const badgeName = kind === 'basic' ? typeMeta.name : `${typeMeta.name}·${eff.name}`;
   const badgeColor = kind === 'basic' ? typeMeta.color : eff.color;
+  const badgeX = x + pad + 20 * s;
   if (kind !== 'junk') {
     g.font = font(Math.round(11 * s), 700, FONT_UI);
     const lw = g.measureText(badgeName).width + 24 * s;
     const ly = y + 36 * s;
-    roundRect(x + pad, ly, lw, 18 * s, 9 * s);
+    roundRect(badgeX, ly, lw, 18 * s, 9 * s);
     g.fillStyle = withAlpha(badgeColor, 0.2);
     g.fill();
     g.strokeStyle = withAlpha(badgeColor, 0.72);
@@ -343,10 +392,10 @@ export function drawCard(
     g.stroke();
     // 前面的小圆点比整块颜色更打眼，扫手牌时先看到点再看字
     g.beginPath();
-    g.arc(x + pad + 8 * s, ly + 9 * s, 2.6 * s, 0, Math.PI * 2);
+    g.arc(badgeX + 8 * s, ly + 9 * s, 2.6 * s, 0, Math.PI * 2);
     g.fillStyle = badgeColor;
     g.fill();
-    text(badgeName, x + pad + 14 * s, ly + 9.5 * s, {
+    text(badgeName, badgeX + 14 * s, ly + 9.5 * s, {
       size: Math.round(11 * s), align: 'left', color: badgeColor, weight: 700,
     });
   }
@@ -398,16 +447,29 @@ export function drawCard(
     effLine('无法打出', 0, '', ey, C.faint);
     effLine('回合结束自动散去', 0, '', ey + eh, C.faint);
   } else {
+    // 逐行往下排。X 费牌要多一句话，写死 y 的话第三行会压到上一行上。
+    let ly = ey;
     // 纯防御的牌（基础格挡）没有伤害行，格挡那一行直接顶上来
-    if (per > 0) effLine('造成 ', per, out.hits.length > 1 ? ` 点伤害 ×${out.hits.length}` : ' 点伤害', ey, C.numDmg);
-    const dy = per > 0 ? ey + eh : ey;
+    if (per > 0) {
+      const many = out.hits.length > 1 ? `${out.hits.length}` : '';
+      // X 费牌的数字是"每一点行动力"的量，所以后缀写 ×X（串联是 ×2X）
+      const suf = xc ? ` 点伤害 ×${many}X`
+        : out.hits.length > 1 ? ` 点伤害 ×${many}` : ' 点伤害';
+      effLine('造成 ', per, suf, ly, C.numDmg);
+      ly += eh;
+    }
     // 第二行写的是"这张卡特殊在哪"：格挡 / 破防 / 回血 / 抽牌 / 分段。
     // 猛击本身没有第二件事（它的价值全在数字上），所以这一行留空，不硬凑一句。
-    if (out.blk > 0) effLine('获得 ', out.blk, ' 点格挡', dy, C.numBlk);
-    else if (out.pierce) effLine('无视格挡', 0, '', dy, eff.color);
+    if (out.blk > 0) { effLine('获得 ', out.blk, xc ? ' 点格挡 ×X' : ' 点格挡', ly, C.numBlk); ly += eh; }
+    else if (out.pierce) { effLine('无视格挡', 0, '', ly, eff.color); ly += eh; }
     else if (out.healRatio > 0) {
-      effLine('回复 ', Math.max(1, Math.round(per * out.hits.length * out.healRatio)), ' 点生命', dy, eff.color);
-    } else if (out.draw > 0) effLine('抽 ', out.draw, ' 张牌', dy, eff.color);
+      effLine('回复 ', Math.max(1, Math.round(per * out.hits.length * out.healRatio)),
+        xc ? ' 点生命 ×X' : ' 点生命', ly, eff.color);
+      ly += eh;
+    } else if (out.draw > 0) { effLine('抽 ', out.draw, ' 张牌', ly, eff.color); ly += eh; }
+    // X 费牌必须自己说清"X 是多少" —— 牌面上只有一个 X 字形，不写这一句，
+    // 玩家会以为它是"某个固定数字"而不是"这回合剩下的行动力"。
+    if (xc) effLine('耗尽全部行动力', 0, '', ly, C.dim);
   }
 
   // 效果纹章：按效果原型画一枚小徽记压在右下。六种效果六种形，
@@ -536,22 +598,27 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   g.lineWidth = opts.hovered ? 2 : 1.6;
   g.stroke();
 
-  // 消耗同样不画：增益牌也是一张 1 点，和知识卡同一个价，不需要在牌面上再声明一次。
+  // 费用球和知识卡同一个位置、同一套读法 —— 手牌里两种牌混着，
+  // "要先答题的"和"不用答题的"可以长得不一样，但"要花几点"必须读得一样。
+  drawCostOrb(x + pad + 5 * s, y + 15 * s, 13 * s, String(p.cost).toUpperCase(), {
+    x: p.cost === 'x', afford: opts.afford !== false,
+  });
 
   // 左上：类别标签（能力）+ 一个字的图标
   const ly = y + 38 * s;
   g.font = font(Math.round(11 * s), 700, FONT_UI);
   const lw = g.measureText('能力').width + 38 * s;
-  roundRect(x + pad, ly - 9 * s, lw, 18 * s, 9 * s);
+  const bx = x + pad + 20 * s;
+  roundRect(bx, ly - 9 * s, lw, 18 * s, 9 * s);
   g.fillStyle = withAlpha(tc, 0.2);
   g.fill();
   g.strokeStyle = withAlpha(tc, 0.72);
   g.lineWidth = 1.2;
   g.stroke();
-  text(p.icon, x + pad + 9 * s, ly + 0.5, {
+  text(p.icon, bx + 9 * s, ly + 0.5, {
     size: Math.round(11 * s), weight: 800, align: 'center', color: tc,
   });
-  text('能力', x + pad + 18 * s, ly + 0.5, {
+  text('能力', bx + 18 * s, ly + 0.5, {
     size: Math.round(11 * s), align: 'left', color: tc, weight: 700,
   });
 

@@ -72,23 +72,35 @@ export interface EffOut {
 /**
  * 结算一次效果。`mods` 是这张卡自己的签名改动（见 EffMods），逐字段覆盖原型默认 ——
  * 展示（卡面、答题面板）和结算（出牌）必须传同一份，卡面写的和实际发生的才不会两张皮。
+ *
+ * `repeat` 是 X 费牌用的：花掉的每一点行动力结算一次，花 3 点就是三倍的段数、
+ * 三倍的格挡。它是**乘在段数上**的，不是乘在每段数值上 —— 因为"造成 X 次效果"
+ * 和"造成一次 X 倍伤害"在打有格挡的敌人时完全不是一回事，前者每段各吃一次格挡。
  */
-export function resolveEff(key: Eff, atk: number, blk: number, mult = 1, mods?: EffMods): EffOut {
+export function resolveEff(
+  key: Eff, atk: number, blk: number, mult = 1, mods?: EffMods, repeat = 1,
+): EffOut {
   const d = EFFS[key] ?? EFFS.strike;
   // 底数是 0 就是"这张牌不打伤害"（基础格挡），不要被四舍五入抬成 1 点。
   const per = atk <= 0 ? 0 : Math.max(1, Math.round(atk * (mods?.atkMul ?? d.atk) * mult));
+  const n = Math.max(1, Math.round(repeat));
   return {
     key: d.key,
-    hits: Array.from({ length: mods?.times ?? d.times }, () => per),
-    blk: Math.round(blk * (mods?.blkMul ?? d.blk)),
+    hits: Array.from({ length: (mods?.times ?? d.times) * n }, () => per),
+    blk: Math.round(blk * (mods?.blkMul ?? d.blk)) * n,
     healRatio: mods?.heal ?? d.heal ?? 0,
-    draw: mods?.draw ?? d.draw ?? 0,
+    draw: (mods?.draw ?? d.draw ?? 0) * n,
     pierce: !!d.pierce,
   };
 }
 
-/** 纯文本描述，给题目面板、帮助面板这类只有一行字的地方用。 */
-export function effSummary(key: Eff, atk: number, blk: number, mods?: EffMods): string {
+/**
+ * 纯文本描述，给题目面板、帮助面板这类只有一行字的地方用。
+ *
+ * `x` 是给 X 费牌写的：那一行必须说清"这是**每一点**行动力的效果"，
+ * 否则玩家会以为「造成 8×2 伤害」就是全部，花 3 点也只打两次。
+ */
+export function effSummary(key: Eff, atk: number, blk: number, mods?: EffMods, x = false): string {
   const o = resolveEff(key, atk, blk, 1, mods);
   const dmg = o.hits.length > 1 ? `${o.hits[0]}×${o.hits.length} 伤害` : `${o.hits[0]} 伤害`;
   const tail = o.pierce ? '无视格挡'
@@ -96,5 +108,6 @@ export function effSummary(key: Eff, atk: number, blk: number, mods?: EffMods): 
     : o.healRatio > 0 ? `回血 ${Math.max(1, Math.round(o.hits[0] * o.hits.length * o.healRatio))}`
     : o.draw > 0 ? `抽 ${o.draw} 张`
     : '';
-  return `${EFFS[key].name}：${dmg}${tail ? ' · ' + tail : ''}`;
+  const body = dmg + (tail ? ' · ' + tail : '');
+  return x ? `${EFFS[key].name}：每点行动力 ${body}` : `${EFFS[key].name}：${body}`;
 }

@@ -5,7 +5,9 @@ import { consumeWheel, hover, onClick } from '../input';
 import { BAL, EFFS, MODE_KEYS, MODES, effSummary } from '../core/model';
 import { clamp, G } from '../core/infra';
 import { BANK, bankQuestionCount, bankTopics, memOf, memRatio } from '../core/library';
-import { BASICS, basicsSummary, cardKind, cardType, CARD_TYPE_META, defOf, statOf } from '../core/cards';
+import {
+  BASICS, basicsSummary, cardKind, cardType, CARD_TYPE_META, costOf, defOf, isXCost, statOf,
+} from '../core/cards';
 import { answer, cancelPanel } from '../core/combat';
 import {
   chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal, startRun,
@@ -196,7 +198,11 @@ function drawQuestion(idx: number, q: Question, view: QView) {
   // 它会在看清题之前先告诉你"这题考的是哪一块"，等于提前漏一半答案。
   text(card.name, x + 34, y + 48, { size: 22, weight: 700, family: FONT_TITLE, color: C.ink });
   const ct = CARD_TYPE_META[cardType(card)];
-  text(`${ct.name}牌 · 从题库随机抽一题`, x + 34, y + 74, {
+  // 费用写在这一行里：这一手要花多少，是玩家按下选项之前最该知道的一个数。
+  // X 费牌不能只写一个 X —— 得当场告诉他"X 现在等于几"。
+  const xc = isXCost(card);
+  const costNote = xc ? `X = ${Math.max(1, G.ap)} 点，吃光行动力` : `${costOf(card)} 点行动力`;
+  text(`${ct.name}牌 · ${costNote} · 从题库随机抽一题`, x + 34, y + 74, {
     size: 13, color: ct.color, weight: 600,
   });
 
@@ -204,7 +210,7 @@ function drawQuestion(idx: number, q: Question, view: QView) {
   const eff = EFFS[card.eff] ?? EFFS.strike;
   const sumW = 300;
   text('答对就拿到的效果', x + w - 84 - sumW, y + 50, { size: 12, color: C.dim, align: 'left' });
-  text(effSummary(card.eff, st.atk, st.blk, card.mods), x + w - 84 - sumW, y + 74, {
+  text(effSummary(card.eff, st.atk, st.blk, card.mods, xc), x + w - 84 - sumW, y + 74, {
     size: 13, color: eff.color, weight: 700, align: 'left',
   });
 
@@ -437,7 +443,7 @@ function drawPowerPick() {
   box(x, y, w, h, withAlpha(C.gold, 0.45));
 
   heading('精英留下了东西', x + 44, y + 66,
-    '它现在是一张牌：进牌组，抽到手，花 1 点行动力打出去，本场剩下的时间里一直生效。');
+    '它现在是一张牌：进牌组，抽到手，付它的费用打出去，本场剩下的时间里一直生效。');
 
   p.pool.forEach((c, i) => {
     const cx = x + (w - totalW) / 2 + i * (cw + gap);
@@ -662,7 +668,7 @@ function drawMode() {
   const y = (VH - h) / 2;
   box(x, y, w, h, withAlpha(C.gold, 0.42));
   heading('这一局怎么打', x + 48, y + 66,
-    '答对不花行动力并解锁。三种模式只改答错的价码；另外固定带 3 张不答题的基础牌做保底。');
+    '答对退回 1 点行动力并解锁。三种模式只改答错的价码；另外固定带 3 张不答题的基础牌做保底。');
 
   const gap = 24;
   const cw = (w - 96 - gap * 2) / 3;
@@ -734,7 +740,7 @@ function drawHelp() {
   // 效果/类别表不再写死在帮助页：卡面徽章上就印着「类别·效果」，帮助页只讲分工
   const blocks: Array<[string, string[]]> = [
     [`初始牌组：${BASICS.length} 张，不答题`, [
-      `一局开始就有 ${BASICS.length} 张基础牌（${basicsSummary()}），它们不答题、随时可打、扣 1 点行动力。`,
+      `一局开始就有 ${BASICS.length} 张基础牌（${basicsSummary()}），它们不答题、随时可打、各要 1 点行动力。`,
       '它们不可获取、不可精炼、不可删除 —— 是这一局的"地板"：答错锁卡、测试模式作废之后，至少还有牌能打，不会整手空转。',
       `数值刻意压得比知识卡低：保底不等于变强，想赢还是得答题、解锁、用 ×${BAL.freeMult} 的免答牌。`,
     ]],
@@ -745,9 +751,9 @@ function drawHelp() {
       '能力：七种增益牌 —— 本场持续改规则（沙漏多 1 点行动力、索引卡多抽一张……）。',
     ]],
     ['牌面只讲机械，不讲知识', [
-      '卡面上只有类别、牌名、效果和数值。每张牌都是 1 点行动力，这个价不用逐张印；解锁状态看右上角那枚锁章——合锁是要先答题，开锁是免答可打，本场作废会划一道斜杠。颜色按四类走（攻击橙 / 防御蓝 / 技能紫 / 能力金）。',
-      '没有主题名、没有知识点名、没有记忆度、更没有题干 —— 同一个主题的两张牌在牌面上毫无关联。',
-      '所以「折半之刃」背后是哪道题，只能靠点开它知道；答完之后，反馈面板才会告诉你是哪个主题。',
+      '卡面上只有费用、类别、牌名、效果和数值。左上角那个圆是费用：0–3 点，或 X（花光行动力，花几点结算几次）。付不起时它会变红。',
+      '右上角是解锁章：合锁要答题，开锁可免答，本场作废会划一道斜杠。颜色按四类走（攻击橙 / 防御蓝 / 技能紫 / 能力金）。',
+      '没有主题名、没有知识点名、没有记忆度、更没有题干。所以「折半之刃」背后是哪道题，只能靠点开它知道。',
     ]],
     ['答对生效，答错作废', [
       '答对：卡面效果立刻结算，并且这个卡种本场解锁 —— 之后它的每一张副本都能免答直接打出。',
@@ -761,15 +767,15 @@ function drawHelp() {
       '模式只影响这一局的答错价码，不改卡面数值、不改题库，也不动你已经攒下的记忆。',
     ]],
     ['行动力是唯一的节奏', [
-      `每回合 ${BAL.baseAp} 点行动力、抽 ${BAL.drawPerTurn} 张牌，出牌 1 点。`,
-      '答对了这一手不花行动力 —— 行动力买的不是"出牌次数"，而是"犯错次数"。',
-      '基础牌是例外：它不退款。用行动力打基础牌，就是拿这一回合的答题机会换一点保底输出。',
-      '键盘：1–4 选选项，空格/回车推进面板，没有面板时空格就是结束回合。',
+      `每回合 ${BAL.baseAp} 点行动力、抽 ${BAL.drawPerTurn} 张牌。每张牌标 0–3 点，X 费牌吃光剩下的全部。`,
+      '答对只退回 1 点：1 费牌等于免费，2 费净花 1 点、3 费净花 2 点。贵牌不是"更强的一手"，是"更大的一张票"。',
+      '基础牌和增益牌不答题，所以一分不退 —— 拿行动力打基础牌，就是拿这回合的答题机会换保底输出。',
+      '键盘：1–4 选选项，空格/回车推进面板，空场时空格结束回合。',
     ]],
     ['增益牌：也要打出去才算', [
       '精英战后和部分事件会给你一张增益牌（能力牌）。它没有题，也没有伤害 —— 它改的是这一场的规则：',
       '沙漏多 1 点行动力、索引卡多抽一张、长明灯每回合给格挡、错题本把答错变成攻击。',
-      '它和知识卡一样占手牌、一样要 1 点行动力。打出后从牌组循环里出去，本场一直生效；下一场要重新打。',
+      '它和知识卡一样占手牌、一样要付费用（只是不答题，所以这笔钱不退）。打出后从牌组循环里出去，本场一直生效；下一场要重新打。',
     ]],
     ['地图与构筑', [
       '八层分支地图，节点类型全部可见：战斗、精英、复习、事件、Boss。',
@@ -779,7 +785,6 @@ function drawHelp() {
     ['它会记住你', [
       '复习状态存在本地。下一局的起始牌组按模式取：学习先取没碰过的，复习先取逾期的，测试先取已经掌握的。',
       '结算页会告诉你：这一局的伤害里有多少是免答打出去的 —— 那就是"记住了"和"当时蒙对"的差别。',
-      '模式只改这一局的答错价码；答对/答错攒下的稳固度会跟着你进下一局。',
     ]],
   ];
 

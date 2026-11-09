@@ -7,7 +7,7 @@ import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import * as FX from '../gfx/fx';
 import { MODES, POWER_BY_ID } from '../core/model';
 import { G } from '../core/infra';
-import { cardKind, defOf, powerOf, statOf } from '../core/cards';
+import { canPay, cardKind, costOf, defOf, isXCost, powerOf, statOf } from '../core/cards';
 import {
   askCard, canAsk, endTurn, intentText, isForgotten, isUnlocked, playBasic, playPower,
   playUnlocked, unlockStats,
@@ -998,6 +998,8 @@ function drawHand(t: number, dt: number) {
     drawCard(-w / 2, -h / 2, w, h, card, st.atk, st.blk, {
       up: !!ent.up, glow: hv, hovered: hv, state,
       mode: isJunk || isPow || isBase ? undefined : G.mode,
+      // 付不起的牌把费用球点红：这一手现在打不出去，得在点之前就看得出来
+      afford: isJunk || canPay(card),
     });
     g.restore();
 
@@ -1005,21 +1007,33 @@ function drawHand(t: number, dt: number) {
     // 但下标一定要带上 —— 少注册一项会让"第几个热区"和"第几张牌"整体错位。
     if (flying) continue;
 
+    // 四种牌都要先付得起。付不起时不是"点了没反应"，而是抖一下 + 说清差多少 ——
+    // 一张画在屏幕上、点下去却什么也不发生的牌，读起来就是坏了。
+    const payUp = () => {
+      if (canPay(card)) return true;
+      FX.shake(6);
+      FX.floatText(HAND.cx, HAND.cy - 54,
+        isXCost(card) ? '行动力不够：X 费牌至少要 1 点'
+          : `行动力不够：这张牌要 ${costOf(card)} 点`,
+        C.red, 20, { vy: -34 });
+      return false;
+    };
+
     // 基础牌点下去直接打，锁着的牌点下去出题，已解锁的牌点下去直接打，
     // 增益牌点下去立刻生效 —— 四种都是"点这张牌"，只是它问你要的东西不一样
     if (isPow) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
-        if (G.ap <= 0) { FX.shake(6); return; }
+        if (!payUp()) return;
         playPower(s.i);
       }, 'card', s.i);
     } else if (isBase) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
-        if (G.ap <= 0) { FX.shake(6); return; }
+        if (!payUp()) return;
         playBasic(s.i);
       }, 'card', s.i);
     } else if (!isJunk) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
-        if (G.ap <= 0) { FX.shake(6); return; }
+        if (!payUp()) return;
         if (open) { playUnlocked(s.i); return; }
         if (isForgotten(card.id)) {
           // 作废的牌打不出去 —— 但不说明白，玩家会以为自己点不动它

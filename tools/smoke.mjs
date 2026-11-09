@@ -332,8 +332,15 @@ await step('点一张知识卡 → 直接出题', async () => {
   // 开局的手牌是从牌堆飞进来的，飞行途中没有热区（点它等于点空气），必须等它落地
   if (!await waitHand()) throw new Error('手牌一直没落位');
   globalThis.__apBeforeAsk = await S('cog.state.ap');
-  globalThis.__askIdx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
+  // 优先挑 1 费的知识卡（这样"答对退回 1 点"正好抵消），挑不到就按实际费用断言 ——
+  // 起手是从记忆里排出来的，跨轮跑下来手牌不一定是哪几张，不能假设一定有 1 费牌。
+  globalThis.__askIdx = await evalJs(`(() => {
+    const h = cog.state.hand;
+    const one = h.findIndex((c) => !c.id.startsWith("base:") && cog.costOf(c.id) === 1);
+    return one >= 0 ? one : h.findIndex((c) => !c.id.startsWith("base:"));
+  })()`);
   if (globalThis.__askIdx < 0) throw new Error('手里没有知识卡');
+  globalThis.__askCost = await evalJs(`cog.costOf(cog.state.hand[${globalThis.__askIdx}].id)`);
   await clickCard(globalThis.__askIdx);
 }, async () => {
   const p = await S('cog.state.panel');
@@ -365,10 +372,11 @@ await step('「继续」→ 回到战斗', async () => {
   await clickLabel('继续');
 }, async () => (await S('cog.state.panel.k')) === 'none');
 
-// 这一版唯一的经济规则：答对退还这一手的行动力。它要是坏了，整套节奏就塌了
-// （行动力变成"出牌次数"而不是"犯错次数"，高手也没法多打），所以单独钉一条。
-await step('答对 → 行动力一点没少', async () => {},
-  async () => (await S('cog.state.ap')) === globalThis.__apBeforeAsk);
+// 经济规则：答对退回 1 点（1 费牌因此等于免费）。它要是坏了，整套节奏就塌了
+// （1 费牌的免费出手是"会的人一回合能打完手牌"的唯一来源），所以单独钉一条。
+await step('答对 → 只退回 1 点（1 费牌因此一点没少）', async () => {},
+  async () => (await S('cog.state.ap'))
+    === globalThis.__apBeforeAsk - Math.max(0, globalThis.__askCost - 1));
 
 await step('结束回合 → 回合数前进，敌人真的演了动作且输入被锁', async () => {
   if (!await waitReady()) throw new Error('上一步一直没结算完');
@@ -437,18 +445,24 @@ await step('打出增益牌 → 不出题、不进弃牌堆、进入本场增益
 // 免答出牌是新机制唯一的点击路径：解锁之后点牌不该再出题，而是直接结算。
 // 用 dev=battle 开局（10 张牌全是不同卡种，正常打不到重复），再手动全解锁。
 await boot(URL_ + '?dev=battle');
-await step('免答出牌 → 不出题，只扣 1 点行动力', async () => {
+await step('免答出牌 → 不出题，只扣这张牌的费用', async () => {
   await evalJs('cog.unlockAll()');
   if (!await waitHand()) throw new Error('手牌一直没落位');
   globalThis.__apBefore = await S('cog.state.ap');
-  // 基础牌本来就不出题，这条要测的是"知识卡解锁后也不出题"，所以必须挑知识卡
-  const know = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
+  // 基础牌本来就不出题，这条要测的是"知识卡解锁后也不出题"，所以必须挑知识卡。
+  // 免答不退款，所以扣的就是这张牌的整份费用 —— 挑 1 费牌最好断言，挑不到就按实际费用算。
+  const know = await evalJs(`(() => {
+    const h = cog.state.hand;
+    const one = h.findIndex((c) => !c.id.startsWith("base:") && cog.costOf(c.id) === 1);
+    return one >= 0 ? one : h.findIndex((c) => !c.id.startsWith("base:"));
+  })()`);
   if (know < 0) throw new Error('手里没有知识卡');
+  globalThis.__freeCost = await evalJs(`cog.costOf(cog.state.hand[${know}].id)`);
   await clickCard(know);
 }, async () => {
   const ap = await S('cog.state.ap');
   const k = await S('cog.state.panel.k');
-  return k === 'none' && ap === globalThis.__apBefore - 1;
+  return k === 'none' && ap === globalThis.__apBefore - globalThis.__freeCost;
 });
 
 // 初始牌组：点基础牌不弹题，直接结算，并且扣 1 点行动力。
@@ -469,12 +483,55 @@ await step('基础牌 → 不出题，直接造成伤害并扣 1 点行动力', 
   return st.panel === 'none' && st.hp === globalThis.__baseHp - 4 && st.ap === globalThis.__baseAp - 1;
 });
 
+// ── 费用 ───────────────────────────────────────────────────
+// 费用是这一版新增的经济维度。三条边界都得钉住：2 费答对只退 1 点、付不起的牌
+// 连题都弹不出来、X 费牌按耗掉的点数结算。任何一条翻了，费用就退化成了装饰。
+await boot(URL_ + '?dev=battle');
+await step('2 费牌答对 → 只退回 1 点，净花 1 点', async () => {
+  if (!await waitHand()) throw new Error('手牌一直没落位');
+  const id = await evalJs('cog.pack.cards.find((c) => c.cost === 2).id');
+  await evalJs(`(() => { const G = cog.state; G.hand[0] = { id: ${JSON.stringify(id)}, up: 0 }; G.ap = 3; })()`);
+  await clickCard(0);
+  if (!await waitFor('opt')) throw new Error('付得起的 2 费牌没有弹题');
+  const right = await evalJs('cog.state.panel.view.answer');
+  await clickLabel('opt', right);
+}, async () => (await S('cog.state.ap')) === 2);   // 3 - 2 + 1
+
+await boot(URL_ + '?dev=battle');
+await step('付不起的 3 费牌 → 点不出题、行动力不动', async () => {
+  if (!await waitHand()) throw new Error('手牌一直没落位');
+  const id = await evalJs('cog.pack.cards.find((c) => c.cost === 3).id');
+  await evalJs(`(() => { const G = cog.state; G.hand[0] = { id: ${JSON.stringify(id)}, up: 0 }; G.ap = 2; })()`);
+  await clickCard(0);
+}, async () => {
+  const st = await S('({ ap: cog.state.ap, panel: cog.state.panel.k })');
+  return st.ap === 2 && st.panel === 'none';
+});
+
+await boot(URL_ + '?dev=battle');
+await step('X 费牌 → 吃光行动力，按点数结算 3 次', async () => {
+  if (!await waitHand()) throw new Error('手牌一直没落位');
+  // 试答之刺：X 费 + 洞察 + 单段 —— 3 点行动力就该打 3 段
+  const id = await evalJs('cog.pack.cards.find((c) => c.cost === "x" && c.eff === "pierce").id');
+  await evalJs(`(() => { const G = cog.state; G.hand[0] = { id: ${JSON.stringify(id)}, up: 0 }; G.ap = 3; })()`);
+  await clickCard(0);
+  if (!await waitFor('opt')) throw new Error('X 费牌没有弹题');
+  const right = await evalJs('cog.state.panel.view.answer');
+  await clickLabel('opt', right);
+  await expectFeedback('X 费牌答对');
+}, async () => {
+  const st = await S('({ ap: cog.state.ap, hits: cog.state.panel.k === "feedback" ? cog.state.panel.fb.hits.length : -1 })');
+  return st.ap === 1 && st.hits === 3;   // 3 点全花，退回 1 点；效果结算 3 次
+});
+
 // 回归：手牌打空、行动力归零时，「结束回合」必须仍然可点。
 // 这里曾经用「还有没有牌可打」决定要不要注册热区，于是唯一还能前进的局面被彻底锁死 ——
 // 按钮画在屏幕上，点下去却没有任何反应。战斗里没有任何东西能替代这个按钮，必须守住。
 await step('手牌与行动力都归零 → 结束回合仍然生效', async () => {
-  // 上一步刚打完一张牌，busy 还亮着 —— 那期间 endTurn 会被自己的守卫挡掉，
-  // 看起来就是"按钮画着却点不动"。等它闲着再动。
+  // 再往前几步打完的那一手还停在反馈面板上（面板开着时 busy 恒为 true）——
+  // 那期间 endTurn 会被自己的守卫挡掉，看起来就是"按钮画着却点不动"。
+  // 这一步测的是空场下的结束回合，先把上一手收干净，再等它真的闲着。
+  await evalJs('(() => { const G = cog.state; if (G.panel.k === "feedback") G.panel = { k: "none" }; G.busy = false; })()');
   if (!await waitReady()) throw new Error('上一步一直没闲下来');
   await evalJs('(() => { const G = cog.state; G.hand.length = 0; G.ap = 0; })()');
   globalThis.__turnBefore = await S('cog.state.turn');

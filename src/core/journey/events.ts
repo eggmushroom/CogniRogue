@@ -154,7 +154,7 @@ export const EVENTS: EventDef[] = [
           hurtBy(12);
           const r = grantRandomPower();
           if (!r) { healBy(12); return '他已经没有东西可以给你了。'; }
-          return `「${r.name}」进了你的牌组：${r.card}。抽到它，花 1 点行动力打出去。`;
+          return `「${r.name}」进了你的牌组：${r.card}。抽到它，付它的费用打出去（增益牌不答题，这笔钱不退）。`;
         },
       },
       { t: '什么也不留，转身离开', sub: '什么也不发生', run: () => '他没有拦你。' },

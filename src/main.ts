@@ -9,7 +9,7 @@ import { C } from './gfx/theme';
 import { text } from './gfx/ui';
 import { G, onFx } from './core/infra';
 import { BANK, loadQuestionBank, memOf } from './core/library';
-import { PACK, powerCardOf } from './core/cards';
+import { costNow, defOf, PACK, powerCardOf } from './core/cards';
 import { FOES } from './core/model';
 import { answer, askCard, cancelPanel, canAsk, endTurn, playPower } from './core/combat';
 import { EVENTS, dismissFeedback, endRun, enterNode, startRun } from './core/journey';
@@ -234,6 +234,8 @@ declare global {
       markMem: (id: string, ok: number, bad?: number) => void;
       /** 调试/自动化用：还在飞的单元数（抽牌 / 弃牌 / 敌人动作），用来盯"飞行单元漏清" */
       fx: () => { hand: number; discard: number; enemy: number };
+      /** 调试/自动化用：这张卡此刻的实际费用（X 费牌 = 当前行动力） */
+      costOf: (id: string) => number;
       /** 冒烟测试用：单独演一次敌人动作，不改任何数值。taken=0 演"被全挡下" */
       enemyAct: (k?: FX.EnemyActKind, taken?: number) => void;
       /** 演示/截图用：真的走一次敌人回合，血量 / 弃牌堆 / 意图都会跟着变 */
@@ -266,6 +268,8 @@ window.cog = {
   pick: (i: number) => answer(i),
   unlockAll: () => { G.deck.forEach((e) => { G.unlocked[e.id] = true; }); },
   power: (i: number) => playPower(i),
+  // X 费牌的费用是活的，读的是"此刻"——冒烟测试断言扣了几点时用它，别去猜卡表
+  costOf: (id: string) => costNow(defOf({ id, up: 0 })),
   markMem: (id: string, ok: number, bad = 0) => {
     const m = memOf(id);
     m.ok = ok;
@@ -397,6 +401,13 @@ function devJump() {
     if (askIdx >= 0) askCard(askIdx);
     const v = G.panel.k === 'question' ? G.panel.view : null;
     if (v) answer(v.answer === 0 ? 1 : 0);
+  } else if (d === 'xcard') {
+    // X 费牌：牌面上只有一个 X，得看答题面板怎么把它换算成"现在等于几"。
+    // 换一张真的 X 费知识卡进手牌，而不是靠抽牌运气。
+    const xid = PACK.cards.find((c) => c.cost === 'x')!.id;
+    G.hand[0] = { id: xid, up: 0 };
+    G.ap = G.apMax;
+    askCard(0);
   } else if (d === 'reward') {
     if (G.enemy) G.enemy.hp = 0;
     G.pending = 'clear';

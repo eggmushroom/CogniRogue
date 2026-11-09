@@ -8,6 +8,7 @@ import { poolFor } from '../library/bank';
 import { memOf, saveMem } from '../library/memory';
 import { shuffleOptions } from '../library/question';
 import { defOf, hasPower, isBasicCardId, isPowerId, powerOf, statOf } from '../cards/registry';
+import { canPay, costNow, isXCost, refundOf } from '../cards/cost';
 import { cardKind } from '../cards/kinds';
 import { endRun } from '../journey/report';
 import { openReward } from '../journey/rewards';
@@ -21,6 +22,9 @@ import { isUnlocked, unlockStats } from './unlock';
  * 出牌有四条路：答题（answer）、免答（playUnlocked）、基础牌（playBasic）
  * 和增益牌（playPower）。前三条都把卡面数字经 `strikeWith` 结算，
  * 数值才不会出现"卡面和结算对不上"；增益牌不打伤害，只改本场规则。
+ *
+ * 四条路**都要先付得起**（`canPay`），也都要在付完之后才动牌堆 —— 一条先扣牌、
+ * 再发现行动力不够的路径，会凭空吃掉玩家一张牌。
  */
 const join = (a: string, b: string) => (a ? a + ' ' : '') + b;
 
@@ -82,10 +86,13 @@ function pickQi(key: string, n: number): number {
 
 /** 点一张锁着的牌 = 从题库里抽一道题。押注没了，所以点下去没有中间那一步。 */
 export function askCard(idx: number) {
-  if (G.busy || G.panel.k !== 'none' || G.ap <= 0) return;
+  if (G.busy || G.panel.k !== 'none') return;
   const ent = G.hand[idx];
   if (!ent) return;
   const card = defOf(ent);
+  // 门前先看价：付不起的牌连题都不该弹出来 —— 让人答完一道题才发现打不出去，
+  // 是最难受的一种白费力气。
+  if (!canPay(card)) return;
   // 题库不限制主题：卡面主题没匹配到题池时，poolFor 会回退到全部题目。
   // 只要题库里还有一道题，任何知识卡都点得开。
   const { key, list } = poolFor(card.topic);
@@ -121,15 +128,16 @@ function damageEnemy(raw: number, pierce = false) {
 
 /**
  * 一张卡真正打出去的那一下。mult 是倍率（未解锁的答题出牌传 1，
- * 已解锁的免答出牌传 BAL.freeMult）。答题、免答、基础牌三条路都从这里走，
- * 数值才不会出现"卡面和结算对不上"。
+ * 已解锁的免答出牌传 BAL.freeMult），repeat 是 X 费牌花掉的点数 ——
+ * 一张牌结算几遍只看这一个参数，所以"卡面写 8 点伤害 ×X"和实际打出的段数
+ * 永远由同一份 `resolveEff` 决定。
  */
-function strikeWith(ent: CardInst, mult: number) {
+function strikeWith(ent: CardInst, mult: number, repeat = 1) {
   const card = defOf(ent);
   const st = statOf(ent);
   // card.mods 必须一起传：卡面（ui.ts）和答题面板（overlay.ts）都是按 mods 画的，
   // 结算漏掉它，带签名改动的 15 张卡就会「卡面写的」和「实际发生的」两张皮。
-  const out = resolveEff(card.eff, st.atk, st.blk, mult, card.mods);
+  const out = resolveEff(card.eff, st.atk, st.blk, mult, card.mods, repeat);
   const parts: { d: number; a: number }[] = [];
   let dmg = 0;
   let absorbed = 0;
@@ -164,6 +172,13 @@ export function answer(choice: number) {
   const st = statOf(ent);
   /** 这一局的答错价码。开局前选好，整局不变 —— 不再看这张卡自己到了哪个阶段。 */
   const M = MODES[G.mode];
+  /**
+   * 这一手的价格。X 费牌按"此刻剩下的全部行动力"算，所以必须在一开局就定下来：
+   * 后面的结算只会动血、动格挡、动牌堆，不会动行动力，但先定价再结算读起来才顺。
+   */
+  const xcost = isXCost(card);
+  const spent = xcost ? G.ap : costNow(card);
+  const repeat = xcost ? Math.max(1, spent) : 1;
 
   let dmg = 0;
   let blkGain = 0;
@@ -177,7 +192,7 @@ export function answer(choice: number) {
   let backToDraw = false;
 
   if (right) {
-    const r = strikeWith(ent, 1);
+    const r = strikeWith(ent, 1, repeat);
     hits = r.out.hits;
     dmg = r.dmg;
     absorbed = r.absorbed;
@@ -185,6 +200,7 @@ export function answer(choice: number) {
     heal = r.heal;
     drawn = r.drawn;
     parts = r.parts;
+    if (xcost) apNote = join(apNote, `耗尽 ${spent} 点行动力，效果结算 ${repeat} 次。`);
     if (drawn) apNote = join(apNote, `专注：抽 ${drawn} 张。`);
 
     // 答对就是解锁：之后这个卡种的所有副本都可以免答打出（×BAL.freeMult）
@@ -241,6 +257,7 @@ export function answer(choice: number) {
     G.runBad += 1;
     m.lapses += 1;
     m.bad += 1;
+    if (spent > 1) apNote = join(apNote, `这一手花掉的 ${spent} 点行动力不退。`);
 
     // 以失误为食的敌人机制。挂在"答错"这个动作上而不是敌人回合上，
     // 因为它们惩罚的正是"这次答错"本身。
@@ -269,21 +286,28 @@ export function answer(choice: number) {
     }
   }
 
-  // 节奏结算：一张牌 1 点。答对把这一手退回来 —— 行动力买的不是"出牌次数"，
-  // 而是"犯错次数"：会的人这一回合能把整把手牌打完，不会的人打三张就没油了。
-  G.ap -= 1;
+  // 节奏结算：先付整份费用，答对再退回 1 点 —— 不是全退。
+  //
+  // 1 费牌答对等于免费，和引入费用之前的规则完全一样；2 费净花 1 点、3 费净花 2 点。
+  // 所以行动力同时买两样东西：犯错的机会，和一次打得更重的机会。
+  // （改成全退，高费牌会变成"同样免费、输出三倍"的纯优化，牌组会一路收敛到最贵的那几张。）
+  G.ap -= spent;
   G.cardsPlayed += 1;
-  if (right && BAL.refundRight) {
-    G.ap += 1;
+  const back = right ? refundOf(spent) : 0;
+  if (back > 0) {
+    G.ap += back;
     // 这条不进日志，进反馈面板：它是这一版唯一的经济规则，玩家得看得到
-    apNote = join(apNote, '答对了，这一手不花行动力。');
+    apNote = join(apNote, back >= spent
+      ? '答对了，这一手不花行动力。'
+      : `答对了，退回 ${back} 点 —— 这张牌净花 ${spent - back} 点。`);
   }
 
-  // 装订线：每回合第一次答错把这一手退回来。答错的代价是"这回合少一张牌"，
+  // 装订线：每回合第一次答错把这一整手退回来。答错的代价是"这回合少一张牌"，
   // 而不是"这回合什么都没发生" —— 这张牌买的就是一次容错。
+  // 退的是整份费用：正因为如此，它在一副高费牌里比在一副 1 费牌里值钱得多。
   if (!right && hasPower('binder') && !G.binderUsed) {
     G.binderUsed = true;
-    G.ap += 1;
+    G.ap += spent;
     apNote = join(apNote, '装订线：这次答错不花行动力。');
   }
   G.ap = clamp(G.ap, 0, 10);
@@ -348,14 +372,18 @@ export function answer(choice: number) {
  * 要快，一下接一下，中间不能再插一个要按的框。
  */
 export function playUnlocked(idx: number) {
-  if (G.busy || G.panel.k !== 'none' || G.ap <= 0) return;
+  if (G.busy || G.panel.k !== 'none') return;
   const ent = G.hand[idx];
   if (!ent) return;
   const card = defOf(ent);
   if (cardKind(card) !== 'knowledge' || !isUnlocked(card.id)) return;
+  if (!canPay(card)) return;
 
-  const r = strikeWith(ent, BAL.freeMult);
-  G.ap -= 1;
+  // 免答出牌没有"答对"，所以整份费用一分不退。X 费牌在这里同样按当下的行动力结算。
+  const spent = costNow(card);
+  const repeat = isXCost(card) ? Math.max(1, spent) : 1;
+  const r = strikeWith(ent, BAL.freeMult, repeat);
+  G.ap -= spent;
   G.cardsPlayed += 1;
   G.frees += 1;
   G.ap = clamp(G.ap, 0, 10);
@@ -367,6 +395,7 @@ export function playUnlocked(idx: number) {
   const shape = r.out.hits.length > 1 ? `${r.out.hits.join('+')} 伤害` : `${r.dmg} 伤害`;
   log(
     `「${EFFS[card.eff].name}·${card.topic}」免答 ×${BAL.freeMult} —— ${shape}` +
+      (isXCost(card) ? `（X=${repeat}）` : '') +
       (r.blk ? `，${r.blk} 格挡` : '') +
       (r.heal ? `，回 ${r.heal}` : '') +
       (r.drawn ? `，抽 ${r.drawn}` : ''),
@@ -392,34 +421,39 @@ export function playUnlocked(idx: number) {
 }
 
 /**
- * 打出一张增益牌：花 1 点行动力，本场战斗剩下的时间里一直亮着。
+ * 打出一张增益牌：付它标的费用，本场战斗剩下的时间里一直亮着。
  *
  * 它**不进弃牌堆**。洗回去的话，同一张牌每洗一次就能再打一次，
  * 一个"本场持续"的增益会变成无限叠加。所以它从手牌里直接消失，本场不再回到循环。
  * 这也是"每场都要重新打一遍"这条规则的物理实现 —— 跨场时 G.powers 被清空。
+ *
+ * 这笔钱不退：增益牌不出题，没有"答对"这回事。所以一张 2 费的索引卡是一次
+ * 实打实的节奏投资，值不值取决于这一场还要打几个回合。
  */
 export function playPower(idx: number) {
-  if (G.busy || G.panel.k !== 'none' || G.ap <= 0) return;
+  if (G.busy || G.panel.k !== 'none') return;
   const ent = G.hand[idx];
   if (!ent) return;
   const card = defOf(ent);
   const p = powerOf(card);
   if (!p) return;
   if (hasPower(p.id)) return;
+  if (!canPay(card)) return;
 
-  G.ap -= 1;
+  const spent = costNow(card);
+  G.ap -= spent;
   G.cardsPlayed += 1;
   G.powers.push(p.id);
   G.hand.splice(idx, 1);
 
-  // 打出那一下要有一点即时回报，否则"花 1 点上一个以后才生效的东西"永远是最差的一手
+  // 打出那一下要有一点即时回报，否则"花行动力上一个以后才生效的东西"永远是最差的一手
   let note = '';
   let blk = 0;
   if (p.id === 'hourglass') {
-    // 上限和当前值一起涨：这一手等于免费，之后每回合都多一次出手
+    // 上限和当前值一起涨：1 费的沙漏等于免费，之后每回合都多一次出手
     G.apMax += 1;
     G.ap += 1;
-    note = '行动力上限 +1，这一手不花行动力。';
+    note = '行动力上限 +1，这一手等于不花行动力。';
   } else if (p.id === 'index') {
     if (drawCards(1)) note = '抽 1 张。';
   } else if (p.id === 'lamp') {
@@ -439,7 +473,7 @@ export function playPower(idx: number) {
   }
   G.ap = clamp(G.ap, 0, 10);
 
-  log(`打出增益「${p.name}」—— ${p.card}${note ? ` ${note}` : ''}`, 'hi');
+  log(`打出增益「${p.name}」${spent ? `（${spent} 点）` : ''}—— ${p.card}${note ? ` ${note}` : ''}`, 'hi');
   if (blk) setTimeout(() => emit({ t: 'blk', n: blk }), 60);
   emit({ t: 'power', id: p.id });
 
@@ -453,17 +487,20 @@ export function playPower(idx: number) {
  *
  * 它是这一局的地板：答错、卡种作废、抽到的全是够不着的知识卡时，
  * 玩家至少还能把行动力换成一点伤害或格挡，不至于整回合空转。
- * 数值刻意低于知识卡 —— 保底 ≠ 变强。
+ * 数值刻意低于知识卡 —— 保底 ≠ 变强。**而且它和知识卡一样花 1 点**：
+ * 拿这一回合的答题机会换一点保底输出，这才是"地板"该有的价钱。
  */
 export function playBasic(idx: number) {
-  if (G.busy || G.panel.k !== 'none' || G.ap <= 0) return;
+  if (G.busy || G.panel.k !== 'none') return;
   const ent = G.hand[idx];
   if (!ent) return;
   const card = defOf(ent);
   if (cardKind(card) !== 'basic') return;
+  if (!canPay(card)) return;
 
+  const spent = costNow(card);
   const r = strikeWith(ent, 1);
-  G.ap -= 1;
+  G.ap -= spent;
   G.cardsPlayed += 1;
   G.ap = clamp(G.ap, 0, 10);
 

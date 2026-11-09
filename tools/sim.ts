@@ -12,9 +12,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { BAL, MODES } from '../src/core/model';
-import type { RunMode } from '../src/core/model';
+import type { CardInst, RunMode } from '../src/core/model';
 import {
-  G, PACK, answer, availableNodes, bankQuestionCount, canAsk, chooseEventOption, defOf, dismissFeedback,
+  G, PACK, answer, availableNodes, bankQuestionCount, canAsk, canPay, chooseEventOption, defOf, dismissFeedback,
   endTurn, enterNode, isUnlocked, loadQuestionBank, playBasic, playPower, playUnlocked, resetMemory, restHeal,
   skipReward, startRun, takeCard, takePower, askCard, mergePacks,
 } from '../src/core';
@@ -58,7 +58,7 @@ for (const arg of process.argv.slice(2)) {
   else if (m[1] === 'free') BAL.freeMult = v;
   else if (m[1] === 'start') BAL.startBlock = v;
   else if (m[1] === 'calm') BAL.calmFirstTurn = v > 0;
-  else if (m[1] === 'rf') BAL.refundRight = v > 0;
+  else if (m[1] === 'rf') BAL.refund = v > 0 ? 1 : 0;
   else if (m[1] === 'stab') BAL.reviewStab = Math.max(1, v);
 }
 
@@ -163,22 +163,25 @@ function runOne(p: number, st: Stat) {
     }
 
     if (G.screen === 'battle') {
+      // 费用之后，"手里有牌"不再等于"出得去"：3 费牌在只剩 1 点行动力时
+      // 连题都点不开。所有候选都要过一遍 canPay，否则模拟会卡在原地点同一张牌。
+      const pay = (c: CardInst) => canPay(defOf(c));
       if (G.ap > 0 && G.hand.length) {
-        // 增益牌先打：它花 1 点行动力，但本场剩下每回合都在还。
+        // 增益牌先打：它花行动力，但本场剩下每回合都在还。
         // 不先打的话，这张牌在手里就是一张废纸，模拟会把它的价值算成 0。
-        const pw = G.hand.findIndex((c) => !!defOf(c).power);
+        const pw = G.hand.findIndex((c) => !!defOf(c).power && pay(c));
         if (pw >= 0) { playPower(pw); plays += 1; continue; }
         // 再解锁（投资），没得答了再用已解锁的卡收割。这就是这套机制的标准打法：
         // 前两回合建库，后面用 ×1.5 的免答牌把它花掉。
-        const ask = G.hand.findIndex((c) => canAsk(c));
+        const ask = G.hand.findIndex((c) => canAsk(c) && pay(c));
         if (ask >= 0) { askCard(ask); continue; }
-        const ready = G.hand.findIndex((c) => !c.junk && defOf(c).kind === 'knowledge' && isUnlocked(c.id));
+        const ready = G.hand.findIndex((c) => !c.junk && defOf(c).kind === 'knowledge' && isUnlocked(c.id) && pay(c));
         if (ready >= 0) { free += 1; playUnlocked(ready); continue; }
         // 基础牌：不答题、不可退款，但总比让行动力烂掉好。
         // 它是这一局的地板，模拟不打出它，会把低水平的胜率算得比实际更狠。
-        const bas = G.hand.findIndex((c) => !c.junk && defOf(c).kind === 'basic');
+        const bas = G.hand.findIndex((c) => !c.junk && defOf(c).kind === 'basic' && pay(c));
         if (bas >= 0) { basics += 1; playBasic(bas); continue; }
-        // 手里只剩打不出的牌（答错锁住的、测试模式作废的）→ 结束回合。
+        // 手里只剩打不出的牌（答错锁住的、测试模式作废的、付不起的）→ 结束回合。
         // 快攻取消之后，剩下的行动力就是扔掉的，这是这一版的正常代价。
       }
       endTurn();
