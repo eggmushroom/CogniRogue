@@ -162,8 +162,6 @@ export interface CardDef {
    * 牌名刻意**不等于**知识点名 —— 它可以呼应主题，但不泄露任何一道题的答案。
    */
   name: string;
-  /** 这张牌背后的知识点短名。不上手牌卡面，只在牌组/画廊里作小字副标题。 */
-  kp?: string;
   /** 效果底数：伤害与格挡的基数，实际值由 effect 折算 */
   atk: number;
   blk: number;

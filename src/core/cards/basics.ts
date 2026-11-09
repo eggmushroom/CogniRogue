@@ -18,15 +18,15 @@ import type { CardDef, CardInst } from '../model/types';
  */
 export const BASICS: CardDef[] = [
   {
-    id: 'base:strike', topic: '基础', name: '基础斩击', kp: '牌组的保底输出',
+    id: 'base:strike', topic: '基础', name: '基础斩击',
     atk: 4, blk: 0, eff: 'strike', kind: 'basic', type: 'attack',
   },
   {
-    id: 'base:strike', topic: '基础', name: '基础斩击', kp: '牌组的保底输出',
+    id: 'base:strike', topic: '基础', name: '基础斩击',
     atk: 4, blk: 0, eff: 'strike', kind: 'basic', type: 'attack',
   },
   {
-    id: 'base:guard', topic: '基础', name: '基础格挡', kp: '牌组的保底防线',
+    id: 'base:guard', topic: '基础', name: '基础格挡',
     atk: 0, blk: 3, eff: 'guard', kind: 'basic', type: 'defense',
   },
 ];

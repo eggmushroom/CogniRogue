@@ -18,11 +18,7 @@ export function cardKind(card: CardDef | null | undefined): CardKind {
   return 'knowledge';
 }
 
-export const isKnowledgeCard = (c: CardDef | null | undefined) => cardKind(c) === 'knowledge';
 export const isPowerCard = (c: CardDef | null | undefined) => cardKind(c) === 'power';
-export const isJunkCard = (c: CardDef | null | undefined) => cardKind(c) === 'junk';
-/** 初始牌组里的基础牌：不答题、不可获取、永远在牌组里。 */
-export const isBasicCard = (c: CardDef | null | undefined) => cardKind(c) === 'basic';
 
 /**
  * 类别轴（攻击 / 防御 / 技能 / 能力）。

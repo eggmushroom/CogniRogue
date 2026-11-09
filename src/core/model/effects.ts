@@ -58,18 +58,6 @@ export const EFFS: Record<Eff, EffDef> = {
   },
 };
 
-export const EFF_KEYS = Object.keys(EFFS) as Eff[];
-
-/** 内置卡牌库里写中文名也认，写错一律回落到猛击 —— 一张卡不该因为一个词写错就失效。 */
-export function toEff(x: string | undefined): Eff {
-  const k = (x ?? '').trim();
-  if (!k) return 'strike';
-  for (const e of EFF_KEYS) {
-    if (e === k.toLowerCase() || EFFS[e].name === k) return e;
-  }
-  return 'strike';
-}
-
 /** 一次出牌的结算结果。伤害拆成段，因为「串联」要打两下。 */
 export interface EffOut {
   key: Eff;

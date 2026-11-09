@@ -78,12 +78,6 @@ export const ART_ICONS = {
 
 export type ArtIconName = keyof typeof ART_ICONS;
 
-/** 六种效果原型 → 图标名（EFFS.key 与这里同名，画卡面时直接用 eff.key） */
-export const EFF_ICON: Record<string, ArtIconName> = {
-  strike: 'strike', pierce: 'pierce', guard: 'guard',
-  drain: 'drain', chain: 'chain', focus: 'focus',
-};
-
 /**
  * 画一枚图标。cx/cy 是中心点，size 是外接方框边长；
  * lineWidth 定义在 24 坐标系里，随缩放走，小尺寸也不会糊成一团。
