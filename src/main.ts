@@ -11,7 +11,7 @@ import { G, onFx } from './core/infra';
 import { BANK, loadQuestionBank, memOf } from './core/library';
 import { PACK, powerCardOf } from './core/cards';
 import { FOES } from './core/model';
-import { answer, askCard, cancelPanel, endTurn, playPower } from './core/combat';
+import { answer, askCard, cancelPanel, canAsk, endTurn, playPower } from './core/combat';
 import { EVENTS, dismissFeedback, endRun, enterNode, startRun } from './core/journey';
 import type { Move } from './core/model';
 import {
@@ -374,16 +374,18 @@ function devJump() {
 
   startRun();
   enterNode(G.map[0][0].key);
-  // 点开第一张牌 —— 和真人点下去看到的东西一致：一道题，四个选项，没有前置选择
-  if (d === 'question') askCard(0);
+  // 点开一张**能出题的知识卡**，而不是写死下标 0：手牌是洗过的，
+  // 0 号位有时是基础牌，截图就会随机拍成"没有面板的战斗画面"。
+  const askIdx = G.hand.findIndex((e) => canAsk(e));
+  // 和真人点下去看到的东西一致：一道题，四个选项，没有前置选择
+  if (d === 'question') { if (askIdx >= 0) askCard(askIdx); }
   else if (d === 'answer') {
-    askCard(0);
+    if (askIdx >= 0) askCard(askIdx);
     // 截图脚本也必须走本次打乱后的视图，否则「正确」那一屏会拍成答错
     const v = G.panel.k === 'question' ? G.panel.view : null;
     if (v) answer(v.answer);
   } else if (d === 'wrong') {
-    // 只给文档截图用：故意选一个错的，把"答错"那一屏也拍下来
-    askCard(0);
+    if (askIdx >= 0) askCard(askIdx);
     const v = G.panel.k === 'question' ? G.panel.view : null;
     if (v) answer(v.answer === 0 ? 1 : 0);
   } else if (d === 'reward') {
