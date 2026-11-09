@@ -5,14 +5,14 @@ import { bar, drawCard, icon, panel, squeeze, text } from '../gfx/ui';
 import { onClick, hover } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import * as FX from '../gfx/fx';
-import { MODES, POWER_BY_ID, stageOf } from '../core/model';
+import { BAL, MODES, POWER_BY_ID, stageOf } from '../core/model';
 import { G } from '../core/infra';
 import { curFloor } from '../core/map';
 import { canPay, cardKind, costOf, defOf, isXCost, powerOf, statOf } from '../core/cards';
 import {
   askCard, canAsk, endTurn, intentText, playBasic, playPower,
 } from '../core/combat';
-import type { CardDef, CardInst, Foe } from '../core/model';
+import type { CardDef, CardInst, Foe, Mech } from '../core/model';
 
 /** 增益牌飞向的位置：右上角第一个增益槽。和 topBar 里的排布常量对齐。 */
 export const POWER_SLOT = { x: VW - 82, y: 32 };
@@ -280,6 +280,44 @@ function drawEnemy(e: Foe, t: number) {
     g.lineWidth = 1;
     g.stroke();
     text(e.tag, px, by + 39, { size: 12, align: 'center', color: tag, weight: 700 });
+  }
+
+  // 机制：常驻一行，写"什么时候发生、发生多少"。
+  //
+  // 三十五条 hint 从加进来那天起就躺在 data 里，从来没被画出来过 —— 于是
+  // "我答错它为什么回血"只能靠战斗日志里一闪而过的一行字猜。这不属于隐藏信息：
+  // 机制改的是玩家的决策，玩家得在**做决定之前**知道它。
+  // 只放数值和触发条件，味道文案留在日志里（常驻的一行字要能被扫读）。
+  //
+  // 位置贴着名字下方而不是头顶：那里已经被意图格和血条占了，
+  // 而这一行是"关于这只怪是谁"，读起来该跟在名字后面。
+  const note = mechNote(e);
+  if (note) {
+    text(note, ENEMY.x, by + 64, { size: 13, align: 'center', color: C.orange, weight: 700 });
+  }
+}
+
+/**
+ * 这只怪的机制，一句话。
+ *
+ * `mechV` 优先，和结算同源 —— 幕 Boss 的量比小怪重（反伤 3 对 1、格挡 14 对 8），
+ * 界面要是写死默认值，玩家会按小怪的账去打 Boss。
+ */
+function mechNote(e: Foe): string | null {
+  if (!e.mech) return null;
+  const v = e.mechV ?? (BAL.mech as Partial<Record<Mech, number>>)[e.mech] ?? 0;
+  switch (e.mech) {
+    case 'leech': return `你答错，它回 ${v} 点血`;
+    case 'thorns': return `你打它一次，自己挨 ${v} 点`;
+    case 'bulwark': return `你答错，它 +${v} 格挡`;
+    case 'fog': return `每回合少抽 ${v} 张`;
+    case 'siphon': return `被它打中，下回合 −${v} 行动力`;
+    case 'haste': return `每回合攻击 +${v}`;
+    case 'reviewer': return `一回合没答对，额外 ${v} 点`;
+    case 'pierce': return '攻击无视一半格挡';
+    case 'oblivion': return '专挑你错得最多的主题';
+    case 'lethe': return '你错一次，它永久 +1 攻';
+    default: return null;
   }
 }
 

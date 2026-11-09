@@ -106,6 +106,11 @@ onFx((e) => {
     case 'heal':
       if (!panelShown()) FX.heal(HERO.x, HERO.y - 40, e.n);
       break;
+    case 'foeHeal':
+      // 落在它自己身上：和"玩家回血"共用绿色，位置说明是谁在回。
+      // 不落在血条上 —— 那会盖住 `n / max` 那行字，正好把该看的数字糊掉。
+      if (!panelShown()) FX.heal(ENEMY.x, ENEMY.y + 180, e.n);
+      break;
     case 'shake':
       FX.shake(e.power);
       break;

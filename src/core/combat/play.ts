@@ -328,11 +328,16 @@ export function answer(choice: number) {
     // 因为它们惩罚的正是"这次答错"本身。
     if (G.enemy) {
       if (G.enemy.mech === 'leech') {
-        const n = Math.min(4, G.enemy.maxHp - G.enemy.hp);
+        // 名字必须读 e.name：这条机制挂在三种怪身上（书蛀 / 书蛀母 / 饕餮书虫），
+        // 写死"书蛀"的话，第二幕 Boss 回血时日志会告诉玩家是另一只怪干的。
+        const cap = G.enemy.mechV ?? BAL.mech.leech;
+        const n = Math.min(cap, G.enemy.maxHp - G.enemy.hp);
         if (n > 0) {
           G.enemy.hp += n;
-          apNote = join(apNote, `书蛀啃食这次失误，回复 ${n} 点。`);
-          log(`书蛀啃食你的失误，回复 ${n} 点`, 'bad');
+          apNote = join(apNote, `${G.enemy.name}啃食这次失误，回复 ${n} 点。`);
+          log(`${G.enemy.name}啃食你的失误，回复 ${n} 点`, 'bad');
+          // 血条往上跳却没有数字，读起来像"我看错了"。回血也要有一声。
+          emit({ t: 'foeHeal', n });
         }
       } else if (G.enemy.mech === 'lethe') {
         G.enemy.dmg += 1;

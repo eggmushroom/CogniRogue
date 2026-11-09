@@ -161,6 +161,56 @@ function battle(stage: number, key: string) {
   ok(e.dmg > d0, `缝线傀儡：攻击 ${d0} → ${e.dmg}`);
 }
 
+// leech：只吃"答错"这一件事，回血量读自己的 mechV，且不会越过血线上限。
+// 这条是玩家最容易被吓到的一条 —— 打得好好的，答错一下敌人血条往上跳。
+{
+  const e = battle(2, 'grubqueen');
+  const cap = e.mechV ?? BAL.mech.leech;
+  const card = PACK.cards.find((c) => c.kind === 'knowledge')!;
+
+  /** 故意答错一次，返回敌人这次的血量变化。 */
+  const missOnce = () => {
+    // 一张牌一回合只能错一次（`failedTurn`），不换回合的话第二次 askCard 会静默不开题 ——
+    // 看起来像"机制没生效"，其实只是牌被锁了。
+    startTurn();
+    G.ap = 9;                       // 别让"行动力不够"伪装成"机制没生效"
+    G.hand[0] = { id: card.id, up: 0 };
+    const hp0 = e.hp;
+    askCard(0);
+    const p0 = G.panel;
+    if (p0.k === 'question') answer((p0.view.answer + 1) % p0.view.options.length);
+    // 答错之后面板会变成 feedback；没弹题的话它还停在原地。
+    // 用一个布尔接住，而不是 `if (k !== 'question') throw` —— 那种写法会把
+    // panel.k 收窄成 'question'，紧接着的 `k === 'feedback'` 在 TS 眼里永不成立。
+    const took = G.panel.k === 'feedback';
+    if (took) dismissFeedback();
+    if (!took) throw new Error('书蛀母：没弹出题');
+    return e.hp - hp0;
+  };
+
+  e.hp = e.maxHp - 40;
+  ok(missOnce() === cap, `书蛀母：答错回 ${cap} 点`);
+
+  // 差 2 点满血时答错：补到满就停，不能溢出成 102/100
+  e.hp = e.maxHp - 2;
+  missOnce();
+  ok(e.hp === e.maxHp, `书蛀母：回血不越上限（${e.hp}/${e.maxHp}）`);
+
+  // 已经满血：一点不涨。否则血条会顶在最大值上，玩家看不出发生过什么
+  e.hp = e.maxHp;
+  ok(missOnce() === 0, '书蛀母：满血时答错不回血');
+
+  // 答对不该回血 —— 回血挂在答错分支上，挂错了位置这条会红
+  e.hp = e.maxHp - 30;
+  const hp1 = e.hp;
+  G.ap = 9;
+  G.hand[0] = { id: card.id, up: 0 };
+  askCard(0);
+  if (G.panel.k === 'question') answer(G.panel.view.answer);
+  if (G.panel.k === 'feedback') dismissFeedback();
+  ok(e.hp <= hp1, `书蛀母：答对不回血（${hp1} → ${e.hp}）`);
+}
+
 // ── 6. 答错的格挡补偿只看这张牌自己 ────────────────────────
 // 每张卡都挂着一个 blk 档位（同价位牌的格挡底数），但「洞察 / 内化 / 串联 / 专注」
 // 的效果里根本没有格挡 —— 卡面上也看不见格挡那一行。补偿要是照着那个纸面数值算，
