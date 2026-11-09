@@ -284,7 +284,6 @@ export interface Feedback {
   qi: number;
   choice: number;
   right: boolean;
-  quick: boolean;
   /** 总伤害（分段结算后相加） */
   dmg: number;
   absorbed: number;
@@ -388,7 +387,7 @@ export interface GameState {
    * 本场已经作废的卡种 —— 测试模式答错的那几张。
    *
    * 和 `failedTurn` 是两档惩罚：failedTurn 只锁一个回合（看看答案还能再试），
-   * 这一档锁整场（测试模式答错 = 这一次没通过）。作废的牌仍然能快攻，不然手牌会堵死。
+   * 这一档锁整场（测试模式答错 = 这一次没通过）。作废的牌既不能答题、也打不出去，只能等这一场结束。
    */
   forgotten: Record<string, boolean>;
   /**

@@ -971,9 +971,9 @@ function drawHand(t: number, dt: number) {
         if (G.ap <= 0) { FX.shake(6); return; }
         if (open) { playUnlocked(s.i); return; }
         if (isForgotten(card.id)) {
-          // 作废的牌还能快攻 —— 但不说明白，玩家会以为自己点不动它
+          // 作废的牌打不出去 —— 但不说明白，玩家会以为自己点不动它
           FX.shake(4);
-          FX.floatText(HAND.cx, HAND.cy - 54, '这一场它已经作废了 —— 只能快攻', C.red, 20, { vy: -34 });
+          FX.floatText(HAND.cx, HAND.cy - 54, '这一场它已经作废了 —— 打不出去', C.red, 20, { vy: -34 });
           return;
         }
         if (canAsk(ent)) { askCard(s.i); return; }

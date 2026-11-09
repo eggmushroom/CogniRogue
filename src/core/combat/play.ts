@@ -18,9 +18,9 @@ import { isUnlocked, unlockStats } from './unlock';
 /**
  * combat/play —— 一场战斗的开局，以及玩家出牌的全部路径。
  *
- * 出牌有三条路：答题（answer）、免答（playUnlocked）、快攻（quickPlay），
- * 还有一条不打伤害的增益牌（playPower）。前三条都从 `strikeWith` 走，
- * 数值才不会出现"卡面和结算对不上"。
+ * 出牌有四条路：答题（answer）、免答（playUnlocked）、基础牌（playBasic）
+ * 和增益牌（playPower）。前三条都把卡面数字经 `strikeWith` 结算，
+ * 数值才不会出现"卡面和结算对不上"；增益牌不打伤害，只改本场规则。
  */
 const join = (a: string, b: string) => (a ? a + ' ' : '') + b;
 
@@ -119,7 +119,7 @@ function damageEnemy(raw: number, pierce = false) {
 
 /**
  * 一张卡真正打出去的那一下。mult 是倍率（未解锁的答题出牌传 1，
- * 已解锁的免答出牌传 BAL.freeMult）。答题、免答、快攻三条路都从这里走，
+ * 已解锁的免答出牌传 BAL.freeMult）。答题、免答、基础牌三条路都从这里走，
  * 数值才不会出现"卡面和结算对不上"。
  */
 function strikeWith(ent: CardInst, mult: number) {
@@ -227,9 +227,9 @@ export function answer(choice: number) {
       backToDraw = true;
       apNote = join(apNote, '学习模式：牌回到牌堆，下一回合会再抽到它。');
     } else if (M.forget) {
-      // 测试：这个卡种本场作废。还能快攻，但不能再答题 —— 错了就是错了。
+      // 测试：这个卡种本场作废 —— 不能再答题，也打不出去。错了就是错了。
       G.forgotten[card.id] = true;
-      apNote = join(apNote, '测试模式：这个卡种本场作废，只能快攻。');
+      apNote = join(apNote, '测试模式：这个卡种本场作废，这一场它打不出去。');
     } else {
       // 复习：这张牌进弃牌堆，这一场它不再自动回来 —— 想再见它得等洗牌。
       apNote = join(apNote, '复习模式：它进了弃牌堆，要等洗牌才回来。');
@@ -331,7 +331,7 @@ export function answer(choice: number) {
   G.panel = {
     k: 'feedback',
     fb: {
-      idx, qi, choice, right, quick: false,
+      idx, qi, choice, right,
       dmg, absorbed, blk: blkGain, eff: card.eff, hits, heal, draw: drawn, apNote,
       explain: q.explain, question: q.q, options: view.options, answer: view.answer,
       topic: card.topic,
@@ -494,33 +494,3 @@ export function playBasic(idx: number) {
   }, 200);
 }
 
-export function quickPlay(idx: number) {
-  if (G.busy || G.panel.k !== 'none' || G.ap <= 0) return;
-  const ent = G.hand[idx];
-  if (!ent) return;
-  const card = defOf(ent);
-  if (cardKind(card) !== 'knowledge') return;
-
-  const dmg = Math.floor(statOf(ent).atk / 2);
-  damageEnemy(dmg);
-  // 快攻没有"答对"，所以拿不到那一手退款 —— 绕过去也要付钱，只是付得少
-  G.ap -= 1;
-  G.cardsPlayed += 1;
-  G.ap = clamp(G.ap, 0, 10);
-  G.busy = true;
-  G.discard.push(ent);
-  G.hand.splice(idx, 1);
-  log(`快攻「${card.topic}」，${dmg} 点伤害（未计入复习）`, '');
-  checkPending();
-  emit({ t: 'dmg', n: dmg, absorbed: 0, eff: card.eff, seq: 0 });
-
-  G.panel = {
-    k: 'feedback',
-    fb: {
-      idx, qi: 0, choice: -1, right: false, quick: true,
-      dmg, absorbed: 0, blk: 0, eff: 'strike', hits: [dmg], heal: 0, draw: 0, apNote: '',
-      explain: '它明年还是这个强度——你只是绕过去了，没有变强。',
-      question: '快攻', options: [], answer: -1, topic: card.topic,
-    },
-  };
-}

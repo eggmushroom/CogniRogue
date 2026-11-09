@@ -13,7 +13,7 @@ export const FOES: FoeTpl[] = [
   {
     key: 'examiner', name: '复习官', type: 'fight', art: 'examiner', tag: '普通',
     hp: 62, dmg: 8, moves: [{ k: 'atk', m: 1 }], mech: 'reviewer',
-    hint: '一回合内没有真正答对任何一张卡，它额外打你 3 点。快攻流在这里会被惩罚。',
+    hint: '一回合内没有真正答对任何一张卡，它额外打你 3 点 —— 不答题就没有输出。',
   },
   {
     key: 'echo', name: '回声', type: 'fight', art: 'shard', hue: 130, tag: '普通',
@@ -170,7 +170,7 @@ export const MODES: Record<RunMode, ModeDef> = {
     missBlock: 0, stabDrop: 0.15, stabGain: 1.35,
     missDest: 'discard', forget: true,
     cardLabel: '测试 · 答错本场作废',
-    hint: '答对不花行动力并解锁；答错作废，这个卡种本场作废（只能快攻），没有格挡补偿。',
+    hint: '答对不花行动力并解锁；答错作废，这个卡种本场作废（这一场打不出去），没有格挡补偿。',
   },
 };
 

@@ -6,7 +6,7 @@ import { BAL, EFFS, MODE_KEYS, MODES, effSummary } from '../core/model';
 import { clamp, G } from '../core/infra';
 import { BANK, bankQuestionCount, bankTopics, memOf, memRatio } from '../core/library';
 import { BASICS, basicsSummary, cardKind, cardType, CARD_TYPE_META, defOf, statOf } from '../core/cards';
-import { answer, cancelPanel, quickPlay } from '../core/combat';
+import { answer, cancelPanel } from '../core/combat';
 import {
   chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal, startRun,
   skipPower, skipReward, takeCard, takePower, upgradeCard,
@@ -225,23 +225,10 @@ function drawQuestion(idx: number, q: Question, view: QView) {
     onClick(x + 34, by, w - 68, oh, () => answer(i), 'opt');
   });
 
-  // 底部：逃生口 + 代价提醒
+  // 底部一行：这一局的答错价码。模式是开局选定的、整局不变，
+  // 所以这里只说一次，不再按卡自己的阶段分两句。
   const by = y + h - 58;
-  const qx = x + 34;
-  const qhv = hover(qx, by, 190, 42);
-  roundRect(qx, by, 190, 42, 8);
-  g.fillStyle = qhv ? 'rgba(255,255,255,.1)' : 'rgba(255,255,255,.03)';
-  g.fill();
-  g.strokeStyle = qhv ? C.lineHi : C.line;
-  g.lineWidth = 1.2;
-  g.stroke();
-  text('不打这道 · 快攻', qx + 95, by + 21, { size: 14, align: 'center', color: qhv ? C.ink : C.dim });
-  onClick(qx, by, 190, 42, () => quickPlay(idx), 'quick');
-
-  // 这一行只在"手指已经按下去"的那一刻有用，所以它先说清这一局的答错价码 ——
-  // 模式是开局选定的，整局不变，不再按这张卡自己的阶段分两句。
-  text(MODES[G.mode].hint,
-    x + 250, by + 21, { size: 13, color: C.dim, maxW: w - 270 });
+  text(MODES[G.mode].hint, x + 34, by + 21, { size: 13, color: C.dim, maxW: w - 68 });
 }
 
 /* ── 答题结果 ─────────────────────────────────────────────── */
@@ -272,7 +259,7 @@ function drawFeedback() {
   dim(0.55);
   box(x, y, w, h, withAlpha(col, 0.6));
 
-  text(fb.right ? '正确' : fb.quick ? '快攻' : '答错', x + 34, y + 52, {
+  text(fb.right ? '正确' : '答错', x + 34, y + 52, {
     size: 30, weight: 800, family: FONT_TITLE, color: col,
   });
   text(fb.topic, x + w - 90, y + 52, {
@@ -724,7 +711,7 @@ function drawHelp() {
     ['三种模式，开局前选', [
       '学习：答错只作废这一手，牌回抽牌堆，下一回合一定再抽到；补全额卡面格挡。适合第一次见这些题。',
       '复习：答错作废，牌进弃牌堆，要等洗牌才回来；补半额格挡。适合学过一遍、要求稳。',
-      '测试：答错作废，这个卡种本场作废（只能快攻）；没有格挡补偿。答对稳固度涨得更多。',
+      '测试：答错作废，这个卡种本场作废（这一场既不能答题、也打不出去）；没有格挡补偿。答对稳固度涨得更多。',
       '模式只影响这一局的答错价码，不改卡面数值、不改题库，也不动你已经攒下的记忆。',
     ]],
     ['行动力是唯一的节奏', [

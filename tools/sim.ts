@@ -16,7 +16,7 @@ import type { RunMode } from '../src/core/model';
 import {
   G, PACK, answer, availableNodes, bankQuestionCount, canAsk, chooseEventOption, defOf, dismissFeedback,
   endTurn, enterNode, isUnlocked, loadQuestionBank, playBasic, playPower, playUnlocked, resetMemory, restHeal,
-  quickPlay, skipReward, startRun, takeCard, takePower, askCard, mergePacks,
+  skipReward, startRun, takeCard, takePower, askCard, mergePacks,
 } from '../src/core';
 
 /**
@@ -178,10 +178,8 @@ function runOne(p: number, st: Stat) {
         // 它是这一局的地板，模拟不打出它，会把低水平的胜率算得比实际更狠。
         const bas = G.hand.findIndex((c) => !c.junk && defOf(c).kind === 'basic');
         if (bas >= 0) { basics += 1; playBasic(bas); continue; }
-        // 手里只剩打不出的牌（答错锁住的、复习期作废的）时，真人是会快攻的：
-        // 半额伤害也是伤害，总比把行动力扔掉好。不模拟这一手，会把惩罚算得比实际更狠。
-        const dead = G.hand.findIndex((c) => !c.junk && !defOf(c).power);
-        if (dead >= 0) { quickPlay(dead); continue; }
+        // 手里只剩打不出的牌（答错锁住的、测试模式作废的）→ 结束回合。
+        // 快攻取消之后，剩下的行动力就是扔掉的，这是这一版的正常代价。
       }
       endTurn();
       turns += 1;
