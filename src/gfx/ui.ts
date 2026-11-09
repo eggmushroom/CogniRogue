@@ -212,42 +212,57 @@ export interface CardOpts {
   /**
    * 现在付不付得起这张牌的费用。只有手牌会传 false —— 牌组、奖励、牌堆列表里
    * 不存在"此刻能不能打"这个问题，传了反而是噪音。
-   * 付不起时费用球转红：点下去会被拦，那就该在点之前就看出来。
+   * 付不起时那个数字转红：点下去会被拦，那就该在点之前就看出来。
    */
   afford?: boolean;
 }
 
 /**
- * 费用球：牌面左上角那个圆。
+ * 左上角的费用：一个光秃秃的数字，或者 X。
  *
- * 三种读法要在巴掌大的牌上也站得住：
- *   - 数字 0–3，或者字母 X（X 费）；
- *   - 金色 = X 费：它的价格是个**变量**，值得一个特别的颜色；
- *   - 红色 = 此刻付不起（手牌才会出现），其余是常态的冷白。
- * 底色永远近黑实心 —— 牌面是从类别色浸下来的，浅色字直接压在橙卡上读不出来。
+ * **这里原来套着一个圆。** 圆是多余的：它不携带任何信息（只说明"这里是费用"，
+ * 而牌面左上角本来就只有这一件事），却占掉一圈直径 —— 手牌的卡只有 200 宽，
+ * 圈内净空 21px，塞一个 800 字重的数字，上下必然贴着环线。先把字号压小，
+ * 数字又小到不像关键词。所以把圈去掉：数字直接把这块地方占满。
+ *
+ * 没有底色之后，数字怎么从类别色卡面上站起来？**用效果行那套同一个手法** ——
+ * 暗描边 + 很弱的同色辉光。于是整张牌只有一种"数字怎么读"的语言：
+ * 描边把形体从背景里抠出来，颜色带语义。
+ *
+ *   - 白 = 常态的 0–3；金 = X（它的价格是个变量）；红 = 此刻付不起（只有手牌会有）。
+ *
+ * 位置：左沿和牌名、效果行对齐，于是左栏是一条竖线；纵向和右上角的类别徽章同一条中心线，
+ * 顶部那一行读起来是"几点 · 什么类别"一整条，而不是两个高度不一的小件。
+ *
+ * 纵向居中读 `actualBoundingBox`，不用手调基线常数：数字没有下伸部分（descent = 0），
+ * 任何"大概往下挪一点"的常数都会让它贴住下沿，而 X 和大写字又要各自微调一次。
  */
-function drawCostOrb(cx: number, cy: number, r: number, glyph: string, o: { x: boolean; afford: boolean }) {
+function drawCostMark(
+  left: number, midY: number, s: number, glyph: string,
+  o: { x: boolean; afford: boolean; dim?: boolean },
+) {
   const col = !o.afford ? C.red : o.x ? C.gold : C.ink;
+  const size = 19 * s;
   g.save();
-  g.beginPath();
-  g.arc(cx, cy, r, 0, Math.PI * 2);
-  g.fillStyle = 'rgba(6,8,13,.9)';
-  g.fill();
-  g.strokeStyle = withAlpha(col, o.afford ? 0.72 : 1);
-  g.lineWidth = Math.max(1.2, r * 0.14);
-  g.stroke();
-  // X 费多一道内环：扫手牌时"这张牌吃光我的行动力"要和"这张要两点"一眼分开
-  if (o.x) {
-    g.beginPath();
-    g.arc(cx, cy, r * 0.72, 0, Math.PI * 2);
-    g.strokeStyle = withAlpha(C.gold, 0.35);
-    g.lineWidth = 1;
-    g.stroke();
-  }
+  g.font = font(size, 800, FONT_UI);
+  g.textAlign = 'left';
+  const m = g.measureText(glyph);
+  // 老浏览器没有 actualBoundingBox：退回 0.72em 的常见 cap height，位置略差但不会跑飞。
+  const asc = m.actualBoundingBoxAscent ?? size * 0.72;
+  const desc = m.actualBoundingBoxDescent ?? 0;
+  const y = midY + (asc - desc) / 2;
+  // 描边先画，再填色：和效果行里的伤害数字同一套宽窄，牌面上"数字"这一族长得一样
+  g.lineJoin = 'round';
+  g.lineWidth = Math.max(2, 3 * s);
+  g.strokeStyle = 'rgba(6,8,13,.9)';
+  g.strokeText(glyph, left, y);
+  g.shadowColor = withAlpha(col, 0.45);
+  g.shadowBlur = 8 * s;
+  // 这一回合答错过了：数字跟着效果行一起压暗。牌面上"现在打不出去"是一个整体状态，
+  // 效果行的数字暗了而费用还亮着，会让人以为只有效果失效。
+  g.fillStyle = o.dim ? withAlpha(col, 0.5) : col;
+  g.fillText(glyph, left, y);
   g.restore();
-  text(glyph, cx, cy + r * 0.37, {
-    size: Math.round(r * 1.3), weight: 800, align: 'center', color: col,
-  });
 }
 
 /**
@@ -362,14 +377,14 @@ export function drawCard(
   g.fillRect(x, y + h - lowH, w, lowH);
   g.restore();
 
-  // ── 费用球：左上角 ─────────────────────────────────────────
+  // ── 费用：左上角，一个数字，没有圈 ──────────────────────────
   // 以前 83 张牌全是 1 点，这个角落空着是对的（印 83 遍同一个数不是信息）。
-  // 现在 0/1/2/3/X 并存，价格成了每张牌最该先读到的一个数。位置沿用杀戮尖塔的左上角，
-  // 但类别徽章已经挪到右上，所以这一角现在是它独占的 —— 上一版两者并排贴着摆，
-  // 手牌一缩小就糊成一团色块。
+  // 现在 0/1/2/3/X 并存，价格成了每张牌最该先读到的一个数。
+  // 纵向和右上角的类别徽章同一条中心线（徽章占 21s–39s，中线 30s）：
+  // 顶部那一行于是读成"几点 · 什么类别"一整条，而不是两个高度不一的小件。
   if (kind !== 'junk') {
-    drawCostOrb(x + pad + 13 * s, y + 20 * s, 14 * s, costGlyph(card), {
-      x: isXCost(card), afford: opts.afford !== false,
+    drawCostMark(x + pad, y + 30 * s, s, costGlyph(card), {
+      x: isXCost(card), afford: opts.afford !== false, dim: sealed,
     });
   }
 
@@ -621,9 +636,9 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   g.lineWidth = opts.hovered ? 2 : 1.6;
   g.stroke();
 
-  // 费用球和知识卡同一个位置、同一套读法 —— 手牌里两种牌混着，
+  // 费用和知识卡同一个位置、同一套读法 —— 手牌里两种牌混着，
   // "要先答题的"和"不用答题的"可以长得不一样，但"要花几点"必须读得一样。
-  drawCostOrb(x + pad + 13 * s, y + 20 * s, 14 * s, String(p.cost).toUpperCase(), {
+  drawCostMark(x + pad, y + 30 * s, s, String(p.cost).toUpperCase(), {
     x: p.cost === 'x', afford: opts.afford !== false,
   });
 

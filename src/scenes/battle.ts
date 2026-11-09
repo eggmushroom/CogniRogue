@@ -975,7 +975,7 @@ function drawHand(t: number, dt: number) {
     g.rotate(rot);
     drawCard(-w / 2, -h / 2, w, h, card, st.atk, st.blk, {
       up: !!ent.up, glow: hv, hovered: hv, state,
-      // 付不起的牌把费用球点红：这一手现在打不出去，得在点之前就看得出来
+      // 付不起的牌费用数字转红：这一手现在打不出去，得在点之前就看得出来
       afford: isJunk || canPay(card),
     });
     g.restore();

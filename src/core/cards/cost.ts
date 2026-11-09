@@ -25,7 +25,7 @@ export const costOf = (c: CardDef): CardCost => c.cost ?? DEFAULT_COST;
 
 export const isXCost = (c: CardDef): boolean => costOf(c) === 'x';
 
-/** 牌面费用球里那个字：'0' / '1' / '2' / '3' / 'X'。 */
+/** 牌面左上角那个费用数字：'0' / '1' / '2' / '3' / 'X'。 */
 export const costGlyph = (c: CardDef): string => String(costOf(c)).toUpperCase();
 
 /**
