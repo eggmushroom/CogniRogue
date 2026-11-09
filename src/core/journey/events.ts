@@ -3,7 +3,7 @@ import type { EventDef, PowerDef } from '../model/types';
 import { G, log, topTopic } from '../infra/state';
 import { emit } from '../infra/events';
 import { pick } from '../infra/util';
-import { PACK, topics } from '../library/pack';
+import { PACK, topics } from '../cards/pack';
 import { defOf, powerCardId } from '../cards/registry';
 import { cardKind } from '../cards/kinds';
 import { finishNode } from './nodes';

@@ -3,7 +3,8 @@ import { C, FONT_TITLE, withAlpha } from '../gfx/theme';
 import { action, text } from '../gfx/ui';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { G } from '../core/infra';
-import { BANK, bankQuestionCount, PACK, topics } from '../core/library';
+import { BANK, bankQuestionCount } from '../core/library';
+import { PACK, topics } from '../core/cards';
 
 export function drawTitle(t: number, openHelp: () => void, openPack: () => void) {
   drawBackdrop(t, 0.72);

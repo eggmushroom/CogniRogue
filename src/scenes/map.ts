@@ -5,7 +5,7 @@ import { onClick, hover } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { NODE_META } from '../core/model';
 import { G } from '../core/infra';
-import { topics } from '../core/library';
+import { topics } from '../core/cards';
 import { deckPowers } from '../core/cards';
 import { MAP_ROWS, availableNodes } from '../core/map';
 import { enterNode } from '../core/journey';

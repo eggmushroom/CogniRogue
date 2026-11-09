@@ -8,8 +8,8 @@ import { bindInput, beginInput, endInput, hotRects, keyHandler, setInputLock } f
 import { C } from './gfx/theme';
 import { text } from './gfx/ui';
 import { G, onFx } from './core/infra';
-import { BANK, loadQuestionBank, memOf, PACK } from './core/library';
-import { powerCardOf } from './core/cards';
+import { BANK, loadQuestionBank, memOf } from './core/library';
+import { PACK, powerCardOf } from './core/cards';
 import { FOES } from './core/model';
 import { answer, askCard, cancelPanel, endTurn, playPower } from './core/combat';
 import { EVENTS, dismissFeedback, endRun, enterNode, startRun } from './core/journey';

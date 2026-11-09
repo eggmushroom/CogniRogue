@@ -1,7 +1,7 @@
 import { BAL } from '../model/data';
 import type { CardInst, MemEntry, RunMode } from '../model/types';
 import { LS_KEY, readStore, writeStore } from '../infra/storage';
-import { PACK } from './pack';
+import { PACK } from '../cards/pack';
 
 /**
  * library/memory —— FSRS-lite 复习调度。

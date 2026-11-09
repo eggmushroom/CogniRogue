@@ -1,7 +1,7 @@
 import { POWERS, POWER_BY_ID } from '../model/data';
 import type { CardDef, CardInst, PowerDef, PowerId } from '../model/types';
 import { G } from '../infra/state';
-import { PACK } from '../library/pack';
+import { PACK } from './pack';
 import { basicDef, isBasicId } from './basics';
 import { isPowerCard } from './kinds';
 

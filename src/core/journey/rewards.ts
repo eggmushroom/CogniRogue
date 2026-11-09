@@ -2,7 +2,7 @@ import { BAL, POWERS } from '../model/data';
 import type { CardDef } from '../model/types';
 import { G, log } from '../infra/state';
 import { shuffle } from '../infra/util';
-import { PACK } from '../library/pack';
+import { PACK } from '../cards/pack';
 import { powerById, powerCardId, powerCardOf } from '../cards/registry';
 import { finishNode } from './nodes';
 

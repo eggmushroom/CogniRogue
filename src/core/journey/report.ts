@@ -2,7 +2,7 @@ import type { ReportRow } from '../model/types';
 import { G } from '../infra/state';
 import { clamp } from '../infra/util';
 import { memOf, saveMem } from '../library/memory';
-import { PACK, topics } from '../library/pack';
+import { PACK, topics } from '../cards/pack';
 import { deckPowers, isPowerId } from '../cards/registry';
 
 /**
