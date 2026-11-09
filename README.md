@@ -53,7 +53,7 @@ npm run dev          # http://localhost:5178
 想要一个能直接双击打开的 exe 式单文件：
 
 ```bash
-npm run build        # 产出 dist/index.html（约 600 KB，脚本、样式、美术全部内联）
+npm run build        # 产出 dist/index.html（约 1.1 MB，脚本、样式、美术全部内联）
 ```
 
 `dist/index.html` 拷到任何地方双击就能玩，不需要服务器、不需要联网。
@@ -61,11 +61,11 @@ npm run build        # 产出 dist/index.html（约 600 KB，脚本、样式、�
 | 命令 | 作用 |
 | --- | --- |
 | `npm run dev` | 开发服务器，改代码热更新 |
-| `npm run build` | 类型检查 + 打包成单文件 |
+| `npm run build` | 类型检查 + 依赖方向检查 + 打包成单文件 |
 | `npm run sim` | 无头模拟几千局，验证数值 |
 | `npm run smoke` | 开真浏览器点鼠标，验证按钮真的能按（需先跑 `npm run dev`） |
 | `npm run shots` | 重拍 `docs/` 里这 19 张配图（同样需先跑 `npm run dev`） |
-| `npm run check` | 只做类型检查 |
+| `npm run check` | 类型检查 + 依赖方向检查（`tools/deps.mjs`） |
 
 ## 一局是什么样
 
@@ -472,7 +472,7 @@ FSRS 每局按模式选 10 张知识卡（另外 3 张基础牌固定带上）�
 `src/core` 是纯逻辑：不 import 任何 DOM / canvas，Node 里能直接跑。
 原来一局的全部规则挤在 `core/game.ts` 的 1364 行里（地图、战斗、抽牌、解锁、
 增益、事件、结算十几个职责段落混在一起）；现在按功能拆成七个工具包，
-**依赖方向单向** —— 左边的包不 import 右边的包（唯一的例外写在下面）：
+**依赖方向单向** —— 左边的包不 import 右边的包，由 `npm run check` 里的 `tools/deps.mjs` 逐条校验（唯一的例外写在下面）：
 
 ```
 src/core/
@@ -500,6 +500,7 @@ tools/
   sim.ts     无头模拟（esbuild 打包后用 node 跑，读同一组三份题库）
   smoke.mjs  真浏览器的冒烟测试（CDP 驱动）
   shots.mjs  重拍 README 里的配图（同一个 CDP 管道，`npm run shots`）
+  deps.mjs   依赖方向守卫：core 七个包只许往左依赖，违规让 check 失败
 packs/       三份内置题库：algorithms / advanced / systems（默认合成；单份也能单独导入）
 assets/      美术资源（构建时内联）
 ```
@@ -507,7 +508,7 @@ assets/      美术资源（构建时内联）
 这条顺序不是画给人看的口号，但眼下确实还剩**一处例外**：`combat → journey`
 （敌人死亡、清场、结算的分支要从战斗里直接调 `endRun` / `openReward`）。
 修法是把它们改成 journey 注册的结算钩子，让战斗只发「该结算了」——
-这是下一轮重构的第一项。
+这是下一轮重构的第一项；在那之前，它作为一条显式豁免写在 `tools/deps.mjs` 的 `EXEMPT` 里。
 
 包内部再按职责分一层文件，例如 `combat/` 下是 `unlock.ts`（本场锁）、
 `deck.ts`（牌堆循环）、`foe.ts`（敌人回合）、`play.ts`（四条出牌路径）。
