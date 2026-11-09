@@ -75,38 +75,72 @@ export function drawMap(t: number) {
   );
 }
 
+/**
+ * 节点底盘形状：**先把类型分开，颜色只是第二层**。
+ *
+ * 以前五种节点是同一个圆，只换颜色 —— 而战斗 `#c9744a` 和精英 `#d9534f`
+ * 两个色几乎一样，缩到 32px 只能靠读图标才分得出，读图标就得停下来。
+ * 现在轮廓本身就是信息：圆 = 战斗，六边 = 精英，圆角方 = 复习，虚线圆 = 事件，
+ * 大双环 = 首领。颜色退化成"确认"，不再是唯一线索。
+ */
+function platePath(type: MapNode['type'], x: number, y: number, r: number) {
+  if (type === 'elite') {
+    // 六边形：尖角轮廓本身就是"危险"，不用读骷髅
+    g.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / 3;
+      const px = x + Math.cos(a) * r;
+      const py = y + Math.sin(a) * r;
+      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+    }
+    g.closePath();
+    return;
+  }
+  if (type === 'rest') {
+    // 圆角方：全场唯一的"方"——安全点不该长得像一场战斗
+    roundRect(x - r, y - r, r * 2, r * 2, r * 0.42);
+    return;
+  }
+  g.beginPath();
+  g.arc(x, y, r, 0, Math.PI * 2);
+}
+
 function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   const x = xOf(nd.col);
   const y = yOf(nd.r);
   const meta = NODE_META[nd.type];
   const seen = !!G.seen[nd.key];
-  const r = nd.type === 'boss' ? 44 : 32;
-  const hv = avail && hover(x - r - 8, y - r - 8, (r + 8) * 2, (r + 8) * 2);
+  const baseR = nd.type === 'boss' ? 44 : 32;
+  // 可前往的节点呼吸着长大一点点。满屏都在发光的时候，尺寸变化比亮度更抗噪 ——
+  // "亮"在这张图上已经很廉价了，光柱、浮纸、走过的路全都在发亮。
+  const p = 0.5 + 0.5 * Math.sin(t * 3 + nd.r * 0.8);
+  const r = baseR * (avail ? 1 + 0.06 * p : 1);
+  const hv = avail && hover(x - baseR - 8, y - baseR - 8, (baseR + 8) * 2, (baseR + 8) * 2);
 
   // 可选节点的呼吸光环
   if (avail) {
-    const p = 0.5 + 0.5 * Math.sin(t * 3 + nd.r * 0.8);
     g.save();
-    const gl = g.createRadialGradient(x, y, r * 0.5, x, y, r * 2.6);
+    const gl = g.createRadialGradient(x, y, baseR * 0.5, x, y, baseR * 2.6);
     gl.addColorStop(0, withAlpha(meta.color, 0.4 + p * 0.25));
     gl.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = gl;
     g.beginPath();
-    g.arc(x, y, r * 2.6, 0, Math.PI * 2);
+    g.arc(x, y, baseR * 2.6, 0, Math.PI * 2);
     g.fill();
     g.restore();
 
-    g.beginPath();
-    g.arc(x, y, r + 6 + p * 5, 0, Math.PI * 2);
+    platePath(nd.type, x, y, r + 6 + p * 5);
     g.strokeStyle = withAlpha(meta.color, 0.55 + p * 0.35);
     g.lineWidth = 2;
+    if (nd.type === 'event') g.setLineDash([7, 6]);
     g.stroke();
+    g.setLineDash([]);
   }
 
   // 底盘
-  g.beginPath();
-  g.arc(x, y, r * (hv ? 1.09 : 1), 0, Math.PI * 2);
-  const grd = g.createRadialGradient(x, y - r * 0.4, 2, x, y, r);
+  const rr = r * (hv ? 1.09 : 1);
+  platePath(nd.type, x, y, rr);
+  const grd = g.createRadialGradient(x, y - rr * 0.4, 2, x, y, rr);
   if (avail || seen) {
     grd.addColorStop(0, withAlpha(meta.color, 0.4));
     grd.addColorStop(1, 'rgba(10,12,18,.96)');
@@ -118,37 +152,57 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   g.fill();
   g.strokeStyle = avail || seen ? withAlpha(meta.color, 0.85) : withAlpha(meta.color, 0.28);
   g.lineWidth = avail ? 2.4 : 1.6;
+  if (nd.type === 'event') g.setLineDash([7, 6]);
   g.stroke();
+  g.setLineDash([]);
 
-  // 内圈细环：底盘从"一个圆"变成"一枚徽章"，图标才不像直接贴在背景上
-  g.beginPath();
-  g.arc(x, y, r - 5, 0, Math.PI * 2);
-  g.strokeStyle = withAlpha(meta.color, avail || seen ? 0.3 : 0.14);
-  g.lineWidth = 1;
-  g.stroke();
+  // 内圈细环：底盘从"一个圆"变成"一枚徽章"，图标才不像直接贴在背景上。
+  // 六边形和圆角方放内环会糊成一团，只给圆的这几种画。
+  if (nd.type === 'fight' || nd.type === 'event' || nd.type === 'boss') {
+    g.beginPath();
+    g.arc(x, y, rr - 5, 0, Math.PI * 2);
+    g.strokeStyle = withAlpha(meta.color, avail || seen ? 0.3 : 0.14);
+    g.lineWidth = 1;
+    g.stroke();
+  }
+  if (nd.type === 'boss') {
+    g.beginPath();
+    g.arc(x, y, rr - 9, 0, Math.PI * 2);
+    g.strokeStyle = withAlpha(meta.color, avail || seen ? 0.42 : 0.2);
+    g.lineWidth = 1.4;
+    g.stroke();
+  }
 
   const col = avail || seen ? meta.color : withAlpha(meta.color, 0.55);
   g.save();
   g.globalAlpha = avail || seen ? 1 : 0.85;
-  glyph(nd.type, x, y, r * 1.3, col);
+  glyph(nd.type, x, y, rr * 1.3, col);
   g.restore();
 
   // 已走过的打勾
   if (seen && !avail) {
     g.beginPath();
-    g.arc(x + r * 0.75, y - r * 0.75, 9, 0, Math.PI * 2);
+    g.arc(x + rr * 0.75, y - rr * 0.75, 9, 0, Math.PI * 2);
     g.fillStyle = withAlpha(C.green, 0.9);
     g.fill();
-    text('✓', x + r * 0.75, y - r * 0.74, { size: 12, color: '#04140c', align: 'center', weight: 900 });
+    text('✓', x + rr * 0.75, y - rr * 0.74, { size: 12, color: '#04140c', align: 'center', weight: 900 });
   }
 
   if (isCur) {
-    text('这里', x, y + r + 22, { size: 12, align: 'center', color: C.ink2 });
+    // 当前位置做成胶囊：原来是一行 12px 裸字，和 hover 时才出现的地名混在一起
+    const tw = 52;
+    roundRect(x - tw / 2, y + baseR + 10, tw, 20, 10);
+    g.fillStyle = withAlpha(C.gold, 0.16);
+    g.fill();
+    g.strokeStyle = withAlpha(C.gold, 0.6);
+    g.lineWidth = 1;
+    g.stroke();
+    text('这里', x, y + baseR + 21, { size: 12, align: 'center', color: C.gold, weight: 700 });
   }
 
   if (avail) {
-    if (hv) text(meta.k, x, y - r - 14, { size: 14, align: 'center', color: meta.color, weight: 700 });
-    onClick(x - r - 8, y - r - 8, (r + 8) * 2, (r + 8) * 2, () => enterNode(nd.key), 'node');
+    if (hv) text(meta.k, x, y - baseR - 16, { size: 14, align: 'center', color: meta.color, weight: 700 });
+    onClick(x - baseR - 8, y - baseR - 8, (baseR + 8) * 2, (baseR + 8) * 2, () => enterNode(nd.key), 'node');
   }
 }
 
@@ -361,9 +415,19 @@ function leftPanel() {
   text('节点', x + 20, ly + 22, { size: 12, color: C.dim, weight: 600 });
   const kinds: Array<keyof typeof NODE_META> = ['fight', 'elite', 'rest', 'event', 'boss'];
   kinds.forEach((k, i) => {
-    const cx = x + 30 + (i % 3) * 96;
-    const cy = ly + 48 + Math.floor(i / 3) * 28;
-    glyph(k, cx, cy, 26, NODE_META[k].color);
-    text(NODE_META[k].k, cx + 16, cy, { size: 12, color: C.ink2 });
+    const cx = x + 32 + (i % 3) * 96;
+    const cy = ly + 52 + Math.floor(i / 3) * 30;
+    // 图例必须和地图上用同一套轮廓 —— 否则"六边形是精英"这件事在图上认得出，
+    // 在图例里查不到。形状先于颜色，图例是它唯一的说明书。
+    platePath(k, cx, cy, 12);
+    g.fillStyle = 'rgba(10,12,18,.9)';
+    g.fill();
+    g.strokeStyle = withAlpha(NODE_META[k].color, 0.7);
+    g.lineWidth = 1.3;
+    if (k === 'event') g.setLineDash([4, 4]);
+    g.stroke();
+    g.setLineDash([]);
+    glyph(k, cx, cy, 16, NODE_META[k].color);
+    text(NODE_META[k].k, cx + 20, cy, { size: 12, color: C.ink2 });
   });
 }

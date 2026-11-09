@@ -5,6 +5,11 @@ interface Hot {
   fn: () => void;
   /** 只给自动化测试认按钮用，运行时不参与任何判断。 */
   label?: string;
+  /**
+   * 在同一个列表里的位置（手牌下标）。列表里少注册一项（比如还在飞的牌没有热区），
+   * "第几个 card" 就和"第几张牌"对不上了 —— 下标必须由绘制方直接给出，不能让外面去数。
+   */
+  idx?: number;
 }
 
 export const pointer = {
@@ -23,6 +28,21 @@ let building: Hot[] = [];
  * 早期版本用 `h === downHot`，在真实浏览器里几乎每次点击都被判成"移出了按钮"。
  */
 let downRect: { x: number; y: number; w: number; h: number } | null = null;
+/**
+ * 按下时那张牌的下标。手牌悬停会整张抬高 44px，比下面 sameBox 的 24px 容差还大 ——
+ * 手指/鼠标按下去的那 1~2 帧里牌正好被抬起来，这次点击就会被误判成"移到了别的按钮"
+ * 而丢掉。有了下标就能直接判断"还是不是同一张牌"，不必去比几何。
+ */
+let downIdx: number | null = null;
+
+/**
+ * 最近一次"真的被接受"的点击。只给自动化用：点没点中，测试得能自己看出来 ——
+ * 否则一个被吞掉的点击只会表现成"状态没变"，排查时要从十几种可能里一个个猜。
+ * `n` 是自增序号，测试用它判断"这一下是新的"，而不是拿旧值当结果。
+ */
+let clickSeq = 0;
+let lastClick: { label: string; idx?: number; n: number } | null = null;
+export const lastClickInfo = () => lastClick;
 
 /**
  * 演出期间锁住点击。打击动画还没演完时反馈面板没弹出来，
@@ -31,7 +51,7 @@ let downRect: { x: number; y: number; w: number; h: number } | null = null;
 let locked = false;
 export function setInputLock(v: boolean) {
   locked = v;
-  if (v) downRect = null;
+  if (v) { downRect = null; downIdx = null; }
 }
 
 const inside = (r: { x: number; y: number; w: number; h: number }, x: number, y: number) =>
@@ -56,15 +76,21 @@ export const hover = (x: number, y: number, w: number, h: number) =>
   pointer.x >= x && pointer.x <= x + w && pointer.y >= y && pointer.y <= y + h;
 
 export function onClick(
-  x: number, y: number, w: number, h: number, fn: () => void, label?: string,
+  x: number, y: number, w: number, h: number, fn: () => void, label?: string, idx?: number,
 ) {
-  building.push({ x, y, w, h, fn, label });
+  building.push({ x, y, w, h, fn, label, idx });
 }
 
 /** 当前帧所有可点区域（逻辑坐标）。冒烟测试用它按名字找按钮。 */
 export const hotRects = () => last.map((h) => ({
-  x: h.x, y: h.y, w: h.w, h: h.h, label: h.label ?? '',
+  x: h.x, y: h.y, w: h.w, h: h.h, label: h.label ?? '', idx: h.idx,
 }));
+
+/** 这个点此刻会点到谁。冒烟测试用它确认"选中的那个位置真的属于那张牌"。 */
+export const hitAt = (x: number, y: number) => {
+  const h = hit(x, y);
+  return h ? { label: h.label ?? '', idx: h.idx } : null;
+};
 
 export function beginInput() {
   building = [];
@@ -93,9 +119,10 @@ export function bindInput(el: HTMLCanvasElement, toLogic: (cx: number, cy: numbe
   el.addEventListener('pointerdown', (e) => {
     set(e);
     pointer.down = true;
-    if (locked) { downRect = null; return; }
+    if (locked) { downRect = null; downIdx = null; return; }
     const h = hit(pointer.x, pointer.y);
     downRect = h ? { x: h.x, y: h.y, w: h.w, h: h.h } : null;
+    downIdx = h && h.idx !== undefined ? h.idx : null;
     // 合成事件（自动化测试、部分触屏）可能没有合法的 pointerId，捕获失败不该打断点击
     try { el.setPointerCapture(e.pointerId); } catch { /* 忽略 */ }
   });
@@ -103,11 +130,17 @@ export function bindInput(el: HTMLCanvasElement, toLogic: (cx: number, cy: numbe
   el.addEventListener('pointerup', (e) => {
     set(e);
     pointer.down = false;
-    if (locked) { downRect = null; return; }
+    if (locked) { downRect = null; downIdx = null; return; }
     const h = hit(pointer.x, pointer.y);
-    // 按下的和抬起的是同一个按钮 → 才算一次点击；顺带用当前帧的回调，避免闭包读到过期状态
-    if (h && downRect && inside(downRect, pointer.x, pointer.y) && sameBox(h, downRect)) h.fn();
+    // 按下的和抬起的是同一个按钮 → 才算一次点击；顺带用当前帧的回调，避免闭包读到过期状态。
+    // 同一张牌（下标相同）不看几何：悬停抬升本身就会让它离开原来那块矩形。
+    const sameSlot = downIdx !== null && h?.idx === downIdx;
+    if (h && downRect && inside(downRect, pointer.x, pointer.y) && (sameSlot || sameBox(h, downRect))) {
+      lastClick = { label: h.label ?? '', idx: h.idx, n: ++clickSeq };
+      h.fn();
+    }
     downRect = null;
+    downIdx = null;
   });
 
   el.addEventListener('pointerleave', () => {
@@ -115,6 +148,7 @@ export function bindInput(el: HTMLCanvasElement, toLogic: (cx: number, cy: numbe
     pointer.y = -9999;
     pointer.down = false;
     downRect = null;
+    downIdx = null;
   });
 
   el.addEventListener(

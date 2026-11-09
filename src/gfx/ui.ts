@@ -364,9 +364,18 @@ export function drawCard(
     g.fillText(pre, x + pad, yy);
     const w1 = g.measureText(pre).width;
     if (num > 0) {
+      g.save();
       g.font = font(Math.round(17 * s), 800, FONT_UI);
+      // 先描一圈暗边再填色：牌面底色是类别色浸下来的，同色系数字只靠放大
+      // 是立不住的（攻击牌的橙色 6 叠在橙色卡面上最明显），一道暗边把数字
+      // 从背景里"抠"出来，六个效果共用这一条，不用逐个调色。
+      g.lineJoin = 'round';
+      g.lineWidth = 3 * s;
+      g.strokeStyle = 'rgba(6,8,13,.8)';
+      g.strokeText(String(num), x + pad + w1, yy);
       g.fillStyle = kind === 'junk' ? C.faint : col;
       g.fillText(String(num), x + pad + w1, yy);
+      g.restore();
     }
     const w2 = num > 0 ? g.measureText(String(num)).width : 0;
     g.font = font(Math.round(14 * s), 400, FONT_UI);
@@ -378,11 +387,11 @@ export function drawCard(
     effLine('回合结束自动散去', 0, '', ey + eh, C.faint);
   } else {
     // 纯防御的牌（基础格挡）没有伤害行，格挡那一行直接顶上来
-    if (per > 0) effLine('造成 ', per, out.hits.length > 1 ? ` 点伤害 ×${out.hits.length}` : ' 点伤害', ey, C.orange);
+    if (per > 0) effLine('造成 ', per, out.hits.length > 1 ? ` 点伤害 ×${out.hits.length}` : ' 点伤害', ey, C.numDmg);
     const dy = per > 0 ? ey + eh : ey;
     // 第二行写的是"这张卡特殊在哪"：格挡 / 破防 / 回血 / 抽牌 / 分段。
     // 猛击本身没有第二件事（它的价值全在数字上），所以这一行留空，不硬凑一句。
-    if (out.blk > 0) effLine('获得 ', out.blk, ' 点格挡', dy, C.blue);
+    if (out.blk > 0) effLine('获得 ', out.blk, ' 点格挡', dy, C.numBlk);
     else if (out.pierce) effLine('无视格挡', 0, '', dy, eff.color);
     else if (out.healRatio > 0) {
       effLine('回复 ', Math.max(1, Math.round(per * out.hits.length * out.healRatio)), ' 点生命', dy, eff.color);

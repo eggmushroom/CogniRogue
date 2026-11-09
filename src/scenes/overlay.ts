@@ -91,12 +91,47 @@ function heading(s: string, x: number, y: number, sub?: string) {
 
 /** 长列表容器：裁剪 + 滚轮。 */
 let scroll = 0;
-function scrollArea(x: number, y: number, w: number, h: number, contentH: number) {
-  scroll = clamp(scroll + consumeWheel() * 0.7, 0, Math.max(0, contentH - h));
+let scrollKey = '';
+function scrollArea(x: number, y: number, w: number, h: number, contentH: number, key = '') {
+  // scroll 是模块级的：换了一张列表就要归零。否则在牌组里滚到底、再打开弃牌堆，
+  // 会从中间开始 —— 那不是"记住进度"，是漏了一份状态。
+  if (key !== scrollKey) { scrollKey = key; scroll = 0; }
+  const max = Math.max(0, contentH - h);
+  scroll = clamp(scroll + consumeWheel() * 0.7, 0, max);
   g.save();
   roundRect(x, y, w, h, 10);
   g.clip();
-  return { x, y: y - scroll, restore: () => g.restore(), y0: y };
+  return {
+    x, y: y - scroll, restore: () => g.restore(), y0: y, h, max, cur: scroll,
+  };
+}
+
+/**
+ * 列表溢出的三个收尾：底部渐隐、右侧滚动条、脚注提示。
+ *
+ * 以前列表被容器干净地切断 —— 第三排卡只剩一窄条，读起来像渲染坏了，而不是
+ * "下面还有"。渐隐把"切"变成"渐出"，滚动条回答"还有多少"，脚注写明怎么滚。
+ */
+function overflowAffordance(a: ReturnType<typeof scrollArea>, x: number, w: number) {
+  if (a.max <= 0) return;
+  if (a.cur < a.max - 1) {
+    const fadeH = 68;
+    const fd = g.createLinearGradient(0, a.y0 + a.h - fadeH, 0, a.y0 + a.h);
+    fd.addColorStop(0, 'rgba(10,13,20,0)');
+    fd.addColorStop(1, 'rgba(10,13,20,.95)');
+    g.fillStyle = fd;
+    g.fillRect(x, a.y0 + a.h - fadeH, w, fadeH);
+  }
+
+  const tx = x + w + 6;
+  roundRect(tx, a.y0 + 6, 3, a.h - 12, 1.5);
+  g.fillStyle = 'rgba(255,255,255,.06)';
+  g.fill();
+  const thumbH = Math.max(40, (a.h - 12) * (a.h / (a.h + a.max)));
+  const ty = a.y0 + 6 + (a.h - 12 - thumbH) * (a.cur / a.max);
+  roundRect(tx, ty, 3, thumbH, 1.5);
+  g.fillStyle = withAlpha(C.lineHi, 0.9);
+  g.fill();
 }
 
 /* ── 入口 ─────────────────────────────────────────────────── */
@@ -496,7 +531,8 @@ function drawCardPick(mode: 'up' | 'rm') {
   const gx0 = x + (w - totalW) / 2;
   const rows = Math.ceil(items.length / cols);
   const gridH = rows * (ch + gapy);
-  const area = scrollArea(x + 30, y + 130, w - 60, h - 180, gridH);
+  const areaH = h - 180;
+  const area = scrollArea(x + 30, y + 130, w - 60, areaH, gridH, `pick:${mode}`);
 
   items.forEach((o, k) => {
     const col = k % cols;
@@ -509,8 +545,9 @@ function drawCardPick(mode: 'up' | 'rm') {
     onClick(px, py, cw, ch, () => (mode === 'up' ? upgradeCard(o.i) : forgetCard(o.i)));
   });
   area.restore();
+  overflowAffordance(area, x + 30, w - 60);
 
-  if (gridH > h - 180) {
+  if (area.max > 0) {
     text('滚轮查看更多', x + w / 2, y + h - 26, { size: 12, align: 'center', color: C.faint });
   }
 }
@@ -584,7 +621,8 @@ function drawGallery(title: string, list: CardInst[]) {
   const gx0 = x + (w - totalW) / 2;
   const rows = Math.max(1, Math.ceil(list.length / cols));
   const gridH = rows * (ch + gapy);
-  const area = scrollArea(x + 30, y + 130, w - 60, h - 180, gridH);
+  const areaH = h - 180;
+  const area = scrollArea(x + 30, y + 130, w - 60, areaH, gridH, `gallery:${title}`);
 
   list.forEach((e, k) => {
     const col = k % cols;
@@ -596,9 +634,12 @@ function drawGallery(title: string, list: CardInst[]) {
     drawCard(px, py, cw, ch, d, st.atk, st.blk, { up: !!e.up });
   });
   area.restore();
+  overflowAffordance(area, x + 30, w - 60);
 
   if (!list.length) {
     text('空的。', x + w / 2, y + h / 2, { size: 18, align: 'center', color: C.faint });
+  } else if (area.max > 0) {
+    text('滚轮查看更多', x + w / 2, y + h - 24, { size: 12, align: 'center', color: C.faint });
   }
 }
 

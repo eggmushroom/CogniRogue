@@ -2,10 +2,16 @@
  * 冒烟测试：真的开一个 Chrome、真的点鼠标，走一遍「标题 → 地图 → 出牌 → 选档 → 答题 → 继续 → 结束回合」。
  *
  *   npm run smoke
+ *   SMOKE_CPU=6 npm run smoke   # 把渲染线程调慢，模拟慢机器 / 高负载
  *
  * 单元逻辑已经有 sim 覆盖，这里专门盯**命中区域**这一层：
  * canvas 上的点击是手写的矩形判定，改布局最容易在这里静默坏掉——
  * 画面看着对，但点不动，或者点到了旁边的按钮。
+ *
+ * 两件容易踩的事，这里都按状态判断、不按时间假设：
+ *   1. 动画按 dt 推进，机器一慢，"睡 260ms 应该够了"就不够了 —— 等 `cog.handReady()`。
+ *   2. 还在飞的牌不注册热区，所以"第几个 card 热区"不等于"第几张牌" —— 按 `idx` 点，
+ *      并用 `cog.probe()` 确认这个位置真的属于它（牌多时会互相盖住）。
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -123,8 +129,35 @@ async function boot(url = URL_) {
   await sleep(600); // 等美术资源加载完、第一帧画出来
 }
 
-/** 按标签点一次：拿当前帧的命中矩形，换算成屏幕坐标，发真实的鼠标按下/抬起。 */
+/**
+ * 按标签点一次：拿当前帧的命中矩形，换算成屏幕坐标，发真实的鼠标按下/抬起。
+ *
+ * 移动和按下之间要留一帧：手牌悬停会整张抬起来，矩形跟着变。真实玩家移动和点击之间
+ * 至少隔一次刷新，所以这里也让它先落定 —— 否则按下时取到的是抬起后的旧矩形。
+ */
+async function clickPoint(p) {
+  const base = { x: p.x, y: p.y, button: 'left', clickCount: 1 };
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y });
+  await sleep(40);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+  await sleep(70); // 真人不会在 0ms 内松手，帧一定会在这中间重画
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
+  await sleep(140); // 等下一帧把状态画出来
+}
+
+/** 等一次"新鲜的"点击落地：n 比点之前大，才说明这一下真的被接受了。 */
+async function waitClick(before, ms = 1200) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const c = await evalJs('cog.lastClick()');
+    if (c && c.n > before) return c;
+    await sleep(40);
+  }
+  return null;
+}
+
 async function clickLabel(label, nth = 0) {
+  if (!await waitUnlocked()) throw new Error(`点「${label}」之前输入一直被锁着`);
   const hit = await evalJs(`(() => {
     const list = window.cog.hots().filter((h) => h.label === ${JSON.stringify(label)});
     const h = list[${nth}];
@@ -133,12 +166,109 @@ async function clickLabel(label, nth = 0) {
     return { x: p.x, y: p.y };
   })()`);
   if (!hit) throw new Error(`画面上找不到「${label}」`);
-  const base = { x: hit.x, y: hit.y, button: 'left', clickCount: 1 };
-  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hit.x, y: hit.y });
-  await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
-  await sleep(70); // 真人不会在 0ms 内松手，帧一定会在这中间重画
-  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
-  await sleep(140); // 等下一帧把状态画出来
+  const before = await evalJs('(cog.lastClick() || { n: 0 }).n');
+  await clickPoint(hit);
+  const got = await waitClick(before);
+  if (!got) throw new Error(`「${label}」点了没反应：` + JSON.stringify(await clickReport()));
+  if (got.label !== label) throw new Error(`「${label}」点歪了，落到「${got.label}」`);
+}
+
+/** 等手牌全部飞完并停稳。抽牌是按 dt 推的，慢机器上固定 sleep 一定不够。 */
+async function waitHand(ms = 15000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (await evalJs('window.cog.handReady()')) return true;
+    await sleep(50);
+  }
+  return false;
+}
+
+/**
+ * 点手牌里下标为 idx 的那一张。
+ *
+ * 不能拿"第 nth 个 label=card 的热区"当下标 —— 还在飞的牌不注册热区，
+ * 这个列表会整体错位（曾经因此点到隔壁的知识卡，直接把题目弹了出来）。
+ * 也不能直接点矩形中心：牌多的时候相邻牌会盖住前一张的中心，点下去是上面那张。
+ * 所以先按 idx 找到这张牌的矩形，再在它内部找一个 probe 确认属于自己的点。
+ */
+async function clickCard(idx) {
+  if (!await waitReady()) throw new Error('战斗指令还没法落地（输入锁 / 忙碌 / 面板挡着）');
+  if (!await waitHand()) throw new Error('手牌没有停稳');
+  const p = await evalJs(`(() => {
+    const h = window.cog.hots().find((h) => h.label === 'card' && h.idx === ${idx});
+    if (!h) return null;
+    for (const fy of [0.5, 0.34, 0.66, 0.18, 0.82]) {
+      for (let k = 0; k <= 24; k++) {
+        const x = h.x + 4 + (h.w - 8) * (k / 24);
+        const y = h.y + h.h * fy;
+        const t = window.cog.probe(x, y);
+        if (t && t.label === 'card' && t.idx === ${idx}) return window.cog.toScreen(x, y);
+      }
+    }
+    return null;
+  })()`);
+  if (!p) throw new Error(`手牌里第 ${idx} 张找不到能点到的位置`);
+  const before = await evalJs('(cog.lastClick() || { n: 0 }).n');
+  await clickPoint(p);
+  const got = await waitClick(before);
+  if (!got) throw new Error(`手牌第 ${idx} 张点了没反应：` + JSON.stringify(await clickReport()));
+  if (got.label !== 'card' || got.idx !== idx) {
+    throw new Error(`手牌第 ${idx} 张点歪了，落到 ${got.label}#${got.idx}`);
+  }
+}
+
+/**
+ * 等输入解锁。演出期间（光刃还在飞、面板被推迟）按下会被直接丢掉，
+ * 这时候点什么都等于点空气 —— 这是"点了没反应"最常见的原因。
+ * 只等 locked，不等 busy：反馈面板开着的时候 busy 本来就是 true（防连答），
+ * 但面板上的「继续」恰恰是这时候该点的东西。
+ */
+async function waitUnlocked(ms = 15000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (!await evalJs('cog.locked()')) return true;
+    await sleep(50);
+  }
+  return false;
+}
+
+/**
+ * 等"一条战斗指令能落地"：输入解锁、没有面板挡着、上一层动作已经结算完。
+ * 出牌器和「结束回合」自己的卫兵都是 `if (busy || panel) return` —— 不看这三样，
+ * 点击会被安静地吞掉（按钮画在屏幕上，但什么也不会发生）。
+ */
+async function waitReady(ms = 15000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const st = await evalJs('({ busy: cog.state.busy, locked: cog.locked(), panel: cog.state.panel.k })');
+    if (!st.busy && !st.locked && st.panel === 'none') return true;
+    await sleep(50);
+  }
+  return false;
+}
+
+/** 上一次点击之后，屏幕上到底发生了什么。失败时用来说清楚"是被吞了还是点歪了"。 */
+async function clickReport() {
+  return evalJs(`(() => ({
+    last: cog.lastClick(),
+    busy: cog.state.busy,
+    locked: cog.locked(),
+    panel: cog.state.panel.k,
+    ap: cog.state.ap,
+  }))()`);
+}
+
+/** 等反馈面板出现。等不到时要把现场一并报出来 —— 光说"没出现"没法定位。 */
+async function expectFeedback(what) {
+  if (await waitFor('继续')) return;
+  const st = await evalJs(`({
+    panel: cog.state.panel.k,
+    busy: cog.state.busy,
+    locked: cog.locked(),
+    last: cog.lastClick(),
+    ap: cog.state.ap,
+  })`);
+  throw new Error(`${what} 反馈面板没出现：` + JSON.stringify(st));
 }
 
 const results = [];
@@ -157,7 +287,14 @@ async function step(name, fn, verify) {
  * 答对之后反馈面板会推迟到打击动画演完才出现，这期间它不在命中表里 ——
  * 直接找坐标会扑空，所以要先等它画出来。
  */
-async function waitFor(label, ms = 2500) {
+/**
+ * 等某个按钮真的画在屏幕上。答对之后反馈面板会推迟到打击动画演完才出现，
+ * 这期间它不在命中表里 —— 直接找坐标会扑空，所以要先等它画出来。
+ *
+ * 上限给得宽：动画按 dt 推进，而 dt 被钳在 1/20 秒，机器一慢，"一秒的动画"
+ * 在真实时间里就会变成好几秒。这里是轮询，出现了就立刻返回，宽上限不会拖慢正常情况。
+ */
+async function waitFor(label, ms = 20000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     const n = await evalJs(`cog.hots().filter((h) => h.label === ${JSON.stringify(label)}).length`);
@@ -168,6 +305,18 @@ async function waitFor(label, ms = 2500) {
 }
 
 const S = (path) => evalJs(`(${path})`);
+
+/**
+ * 把渲染线程调慢，模拟慢机器 / 高负载。动画都是按 dt 推进的，机器一慢，
+ * 原来"睡 260ms 应该够了"的假设就会失效 —— 这一档专门用来提前发现这类问题。
+ *
+ *   SMOKE_CPU=6 npm run smoke
+ */
+const CPU_RATE = Number(process.env.SMOKE_CPU || 0);
+if (CPU_RATE > 0) {
+  await send('Emulation.setCPUThrottlingRate', { rate: CPU_RATE });
+  console.log(`· 渲染节流 ×${CPU_RATE}`);
+}
 
 await boot();
 
@@ -181,11 +330,11 @@ await step('地图 → 进节点', () => clickLabel('node'), async () => (await 
 // 手牌里现在混着初始牌组（base:*），要挑一张知识卡点 —— 基础牌点下去不出题。
 await step('点一张知识卡 → 直接出题', async () => {
   // 开局的手牌是从牌堆飞进来的，飞行途中没有热区（点它等于点空气），必须等它落地
-  if (!await waitFor('card')) throw new Error('手牌一直没落位');
+  if (!await waitHand()) throw new Error('手牌一直没落位');
   globalThis.__apBeforeAsk = await S('cog.state.ap');
   globalThis.__askIdx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
   if (globalThis.__askIdx < 0) throw new Error('手里没有知识卡');
-  await clickLabel('card', globalThis.__askIdx);
+  await clickCard(globalThis.__askIdx);
 }, async () => {
   const p = await S('cog.state.panel');
   return p.k === 'question' && typeof p.qi === 'number';
@@ -212,7 +361,7 @@ await step('选对 → 出反馈（此刻面板还没画出来）', async () => 
 
 // 打击动画先演完，面板才弹出来：这一步专门盯"推迟"没有把按钮一起吞掉
 await step('「继续」→ 回到战斗', async () => {
-  if (!await waitFor('继续')) throw new Error('打击动画结束后「继续」没出现');
+  await expectFeedback('打击动画结束后');
   await clickLabel('继续');
 }, async () => (await S('cog.state.panel.k')) === 'none');
 
@@ -221,7 +370,10 @@ await step('「继续」→ 回到战斗', async () => {
 await step('答对 → 行动力一点没少', async () => {},
   async () => (await S('cog.state.ap')) === globalThis.__apBeforeAsk);
 
-await step('结束回合 → 回合数前进，敌人真的演了动作且输入被锁', () => clickLabel('endturn'), async () =>
+await step('结束回合 → 回合数前进，敌人真的演了动作且输入被锁', async () => {
+  if (!await waitReady()) throw new Error('上一步一直没结算完');
+  await clickLabel('endturn');
+}, async () =>
   (await S('cog.state.turn')) > 1
   && (await S('cog.fx().enemy')) > 0
   && (await S('cog.locked()')));
@@ -230,17 +382,17 @@ await step('结束回合 → 回合数前进，敌人真的演了动作且输入
 // 全都是"数字变了但画面没动"。现在每个分支都发 enemyAct，这里盯两件事：
 // 演出确实在画面上（fx().enemy > 0），以及演完之后飞行单元没残留在屏幕上。
 await step('敌人演完 → 输入解锁、演出单元清空、新回合手牌飞回来', async () => {
-  // 演出时长受机器负载影响，固定 sleep(1400) 偶发不够（手牌还没飞回来就断言）。
-  // 轮询等到三个条件同时成立，最多等 4 秒；下面的断言仍会再核一次。
+  // 演出时长受机器负载影响（后台节流时能拖到好几秒），固定 sleep 一定会不够。
+  // 用状态轮询：演出单元清零 + 输入解锁 + 手牌真的全部停稳，三件事同时成立才算演完。
   const t0 = Date.now();
-  while (Date.now() - t0 < 4000) {
-    const st = await S('({ enemy: cog.fx().enemy, locked: cog.locked(), cards: cog.hots().filter((h) => h.label === "card").length })');
-    if (st.enemy === 0 && !st.locked && st.cards >= 5) return;
+  while (Date.now() - t0 < 8000) {
+    const st = await S('({ enemy: cog.fx().enemy, locked: cog.locked(), ready: cog.handReady() })');
+    if (st.enemy === 0 && !st.locked && st.ready) return;
     await sleep(60);
   }
 }, async () => {
-  const st = await S('({ enemy: cog.fx().enemy, locked: cog.locked(), cards: cog.hots().filter((h) => h.label === "card").length })');
-  if (st.cards < 5) throw new Error('手牌没有归位：' + JSON.stringify(st));
+  const st = await S('({ enemy: cog.fx().enemy, locked: cog.locked(), ready: cog.handReady(), hand: cog.state.hand.length })');
+  if (!st.ready) throw new Error('手牌没有归位：' + JSON.stringify(st));
   return st.enemy === 0 && !st.locked;
 });
 
@@ -262,17 +414,17 @@ await step('五种敌人意图各演一次 → 每种都产生演出单元', asy
 // 这条挂了就意味着它又退化成"一张打了没反应的普通牌"，或者更糟 —— 洗回去无限刷。
 await boot(URL_ + '?dev=power');
 await step('打出增益牌 → 不出题、不进弃牌堆、进入本场增益', async () => {
-  // 把沙漏挪到手牌第 0 位：命中区域的顺序就是手牌下标，这样点第一个 card 就是它
+  // 把沙漏挪到手牌第 0 位。不靠"第几个热区"去猜 —— 下面按手牌下标点。
   await evalJs(`(() => {
     const i = cog.state.hand.findIndex((c) => c.id === 'pow:hourglass');
     const [e] = cog.state.hand.splice(i, 1);
     cog.state.hand.unshift(e);
   })()`);
-  if (!await waitFor('card')) throw new Error('手牌一直没落位');
-  // 手牌重排是平滑动画：热区每帧按当前落笔位置注册，位置没停稳就去点会点到邻居身上
-  await sleep(450);
+  // 挪没挪成要当场确认：失败的话这一条会变成"点了隔壁的知识卡"，报错却是增益没生效
+  if (await S('cog.state.hand[0].id') !== 'pow:hourglass') throw new Error('沙漏没挪到手牌第 0 位');
+  if (!await waitHand()) throw new Error('手牌一直没落位');
   globalThis.__dcBeforePow = await S('cog.state.discard.length');
-  await clickLabel('card', 0);
+  await clickCard(0);
 }, async () => {
   const st = await S('({ pw: cog.state.powers, panel: cog.state.panel.k, dc: cog.state.discard.length, ap: cog.state.ap, hand: cog.state.hand.map((c) => c.id) })');
   // 沙漏的即时效果是把这一手赚回来，所以行动力应该回到打出前的 3
@@ -287,10 +439,12 @@ await step('打出增益牌 → 不出题、不进弃牌堆、进入本场增益
 await boot(URL_ + '?dev=battle');
 await step('免答出牌 → 不出题，只扣 1 点行动力', async () => {
   await evalJs('cog.unlockAll()');
-  if (!await waitFor('card')) throw new Error('手牌一直没落位');
+  if (!await waitHand()) throw new Error('手牌一直没落位');
   globalThis.__apBefore = await S('cog.state.ap');
   // 基础牌本来就不出题，这条要测的是"知识卡解锁后也不出题"，所以必须挑知识卡
-  await clickLabel('card', await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))'));
+  const know = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
+  if (know < 0) throw new Error('手里没有知识卡');
+  await clickCard(know);
 }, async () => {
   const ap = await S('cog.state.ap');
   const k = await S('cog.state.panel.k');
@@ -303,12 +457,12 @@ await step('免答出牌 → 不出题，只扣 1 点行动力', async () => {
 // 测的是"点基础牌不走答题"，不是抽牌概率。
 await boot(URL_ + '?dev=battle');
 await step('基础牌 → 不出题，直接造成伤害并扣 1 点行动力', async () => {
-  if (!await waitFor('card')) throw new Error('手牌一直没落位');
+  if (!await waitHand()) throw new Error('手牌一直没落位');
   await evalJs('cog.state.hand[0] = { id: "base:strike", up: 0 }');
-  await sleep(260); // 手牌重排是动画，等热区落到新位置
+  if (await S('cog.state.hand[0].id') !== 'base:strike') throw new Error('基础牌没塞进手牌');
   globalThis.__baseHp = await S('cog.state.enemy.hp');
   globalThis.__baseAp = await S('cog.state.ap');
-  await clickLabel('card', 0);
+  await clickCard(0);
 }, async () => {
   const st = await S('({ hp: cog.state.enemy.hp, ap: cog.state.ap, panel: cog.state.panel.k })');
   // 基础斩击是 4 点伤害：不出题、敌人掉血、行动力 -1
@@ -319,6 +473,9 @@ await step('基础牌 → 不出题，直接造成伤害并扣 1 点行动力', 
 // 这里曾经用「还有没有牌可打」决定要不要注册热区，于是唯一还能前进的局面被彻底锁死 ——
 // 按钮画在屏幕上，点下去却没有任何反应。战斗里没有任何东西能替代这个按钮，必须守住。
 await step('手牌与行动力都归零 → 结束回合仍然生效', async () => {
+  // 上一步刚打完一张牌，busy 还亮着 —— 那期间 endTurn 会被自己的守卫挡掉，
+  // 看起来就是"按钮画着却点不动"。等它闲着再动。
+  if (!await waitReady()) throw new Error('上一步一直没闲下来');
   await evalJs('(() => { const G = cog.state; G.hand.length = 0; G.ap = 0; })()');
   globalThis.__turnBefore = await S('cog.state.turn');
   await clickLabel('endturn');
@@ -329,13 +486,15 @@ await step('手牌与行动力都归零 → 结束回合仍然生效', async () 
 // —— 一旦 panelHold 卡住不归零，玩家就再也看不到解析。
 await boot(URL_ + '?dev=battle');
 await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一定会来', async () => {
-  if (!await waitFor('card')) throw new Error('手牌一直没落位');
+  if (!await waitHand()) throw new Error('手牌一直没落位');
   globalThis.__foeHp = await S('cog.state.enemy.hp');
   // 记住这张牌是谁：下一步要查它到底回了牌堆还是进了弃牌堆。
   // 必须挑知识卡 —— 基础牌不出题。
   globalThis.__missIdx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
   globalThis.__missId = await S(`cog.state.hand[${globalThis.__missIdx}].id`);
-  await clickLabel('card', globalThis.__missIdx);
+  await clickCard(globalThis.__missIdx);
+  // 先确认题目真的出来了，再去读选项 —— 否则读到的是上一屏的 undefined
+  if (!await waitFor('opt')) throw new Error('点牌之后没有出题');
   // 挑一个「本次视图里」的错误选项：题库里的原始答案位置已经被打乱了
   const pick = await evalJs(`(() => {
     const v = cog.state.panel.view;
@@ -344,7 +503,7 @@ await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一
   await clickLabel('opt', pick.wrong);
 }, async () => {
   // 面板此刻还没画出来（在等演出），但必须在两秒半之内出现
-  if (!await waitFor('继续')) throw new Error('答错后反馈面板没出现');
+  await expectFeedback('答错后');
   const hp = await S('cog.state.enemy.hp');
   return (await S('cog.state.panel.k')) === 'feedback'
     && (await S('cog.state.panel.fb.right')) === false
@@ -371,13 +530,15 @@ await step('学习模式答错 → 牌回抽牌堆，不进弃牌堆', async () 
 // 它必须**进弃牌堆**（这一场不再自动回来），而且要能被数出来。
 await boot(URL_ + '?dev=battle');
 await step('复习模式答错 → 牌进弃牌堆，不再自动回来', async () => {
-  if (!await waitFor('card')) throw new Error('手牌一直没落位');
+  if (!await waitHand()) throw new Error('手牌一直没落位');
   const idx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
   globalThis.__revIdx = idx;
   globalThis.__revId = await S(`cog.state.hand[${idx}].id`);
   await evalJs("cog.state.mode = 'review'");
   globalThis.__dcBeforeRev = await S('cog.state.discard.length');
-  await clickLabel('card', idx);
+  await clickCard(idx);
+  // 先确认题目真的出来了，再去读选项 —— 否则读到的是上一屏的 undefined
+  if (!await waitFor('opt')) throw new Error('点牌之后没有出题');
   // 挑一个「本次视图里」的错误选项：题库里的原始答案位置已经被打乱了
   const pick = await evalJs(`(() => {
     const v = cog.state.panel.view;
@@ -385,7 +546,7 @@ await step('复习模式答错 → 牌进弃牌堆，不再自动回来', async 
   })()`);
   globalThis.__missAtAsk = await evalJs('cog.state.runBad');
   await clickLabel('opt', pick.wrong);
-  if (!await waitFor('继续')) throw new Error('复习模式答错后反馈面板没出现');
+  await expectFeedback('复习模式答错后');
 }, async () => {
   const st = await evalJs(`({
     dc: cog.state.discard.length,
@@ -403,20 +564,21 @@ await step('复习模式答错 → 牌进弃牌堆，不再自动回来', async 
 // 测试模式那一档：答错不该补格挡，而且这个卡种本场直接作废。
 await boot(URL_ + '?dev=battle');
 await step('测试模式答错 → 卡种作废且不补格挡', async () => {
-  if (!await waitFor('card')) throw new Error('手牌一直没落位');
+  if (!await waitHand()) throw new Error('手牌一直没落位');
   const idx = await evalJs('cog.state.hand.findIndex((c) => !c.id.startsWith("base:"))');
   globalThis.__testIdx = idx;
   globalThis.__testId = await S(`cog.state.hand[${idx}].id`);
   await evalJs("cog.state.mode = 'test'");
   globalThis.__blkBeforeTest = await S('cog.state.block');
-  await clickLabel('card', idx);
+  await clickCard(idx);
+  if (!await waitFor('opt')) throw new Error('点牌之后没有出题');
   const pick = await evalJs(`(() => {
     const v = cog.state.panel.view;
     return { wrong: (v.answer + 1) % v.options.length };
   })()`);
   globalThis.__missBeforeTest = await evalJs('cog.state.runBad');
   await clickLabel('opt', pick.wrong);
-  if (!await waitFor('继续')) throw new Error('测试模式答错后反馈面板没出现');
+  await expectFeedback('测试模式答错后');
 }, async () => {
   const st = await evalJs(`({
     blk: cog.state.block,

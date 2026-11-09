@@ -4,7 +4,7 @@ import { EFFS, POWER_BY_ID } from './core/model';
 import { beginFrame, g, initCanvas, toLogic, toScreen, VH, VW } from './gfx/canvas';
 import { loadArt } from './gfx/assets';
 import * as FX from './gfx/fx';
-import { bindInput, beginInput, endInput, hotRects, keyHandler, setInputLock } from './input';
+import { bindInput, beginInput, endInput, hitAt, hotRects, keyHandler, lastClickInfo, setInputLock } from './input';
 import { C } from './gfx/theme';
 import { text } from './gfx/ui';
 import { G, onFx } from './core/infra';
@@ -15,7 +15,7 @@ import { answer, askCard, cancelPanel, canAsk, endTurn, playPower } from './core
 import { EVENTS, dismissFeedback, endRun, enterNode, startRun } from './core/journey';
 import type { Move } from './core/model';
 import {
-  drawBattle, DISCARD_TO, ENEMY, fxCount, HERO, heroHand, resetBattleView, syncBattle,
+  drawBattle, DISCARD_TO, ENEMY, fxCount, handSettled, HERO, heroHand, resetBattleView, syncBattle,
 } from './scenes/battle';
 import { drawMap } from './scenes/map';
 import { drawOverlay } from './scenes/overlay';
@@ -207,7 +207,13 @@ declare global {
       state: typeof G;
       /** 在画面上叠一层 100px 坐标网格，手写布局时对位置用 */
       grid: () => void;
-      hots: () => { x: number; y: number; w: number; h: number; label: string }[];
+      hots: () => { x: number; y: number; w: number; h: number; label: string; idx?: number }[];
+      /** 这个点此刻会点到谁：冒烟测试用它确认选的位置真的属于那张牌 */
+      probe: (x: number, y: number) => { label: string; idx?: number } | null;
+      /** 手牌是不是全部落位并停稳：代替"睡一会儿再点" */
+      handReady: () => boolean;
+      /** 最近一次真正被接受的点击，用来确认"这一下点的是谁" */
+      lastClick: () => { label: string; idx?: number } | null;
       toScreen: (x: number, y: number) => { x: number; y: number };
       /** 演示/截图用：单独放一次打击动画，不改变任何数值 */
       strike: (kind?: FX.StrikeKind, target?: 'enemy' | 'hero') => void;
@@ -240,6 +246,9 @@ declare global {
 window.cog = {
   state: G,
   hots: hotRects,
+  probe: hitAt,
+  handReady: handSettled,
+  lastClick: lastClickInfo,
   toScreen,
   strike: (kind = 'strike', target: 'enemy' | 'hero' = 'enemy') => {
     FX.attack({

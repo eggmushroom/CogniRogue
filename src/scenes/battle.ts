@@ -1,7 +1,7 @@
 import { g, roundRect, VW } from '../gfx/canvas';
 import { ART } from '../gfx/assets';
 import { C, font, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
-import { bar, drawCard, icon, panel, text } from '../gfx/ui';
+import { bar, drawCard, icon, panel, squeeze, text } from '../gfx/ui';
 import { onClick, hover } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import * as FX from '../gfx/fx';
@@ -246,20 +246,36 @@ function drawEnemy(e: Foe, t: number) {
     g.fill();
   }
 
-  // 血条（数字压在条上，省一行高度；刻度把"还剩多少管血"切成可数的段）
-  const bw = 380;
-  const bx = ENEMY.x - bw / 2;
+  // 敌人状态条：意图 + 血量 + 名字压成一组。
+  // 以前意图飘在头顶（ENEMY.y-236）、血条贴着立绘下沿、名字又在血条下面 38px，
+  // 三样分处三段，玩家得在三个位置拼出"它下回合打几点"。现在意图是血条左边的
+  // 一格、名字紧跟血条下面 —— 关于这只怪的所有数字都在同一条横带上。
   const by = ENEMY.y + 206;
+  const it = intentText(e);
+  const kind = it.icon === 'attack' ? 'attack' : it.icon === 'shield' ? 'shield'
+    : it.icon === 'junk' ? 'junk' : 'buff';
+  const icol = kind === 'attack' ? C.red : kind === 'shield' ? C.blue
+    : kind === 'junk' ? C.orange : C.purple;
+
+  const bw = 336;
+  g.font = font(19, 700, FONT_UI);
+  const iw = Math.max(84, Math.ceil(g.measureText(it.text).width) + 54);
+  const gapI = 12;
+  const rowW = iw + gapI + bw;
+  const rowX = ENEMY.x - rowW / 2;
+  intentChip(rowX, by + 10, iw, 30, it.text, kind, icol, t);
+  const bx = rowX + iw + gapI;
+
   bar(bx, by, bw, 20, e.hp / e.maxHp, e.type === 'boss' ? C.purple : C.red, {
     r: 10, label: `${Math.max(0, e.hp)} / ${e.maxHp}`, ticks: 4,
   });
   if (e.block > 0) {
-    icon('shield', bx + bw + 20, by + 10, 10, C.blue);
-    text(String(e.block), bx + bw + 36, by + 10, { size: 17, color: C.blue, weight: 700 });
+    icon('shield', bx + bw + 18, by + 10, 10, C.blue);
+    text(String(e.block), bx + bw + 34, by + 10, { size: 17, color: C.blue, weight: 700 });
   }
 
   // 名字 + 类型徽章：徽章要跟着名字宽度走，不能叠在长名字上
-  text(e.name, ENEMY.x, by + 48, { size: 24, align: 'center', color: C.ink, weight: 700 });
+  text(e.name, ENEMY.x, by + 40, { size: 24, align: 'center', color: C.ink, weight: 700 });
   {
     g.save();
     g.font = font(24, 700, FONT_TITLE);
@@ -268,53 +284,53 @@ function drawEnemy(e: Foe, t: number) {
     const tag = e.type === 'boss' ? C.gold : e.type === 'elite' ? C.red : C.ink2;
     const tw = e.tag.length * 13 + 18;
     const px = ENEMY.x + nameW / 2 + tw / 2 + 10;
-    roundRect(px - tw / 2, by + 36, tw, 22, 11);
+    roundRect(px - tw / 2, by + 28, tw, 22, 11);
     g.fillStyle = withAlpha(tag, 0.12);
     g.fill();
     g.strokeStyle = withAlpha(tag, 0.5);
     g.lineWidth = 1;
     g.stroke();
-    text(e.tag, px, by + 47, { size: 12, align: 'center', color: tag, weight: 700 });
+    text(e.tag, px, by + 39, { size: 12, align: 'center', color: tag, weight: 700 });
   }
-
-  intentBubble(e, t);
 }
 
-function intentBubble(e: Foe, t: number) {
-  const it = intentText(e);
-  const cx = ENEMY.x;
-  const cy = ENEMY.y - 236 + Math.sin(t * 2.2) * 4;
-  const w = 158;
-  const h = 48;
-
-  const kind = it.icon === 'attack' ? 'attack' : it.icon === 'shield' ? 'shield'
-    : it.icon === 'junk' ? 'junk' : 'buff';
-  const col = kind === 'attack' ? C.red : kind === 'shield' ? C.blue
-    : kind === 'junk' ? C.orange : C.purple;
-
+/**
+ * 意图格：血条左边的一枚标签。
+ *
+ * 它原来是一个"头顶气泡"，下面还有个小尖角指向立绘 —— 但那 400px 的立绘把
+ * 气泡和血量隔开了，尖角指着的是一片空空气。并到状态条里之后，尖角没有意义了，
+ * 改成左边一道与类型同色的竖条：读起来像"下一步"这一格，而不是一句飘着的话。
+ */
+function intentChip(
+  x: number, cy: number, w: number, h: number,
+  label: string, kind: 'attack' | 'shield' | 'junk' | 'buff', col: string, t: number,
+) {
+  const y = cy - h / 2;
+  // 呼吸的辉光代替原来的上下浮动：位置要稳定在状态条上，但也不能死板
+  const p = kind === 'attack' ? 0.55 + 0.45 * Math.sin(t * 2.4) : 0.5;
   g.save();
-  g.shadowColor = withAlpha(col, 0.5);
-  g.shadowBlur = 20;
-  roundRect(cx - w / 2, cy - h / 2, w, h, 10);
-  g.fillStyle = 'rgba(10,12,18,.9)';
+  g.shadowColor = withAlpha(col, 0.3 + p * 0.28);
+  g.shadowBlur = 14;
+  roundRect(x, y, w, h, 8);
+  g.fillStyle = 'rgba(10,12,18,.92)';
   g.fill();
   g.restore();
-  roundRect(cx - w / 2, cy - h / 2, w, h, 10);
-  g.strokeStyle = withAlpha(col, 0.75);
-  g.lineWidth = 1.6;
+
+  roundRect(x, y, w, h, 8);
+  g.strokeStyle = withAlpha(col, 0.55 + p * 0.25);
+  g.lineWidth = 1.4;
   g.stroke();
 
-  icon(kind, cx - w / 2 + 28, cy, 13, col);
-  text(it.text, cx - w / 2 + 50, cy, { size: 19, weight: 700, color: C.ink });
+  // 竖条：这一格的身份色，比给整个框上色安静，也不会和血条的红撞
+  g.save();
+  roundRect(x, y, w, h, 8);
+  g.clip();
+  g.fillStyle = withAlpha(col, 0.85);
+  g.fillRect(x, y, 3, h);
+  g.restore();
 
-  // 小尖角
-  g.beginPath();
-  g.moveTo(cx - 7, cy + h / 2 - 1);
-  g.lineTo(cx, cy + h / 2 + 9);
-  g.lineTo(cx + 7, cy + h / 2 - 1);
-  g.closePath();
-  g.fillStyle = 'rgba(10,12,18,.9)';
-  g.fill();
+  icon(kind, x + 18, cy, 11, col);
+  text(label, x + 32, cy, { size: 18, weight: 700, color: C.ink });
 }
 
 /* ── 玩家 ─────────────────────────────────────────────────── */
@@ -711,19 +727,49 @@ function piles() {
 function combatLog() {
   const lines = G.log.slice(-5);
   const x = 36;
-  const y0 = 100;
-  const w = 300;
+  const y0 = 92;
+  const w = 316;
+  const head = 28;
+  const lh = 21;
+  const h = head + lines.length * lh + 12;
+
+  // 底板以前是 rgba(9,11,17,.72) + 一道 #252b3a 的边 —— 在近黑的背景上
+  // 两者都看不见，五行动态读起来像直接写在书架上的裸字。现在把面板做实：
+  // 填充抬到 .93、边框换成能看见的 lineHi、左侧加一道金色竖线当锚点。
   g.save();
-  g.globalAlpha = 0.82;
-  panel(x, y0, w, 22 + lines.length * 22, { r: 10, fill: 'rgba(9,11,17,.72)', stroke: 'rgba(37,43,58,.9)' });
+  roundRect(x, y0, w, h, 10);
+  g.fillStyle = 'rgba(10,13,20,.93)';
+  g.fill();
+  g.strokeStyle = withAlpha(C.lineHi, 0.45);
+  g.lineWidth = 1.2;
+  g.stroke();
+  g.save();
+  roundRect(x, y0, w, h, 10);
+  g.clip();
+  g.fillStyle = withAlpha(C.gold, 0.42);
+  g.fillRect(x, y0, 2.5, h);
   g.restore();
+  g.restore();
+
+  // 标题带：给这块面板一个"头"，否则一列飘着的字分不清是界面还是背景装饰。
+  text('战斗记录', x + 16, y0 + 17, { size: 11, weight: 700, color: C.faint });
+  g.beginPath();
+  g.moveTo(x + 16, y0 + head - 5);
+  g.lineTo(x + w - 14, y0 + head - 5);
+  g.strokeStyle = 'rgba(255,255,255,.1)';
+  g.lineWidth = 1;
+  g.stroke();
+
   lines.forEach((l, i) => {
     const col = l.kind === 'hi' ? C.green : l.kind === 'bad' ? C.red : l.kind === 'turn' ? C.gold : C.dim;
     g.font = font(14, l.kind === 'turn' ? 700 : 400, FONT_UI);
     g.fillStyle = col;
-    g.globalAlpha = 0.5 + 0.5 * (i / Math.max(1, lines.length - 1));
+    // 越老的行越淡，但不再淡到读不出：0.5 → 0.72 起。
+    g.globalAlpha = 0.72 + 0.28 * (i / Math.max(1, lines.length - 1));
     g.textAlign = 'left';
-    g.fillText(l.msg.length > 24 ? l.msg.slice(0, 23) + '…' : l.msg, x + 12, y0 + 16 + i * 22);
+    // 按像素宽度截断。以前按 24 个字符切，一行 23 个汉字约 320px，
+    // 面板内宽只有 276px —— 长句会直接溢出到面板外面。
+    g.fillText(squeeze(l.msg, w - 30), x + 16, y0 + head + 11 + i * lh);
     g.globalAlpha = 1;
   });
 }
@@ -951,7 +997,8 @@ function drawHand(t: number, dt: number) {
     });
     g.restore();
 
-    // 还在飞的牌不给热区：那时候它画在半空中，点它等于点空气
+    // 还在飞的牌不给热区：那时候它画在半空中，点它等于点空气。
+    // 但下标一定要带上 —— 少注册一项会让"第几个热区"和"第几张牌"整体错位。
     if (flying) continue;
 
     // 基础牌点下去直接打，锁着的牌点下去出题，已解锁的牌点下去直接打，
@@ -960,12 +1007,12 @@ function drawHand(t: number, dt: number) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
         if (G.ap <= 0) { FX.shake(6); return; }
         playPower(s.i);
-      }, 'card');
+      }, 'card', s.i);
     } else if (isBase) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
         if (G.ap <= 0) { FX.shake(6); return; }
         playBasic(s.i);
-      }, 'card');
+      }, 'card', s.i);
     } else if (!isJunk) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
         if (G.ap <= 0) { FX.shake(6); return; }
@@ -978,14 +1025,14 @@ function drawHand(t: number, dt: number) {
         }
         if (canAsk(ent)) { askCard(s.i); return; }
         FX.shake(5);
-      }, 'card');
+      }, 'card', s.i);
     } else {
       onClick(px - w / 2, py - h / 2, w, h, () => {
         text('杂念打不出去，回合结束会自己散去', HAND.cx, HAND.cy - 40, {
           size: 18, align: 'center', color: C.dim,
         });
         FX.shake(4);
-      }, 'junk');
+      }, 'junk', s.i);
     }
   }
 
@@ -1147,6 +1194,24 @@ function endTurnButton() {
 /** 调试/冒烟用：在飞的牌数量。飞行单元如果清不掉，会在屏幕上永远留一张牌。 */
 export function fxCount() {
   return { hand: handFx.size, discard: discardFx.length };
+}
+
+/**
+ * 手牌是不是已经全部落位、并且停稳了。
+ *
+ * 抽牌是按 dt 推进的，机器一慢（或者浏览器在后台被节流），动画的真实时长就会变长。
+ * 自动化测试如果拿"睡 450ms"当标准，就会在慢机器上点到半空中的牌 —— 那不是布局坏了，
+ * 是测试拿时间当状态。这里给出真正的状态：每张牌都飞完了，而且离落点不到 1px。
+ */
+export function handSettled() {
+  const slots = layoutHand();
+  if (slots.length !== handFx.size) return false;
+  for (const s of slots) {
+    const fx = handFx.get(G.hand[s.i]);
+    if (!fx || fx.age < DRAW_DUR) return false;
+    if (Math.abs(fx.px - s.x) > 1 || Math.abs(fx.py - s.y) > 1) return false;
+  }
+  return true;
 }
 
 export function resetBattleView() {
