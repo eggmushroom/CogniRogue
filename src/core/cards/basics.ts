@@ -1,3 +1,4 @@
+import { resolveEff } from '../model/effects';
 import type { CardDef, CardInst } from '../model/types';
 
 /**
@@ -41,3 +42,26 @@ export const basicDeck = (): CardInst[] => BASICS.map((c) => ({ id: c.id, up: 0 
 
 /** 按 id 找基础牌定义（`defOf` 的兜底链里用）。 */
 export const basicDef = (id: string): CardDef | undefined => BASICS.find((c) => c.id === id);
+
+/**
+ * 帮助面板用的一句话：初始牌组里每张牌各是什么数值。
+ *
+ * 数字必须从卡面推导，不能手写 —— 「基础格挡 6 挡」里的 6 是 resolveEff
+ * 把 blk 3 乘上巩固的 2 倍算出来的，写死迟早和牌面打架。
+ * 结果形如：`基础斩击 ×2（4 伤）、基础格挡 ×1（6 挡）`。
+ */
+export function basicsSummary(): string {
+  const groups: { name: string; count: number; hit: number; blk: number }[] = [];
+  for (const c of BASICS) {
+    const o = resolveEff(c.eff, c.atk, c.blk);
+    const g = groups.find((x) => x.name === c.name);
+    if (g) { g.count += 1; continue; }
+    groups.push({ name: c.name, count: 1, hit: o.hits[0], blk: o.blk });
+  }
+  return groups
+    .map((g) => {
+      const nums = [g.hit > 0 ? `${g.hit} 伤` : '', g.blk > 0 ? `${g.blk} 挡` : ''].filter(Boolean);
+      return `${g.name} ×${g.count}（${nums.join('/')}）`;
+    })
+    .join('、');
+}

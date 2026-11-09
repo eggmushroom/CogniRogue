@@ -1,10 +1,10 @@
-import { POWERS } from '../model/data';
+import { BAL, POWERS } from '../model/data';
 import type { EventDef, PowerDef } from '../model/types';
 import { G, log, topTopic } from '../infra/state';
 import { emit } from '../infra/events';
 import { pick } from '../infra/util';
 import { PACK, topics } from '../cards/pack';
-import { defOf, powerCardId } from '../cards/registry';
+import { defOf, isBasicCardId, powerCardId } from '../cards/registry';
 import { cardKind } from '../cards/kinds';
 import { finishNode } from './nodes';
 
@@ -85,7 +85,12 @@ export const EVENTS: EventDef[] = [
       {
         t: '拾起来，收进自己的牌组', sub: '获得一张随机知识卡，已精炼（攻/挡 +3）',
         run: () => {
-          const c = pick(PACK.cards);
+          // 和战后奖励同一条上限：同一种卡最多 BAL.maxCopies 张。
+          const copies: Record<string, number> = {};
+          G.deck.forEach((e) => { copies[e.id] = (copies[e.id] || 0) + 1; });
+          const pool = PACK.cards.filter((c) => (copies[c.id] || 0) < BAL.maxCopies);
+          if (!pool.length) return '每种卡你都收齐了上限 —— 这一次你只是把它们理了一遍。';
+          const c = pick(pool);
           G.deck.push({ id: c.id, up: 1 });
           return `你把「${c.topic}」那张卡收进了牌组。`;
         },
@@ -127,10 +132,15 @@ export const EVENTS: EventDef[] = [
       {
         t: '把一张卡留下来', sub: '永久移除牌组里一张卡，回复 20 点生命',
         run: () => {
-          if (G.deck.length > 5) {
-            const i = Math.floor(Math.random() * G.deck.length);
-            const d = defOf(G.deck[i]);
-            G.deck.splice(i, 1);
+          // 基础牌是这一局的地板：它在牌组里永远有位置，事件也不能把它删掉。
+          // 其余（知识卡、增益牌）都可以被拿走 —— 牌组变薄本身是真实收益。
+          const removable = G.deck
+            .map((e, i) => ({ e, i }))
+            .filter((o) => !isBasicCardId(o.e.id));
+          if (G.deck.length > 5 && removable.length) {
+            const o = pick(removable);
+            const d = defOf(o.e);
+            G.deck.splice(o.i, 1);
             healBy(20);
             return `「${d.topic}」被留下了，你换回 20 点生命。`;
           }

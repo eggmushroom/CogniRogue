@@ -18,7 +18,7 @@ import { endRun } from './report';
  */
 export function startRun(mode: RunMode = G.mode) {
   tickDue();
-  // 初始牌组 = 固定的 5 张基础牌 + 按模式挑的知识卡。
+  // 初始牌组 = 固定的 3 张基础牌 + 按模式挑的知识卡。
   // 基础牌不可获取、不可精炼、不可删除 —— 它们是"永远有牌可打"的那半边。
   const deck = basicDeck().concat(startDeck(mode));
 

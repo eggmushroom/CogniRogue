@@ -5,7 +5,7 @@ import { consumeWheel, hover, onClick } from '../input';
 import { BAL, EFFS, MODE_KEYS, MODES, effSummary } from '../core/model';
 import { clamp, G } from '../core/infra';
 import { BANK, bankQuestionCount, bankTopics, memOf, memRatio } from '../core/library';
-import { cardKind, cardType, CARD_TYPE_META, defOf, statOf } from '../core/cards';
+import { BASICS, basicsSummary, cardKind, cardType, CARD_TYPE_META, defOf, statOf } from '../core/cards';
 import { answer, cancelPanel, quickPlay } from '../core/combat';
 import {
   chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal, startRun,
@@ -700,10 +700,10 @@ function drawHelp() {
 
   // 效果/类别表不再写死在帮助页：卡面徽章上就印着「类别·效果」，帮助页只讲分工
   const blocks: Array<[string, string[]]> = [
-    ['初始牌组：3 张，不答题', [
-      '一局开始就有三张基础牌（两张基础斩击 4 伤、一张基础格挡 6 挡），它们不答题、随时可打、扣 1 点行动力。',
+    [`初始牌组：${BASICS.length} 张，不答题`, [
+      `一局开始就有 ${BASICS.length} 张基础牌（${basicsSummary()}），它们不答题、随时可打、扣 1 点行动力。`,
       '它们不可获取、不可精炼、不可删除 —— 是这一局的"地板"：答错锁卡、测试模式作废之后，至少还有牌能打，不会整手空转。',
-      '数值刻意压得比知识卡低：保底不等于变强，想赢还是得答题、解锁、用 ×1.5 的免答牌。',
+      `数值刻意压得比知识卡低：保底不等于变强，想赢还是得答题、解锁、用 ×${BAL.freeMult} 的免答牌。`,
     ]],
     ['四类牌：攻击 / 防御 / 技能 / 能力', [
       '攻击：猛击、洞察、串联、内化 —— 把行动力换成伤害（内化再按伤害回血）。',

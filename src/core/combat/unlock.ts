@@ -19,7 +19,7 @@ export const isForgotten = (id: string) => !!G.forgotten[id];
 
 /** 牌组里有多少"卡种"、其中多少个这场已经解锁 —— 画在顶栏上。 */
 export function unlockStats() {
-  // 增益牌和基础牌没有锁，不该进分母：否则拿了三张增益牌 + 五张基础牌，
+  // 增益牌和基础牌没有锁，不该进分母：否则拿了三张增益牌 + 三张基础牌，
   // 顶栏就变成"永远差八种解锁"，那个数字会彻底失去意义。
   const ids = new Set(
     G.deck.filter((e) => !isPowerId(e.id) && !isBasicCardId(e.id)).map((e) => e.id),

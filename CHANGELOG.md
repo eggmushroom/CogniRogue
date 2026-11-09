@@ -1,6 +1,34 @@
 # 更新记录
 
+## 未发布
+
+### 工程
+
+- 新增 `tools/deps.mjs`：把 `src/core` 七个包的依赖方向写成检查，接进
+  `npm run check` / `npm run build`。违规直接失败；`combat → journey` 的两条已知边
+  作为显式豁免保留，等下一轮的 settle 钩子移除。空扫描（0 条边）也判失败 ——
+  守卫最常见的死法是「什么都没扫到，于是全部通过」。
+- 内置卡牌库 `PACK` 从 `library/pack.ts` 搬到 `cards/pack.ts`。卡池是卡牌数据，
+  不是知识内容；搬完之后 `cards` 与 `library` 不再互相依赖，包顺序修正为
+  `model → infra → cards → library → map → combat → journey`。
+- 删除 `core/game.ts` 兼容门面，以及 `toEff` / `EFF_KEYS` / `isKnowledgeCard` /
+  `isJunkCard` / `isBasicCard` / `CATALOG_TOPICS` / `EFF_ICON` 七个零引用导出。
+- 删除 `CardDef.kp`：v0.4 把知识点短名从牌面撤下之后，86 条数据再没有读取处。
+
+### 修复
+
+- **守夜人事件能删掉基础牌**：随机删牌的索引没有排除 `base:*`，约四分之一的概率
+  破坏「基础牌不可删除」这条规则。现在只从非基础牌里抽（400 次 × 5 轮复跑，
+  基础牌一张没丢）。
+- **索引卡事件绕过同种上限**：直接 `up: 1` 入组，同一种卡可以超过 `BAL.maxCopies`。
+  现在与战后奖励用同一条上限（400 次复跑，没有超过 3 张）。
+- 帮助面板里写死的「两张基础斩击 4 伤、一张基础格挡 6 挡」改成从 `BASICS` 推导
+  （`basicsSummary()`），免答倍率也改成读 `BAL.freeMult`。
+- 四处注释把基础牌写成「5 张」，实际是 3 张；README 的包地图、`dist` 体积
+  （600 KB → 1.1 MB）及其他过期描述一并更正。
+
 ## v0.4.0 — 牌组分两半，答错价码交回玩家
+
 
 ### 三种模式：开局前选，整局不变
 
