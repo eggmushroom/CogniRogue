@@ -366,12 +366,10 @@ function leftPanel() {
 
   // 路径进度：把"走到第几层了"做成一条看得见的轨道，
   // 顺手填上增益牌和图例之间那两百多像素的空白。
+  // 只留轨道，不留"1 / 8"：标题下面已经写着"第 1/8 层"，同一件事不用在两处编号。
   const floorNow = G.pos ? G.pos.r + 1 : 1;
   const py = y + 268;
   text('路径', x + 20, py, { size: 13, color: C.dim, weight: 600 });
-  text(`${Math.min(MAP_ROWS, floorNow)} / ${MAP_ROWS}`, x + w - 20, py, {
-    size: 12, color: C.gold, align: 'right', weight: 700,
-  });
   const tx = x + 24;
   const tw = w - 48;
   const step = tw / (MAP_ROWS - 1);

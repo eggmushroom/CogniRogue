@@ -5,7 +5,7 @@ import { bar, drawCard, icon, panel, squeeze, text } from '../gfx/ui';
 import { onClick, hover } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import * as FX from '../gfx/fx';
-import { POWER_BY_ID } from '../core/model';
+import { MODES, POWER_BY_ID } from '../core/model';
 import { G } from '../core/infra';
 import { cardKind, defOf, powerOf, statOf } from '../core/cards';
 import {
@@ -106,17 +106,18 @@ function topBar(t: number) {
   icon('floor', 424, 31, 9, C.dim);
   text(`第 ${floor} 层`, 438, 31, { size: 17, color: C.ink2, weight: 600 });
 
-  // 敌人等级做成徽章胶囊：普通/精英/首领用色环一圈，比裸文字更像"身份"
-  if (G.enemy) {
-    const tag = G.enemy.type === 'boss' ? C.gold : G.enemy.type === 'elite' ? C.red : C.ink2;
-    const tw = G.enemy.tag.length * 16 + 24;
-    roundRect(496, 18, tw, 26, 13);
-    g.fillStyle = withAlpha(tag, 0.12);
+  // 模式胶囊：整局不变，所以只说一次。它原来印在每张手牌的下沿 ——
+  // 一句话重复五遍，等于没说。敌人等级不放在这里：名字下面已经标了，两处重复。
+  const md = MODES[G.mode];
+  {
+    const tw = md.name.length * 16 + 34;
+    roundRect(524, 18, tw, 26, 13);
+    g.fillStyle = withAlpha(md.color, 0.12);
     g.fill();
-    g.strokeStyle = withAlpha(tag, 0.55);
+    g.strokeStyle = withAlpha(md.color, 0.5);
     g.lineWidth = 1.2;
     g.stroke();
-    text(G.enemy.tag, 496 + tw / 2, 31, { size: 14, color: tag, weight: 700, align: 'center' });
+    text(`${md.name}模式`, 524 + tw / 2, 31, { size: 14, color: md.color, weight: 700, align: 'center' });
   }
 
   // 解锁进度：这一场真正的资源。它比伤害数字更该一眼看见 ——
@@ -127,14 +128,14 @@ function topBar(t: number) {
     const col = full ? C.gold : C.cyan;
     const pulse = full ? 1 : 1 + Math.sin(t * 5) * 0.03;
     g.save();
-    g.translate(636, 26);
+    g.translate(700, 26);
     g.scale(pulse, pulse);
     icon(full ? 'check' : 'lock', 0, 5, 9, col);
     text(`${us.n}/${us.total}`, 16, 6, { size: 18, weight: 800, color: col });
     text('已解锁', 62, 7, { size: 12, color: C.dim });
     g.restore();
     // 计数下面一条迷你进度：不占地方，但"还差几个"不用心算了
-    bar(636, 44, 92, 4, us.n / us.total, col, { r: 2 });
+    bar(700, 44, 92, 4, us.n / us.total, col, { r: 2 });
   }
 
   // 本场已打出的增益牌。它不再是"装备栏"：每场开头清空、每场重新打，
@@ -274,14 +275,15 @@ function drawEnemy(e: Foe, t: number) {
     text(String(e.block), bx + bw + 34, by + 10, { size: 17, color: C.blue, weight: 700 });
   }
 
-  // 名字 + 类型徽章：徽章要跟着名字宽度走，不能叠在长名字上
+  // 名字 + 等级徽章。徽章只在**不是普通怪**的时候出现：
+  // 「普通」是默认值，标出来等于给水贴一张"这是水"的标签，还占掉名字右边的位置。
   text(e.name, ENEMY.x, by + 40, { size: 24, align: 'center', color: C.ink, weight: 700 });
-  {
+  if (e.type !== 'fight') {
     g.save();
     g.font = font(24, 700, FONT_TITLE);
     const nameW = g.measureText(e.name).width;
     g.restore();
-    const tag = e.type === 'boss' ? C.gold : e.type === 'elite' ? C.red : C.ink2;
+    const tag = e.type === 'boss' ? C.gold : C.red;
     const tw = e.tag.length * 13 + 18;
     const px = ENEMY.x + nameW / 2 + tw / 2 + 10;
     roundRect(px - tw / 2, by + 28, tw, 22, 11);
@@ -672,7 +674,9 @@ function energyOrb(t: number) {
     size: 38, weight: 800, align: 'center',
     color: p > 0 ? C.gold : C.faint,
   });
-  text('/ ' + G.apMax, x, y + 26, { size: 14, align: 'center', color: C.dim });
+  // 环上的刻度已经写出了"一共几格"，再写一遍 "/ 3" 是重复；
+  // 这里换成标签：牌面上那个"1"撤掉之后，玩家得知道这个数字是行动力。
+  text('行动力', x, y + 26, { size: 12, align: 'center', color: C.dim });
 
   if (p > 0) {
     const pulse = 0.5 + 0.5 * Math.sin(t * 3);
@@ -992,7 +996,7 @@ function drawHand(t: number, dt: number) {
     g.translate(px, py);
     g.rotate(rot);
     drawCard(-w / 2, -h / 2, w, h, card, st.atk, st.blk, {
-      up: !!ent.up, glow: hv, state,
+      up: !!ent.up, glow: hv, hovered: hv, state,
       mode: isJunk || isPow || isBase ? undefined : G.mode,
     });
     g.restore();
@@ -1165,12 +1169,11 @@ function endTurnButton() {
   g.lineWidth = 1.8;
   g.stroke();
 
-  icon('turn', x + 40, y + h / 2 - 8, 13, ready ? (hv ? C.gold : C.ink2) : C.faint);
-  text('结束回合', x + w / 2 + 14, y + h / 2 - 8, {
-    size: 20, weight: 700, align: 'center', color: ready ? C.ink : C.dim,
-  });
-  text(`${G.hand.length} 张手牌 · 行动力 ${G.ap}`, x + w / 2 + 7, y + h / 2 + 16, {
-    size: 12, align: 'center', color: C.dim,
+  // 按钮上只留一个动作。原来下面那行"5 张手牌 · 行动力 3"是复述：
+  // 手牌就摊在眼前，行动力在左边的环上，再说一遍不会让人多点一次。
+  icon('turn', x + 44, y + h / 2, 15, ready ? (hv ? C.gold : C.ink2) : C.faint);
+  text('结束回合', x + w / 2 + 18, y + h / 2 + 1, {
+    size: 21, weight: 700, align: 'center', color: ready ? C.ink : C.dim,
   });
 
   // 热区永远注册，endTurn 内部自己会拦"面板开着 / 正在结算"这些情况

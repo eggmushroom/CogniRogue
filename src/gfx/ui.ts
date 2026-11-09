@@ -206,9 +206,9 @@ export interface CardOpts {
    */
   state?: 'locked' | 'open' | 'spent' | 'forgotten' | 'basic';
   /**
-   * 本局模式。它决定"答错这件事有多贵"，所以画在卡面下沿 ——
-   * 玩家在点开这张牌之前就该知道自己是"还能重来"还是"错了就废"。
-   * 模式整局不变，所以同一把手里每一张卡写的是同一句价码。
+   * 本局模式。它决定"答错这件事有多贵"，但整局不变 —— 所以不逐张常驻，
+   * 只在鼠标停在这张牌上时补一句，免得同一句话在五张牌下沿重复五遍。
+   * 真正会变的那几种（免答 / 作废 / 已答错 / 不答题）才常驻。
    */
   mode?: RunMode;
 }
@@ -300,19 +300,9 @@ export function drawCard(
   const pad = w * 0.09;
   const s = w / 220;
 
-  // 消耗：所有卡都吃 1 点行动力，画在右上角免得每次都要心算
-  if (kind !== 'junk') {
-    const cx = x + w - pad - 9 * s;
-    const cy = y + 18 * s;
-    g.beginPath();
-    g.arc(cx, cy, 12 * s, 0, Math.PI * 2);
-    g.fillStyle = withAlpha(C.gold, 0.16);
-    g.fill();
-    g.strokeStyle = withAlpha(C.gold, 0.6);
-    g.lineWidth = 1.2;
-    g.stroke();
-    text('1', cx, cy + 1, { size: Math.round(13 * s), weight: 800, align: 'center', color: C.gold });
-  }
+  // 消耗不画在牌上：83 张牌无一例外都是 1 点，印一个"1"在每张牌右上角
+  // 是重复 83 遍同一个常量，不是信息。这条规则说一次就够 —— 行动力环上
+  // 写了「行动力」，帮助页写了「出牌 1 点」。省下的角落留给牌面自己。
 
   // ── 正文：牌名 + 类别徽章 + 效果数字 ──────────────────────
   // 卡面只有机械信息：叫什么、什么类别、打出去发生什么。
@@ -414,11 +404,14 @@ export function drawCard(
     drawArtIcon(eff.key, x + w * 0.6, y + h * 0.76, h * 0.36, tc, { alpha: 0.08 });
   }
 
-  // ── 底部：解锁状态 ────────────────────────────────────────
-  // 只有手牌会传状态 —— 牌组和奖励列表关心的是"这张卡是什么"，不是"这一场能不能用"。
-  if (kind !== 'junk' && opts.state) {
-    // 底部垫一层向下渐深的底色，把"解锁状态 + 答错代价"从卡面正文里分出来。
-    // 这一行是玩家点牌前唯一能看见的规则，值得单独成一个区块。
+  // ── 底部：只在"这张牌有话说"的时候出现 ─────────────────────
+  // 原来每张手牌下沿都印一句该模式的答错价码。那句话整局不变，五张牌写五遍
+  // 等于把同一个常量重复五次；模式现在标在顶栏。保留两类：这张牌**特殊**的时候
+  // （免答 / 作废 / 已答错 / 不答题）常驻，其余情况只在鼠标停在它身上时才给。
+  const exceptional = opts.state === 'open' || opts.state === 'forgotten'
+    || opts.state === 'spent' || opts.state === 'basic';
+  if (kind !== 'junk' && opts.state && (exceptional || opts.hovered)) {
+    // 底部垫一层向下渐深的底色，把"解锁状态 + 答错代价"从卡面正文里分出来
     g.save();
     roundRect(x, y, w, h, r);
     g.clip();
@@ -442,7 +435,6 @@ export function drawCard(
     const open = opts.state === 'open';
     const forgot = opts.state === 'forgotten';
     const basic = opts.state === 'basic';
-    // 底部这一行是玩家在"要不要点它"那一刻唯一能看见的规则：本局模式下的答错价码。
     // 模式整局不变，所以不用再按卡算，直接读 MODES。基础牌例外 —— 它不答题。
     const mode = opts.mode ? MODES[opts.mode] : null;
     const label = basic ? '基础 · 不答题'
@@ -469,7 +461,7 @@ export function drawCard(
       g.stroke();
     }
 
-    const mark = opts.state === 'locked' || forgot ? 'lock' : open ? 'check' : null;
+    const mark = opts.state === 'forgotten' ? 'lock' : open ? 'check' : null;
     if (mark) icon(mark, x + pad + 10 * s, py, 6.5 * s, col);
     text(label, mark ? x + pad + 20 * s : x + w / 2, py + 0.5, {
       size: Math.round(11 * s), align: mark ? 'left' : 'center', color: col,
@@ -547,17 +539,7 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   g.lineWidth = opts.hovered ? 2 : 1.6;
   g.stroke();
 
-  // 消耗圆：和知识卡同一个位置、同一个金色，因为价格也是同一个价格
-  const cx = x + w - pad - 9 * s;
-  const cy = y + 18 * s;
-  g.beginPath();
-  g.arc(cx, cy, 12 * s, 0, Math.PI * 2);
-  g.fillStyle = withAlpha(C.gold, 0.16);
-  g.fill();
-  g.strokeStyle = withAlpha(C.gold, 0.6);
-  g.lineWidth = 1.2;
-  g.stroke();
-  text('1', cx, cy + 1, { size: Math.round(13 * s), weight: 800, align: 'center', color: C.gold });
+  // 消耗同样不画：增益牌也是一张 1 点，和知识卡同一个价，不需要在牌面上再声明一次。
 
   // 左上：类别标签（能力）+ 一个字的图标
   const ly = y + 38 * s;

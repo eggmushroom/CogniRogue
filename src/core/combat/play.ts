@@ -54,10 +54,12 @@ export function startBattle(nd: MapNode) {
   // 行动力上限也要清回去：沙漏是"本场"的 +1，不清第二场就会凭空多 1 点
   G.apMax = BAL.baseAp;
 
-  log(`── ${e.name} 出现了 · ${MODES[G.mode].name}模式 ──`, 'turn');
+  // 模式已经在顶栏标了一次，这一行不再复读。"卡是锁着的"只在第一次战斗里说：
+  // 那是教学，不是战报 —— 打到第八层还在播同一句，就是把日志的位置浪费掉了。
+  log(`── ${e.name} 出现了 ──`, 'turn');
   const pre = unlockStats().n;
   if (pre) log(`${pre} 张精炼过的卡开局即可使用`, 'hi');
-  else log('所有卡都是锁着的 —— 答对才能解锁', 'turn');
+  else if ((G.node?.r ?? 0) === 0) log('所有卡都是锁着的 —— 答对才能解锁', 'turn');
   // 开局格挡在 startTurn 里给（那里才知道是不是第一回合）—— 写在这里会被 startTurn 清零
   startTurn();
 }

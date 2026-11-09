@@ -38,7 +38,7 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   text('一边打牌，一边把该复习的东西复习掉', cx, 336, {
     size: 21, align: 'center', color: C.ink2, weight: 500,
   });
-  text('每张牌有自己的名字和效果 · 题不印在卡面上 · 点开才出题', cx, 372, {
+  text('题不印在卡面上 · 点开才出题', cx, 372, {
     size: 15, align: 'center', color: C.dim,
   });
 
@@ -53,11 +53,12 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   by += 70;
   action(bx, by, bw, 56, '载入自己的题库', openPack);
 
-  // 卡池是内置的、题库是可换的，两行分开写才不会让人以为导入会换牌
+  // 卡池是内置的、题库是可换的，两行分开写才不会让人以为导入会换牌。
+  // "进度自动存在本地"撤了：这句话是承诺不是数据，帮助页里讲得比这里清楚。
   const py = 760;
   text(BANK.name, cx, py, { size: 16, align: 'center', color: C.gold, weight: 700 });
   text(
-    `内置 ${PACK.cards.length} 张卡 · ${topics().length} 个主题 · 题库 ${bankQuestionCount()} 道题　|　进度自动存在本地`,
+    `内置 ${PACK.cards.length} 张卡 · ${topics().length} 个主题 · ${bankQuestionCount()} 道题`,
     cx, py + 26, { size: 13, align: 'center', color: C.dim },
   );
 
@@ -67,6 +68,7 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
     });
   }
 
-  text('v0.4 · TypeScript + Canvas', 40, VH - 28, { size: 12, color: C.faint });
-  text('MIT License', VW - 40, VH - 28, { size: 12, color: C.faint, align: 'right' });
+  // 版本和许可合成右下角一行。左下原来还有一行"v0.4 · TypeScript + Canvas"——
+  // 技术栈对玩家没有意义，对读源码的人 README 里也有。
+  text('v0.4 · MIT License', VW - 40, VH - 28, { size: 12, color: C.faint, align: 'right' });
 }

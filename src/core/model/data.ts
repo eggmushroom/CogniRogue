@@ -150,7 +150,6 @@ export const POWER_BY_ID = Object.fromEntries(POWERS.map((p) => [p.id, p])) as R
 export const MODES: Record<RunMode, ModeDef> = {
   learn: {
     key: 'learn', name: '学习', tag: '还在学，允许错', color: '#4fd6cf',
-    desc: '第一次接触这些题：答错只作废这一手，牌还会回来。',
     missBlock: 1, stabDrop: 0.6, stabGain: 1,
     missDest: 'draw', forget: false,
     cardLabel: '学习 · 答错会回来',
@@ -158,7 +157,6 @@ export const MODES: Record<RunMode, ModeDef> = {
   },
   review: {
     key: 'review', name: '复习', tag: '学过，要求稳', color: '#e8b64c',
-    desc: '学过一遍：答错要等洗牌才回来。',
     missBlock: 0.5, stabDrop: 0.35, stabGain: 1.15,
     missDest: 'discard', forget: false,
     cardLabel: '复习 · 答错等洗牌',
@@ -166,7 +164,6 @@ export const MODES: Record<RunMode, ModeDef> = {
   },
   test: {
     key: 'test', name: '测试', tag: '检验，错不起', color: '#d9534f',
-    desc: '检验掌握程度：答错这个卡种本场作废。',
     missBlock: 0, stabDrop: 0.15, stabGain: 1.35,
     missDest: 'discard', forget: true,
     cardLabel: '测试 · 答错本场作废',

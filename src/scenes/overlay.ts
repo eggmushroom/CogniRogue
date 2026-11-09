@@ -385,7 +385,7 @@ function drawReward() {
   box(x, y, w, h, withAlpha(C.gold, 0.4));
 
   heading('战斗结束', x + 44, y + 66,
-    isElite ? '精英倒下了。先挑一张卡，它还会留下一样东西。' : '从这三张里挑一张放进牌组，或者一张都不要。');
+    isElite ? '精英倒下了。挑一张卡，它还会留下一样东西。' : '挑一张放进牌组。');
 
   const cw = 280;
   const ch = 356;
@@ -399,9 +399,14 @@ function drawReward() {
     const hv = hover(px, cy, cw, ch);
     const lift = hv ? -10 : 0;
     drawCard(px, cy + lift, cw, ch, c, c.atk, c.blk, { glow: hv });
+    // "还没答过"不写：三张新卡都是同一句，写三遍等于给屏幕加噪声。
+    // 只有你真学过这张（有记录）时才把掌握度摆出来，那是"值不值得占一个位置"的依据。
     const m = memOf(c.id);
-    const mast = m.reps ? `掌握 ${Math.round(memRatio(c.id) * 100)}%` : '还没答过';
-    text(mast, px + cw / 2, cy + ch + 22, { size: 13, align: 'center', color: hv ? C.gold : C.dim });
+    if (m.reps) {
+      text(`掌握 ${Math.round(memRatio(c.id) * 100)}%`, px + cw / 2, cy + ch + 22, {
+        size: 13, align: 'center', color: hv ? C.gold : C.dim,
+      });
+    }
     onClick(px, cy, cw, ch, () => takeCard(i), 'rewardcard');
   });
 
@@ -652,7 +657,7 @@ function drawGallery(title: string, list: CardInst[]) {
 function drawMode() {
   dim(0.84);
   const w = 1100;
-  const h = 568;
+  const h = 464;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
   box(x, y, w, h, withAlpha(C.gold, 0.42));
@@ -661,7 +666,7 @@ function drawMode() {
 
   const gap = 24;
   const cw = (w - 96 - gap * 2) / 3;
-  const ch = 336;
+  const ch = 264;
   const cy = y + 132;
   MODE_KEYS.forEach((k, i) => {
     const m = MODES[k];
@@ -682,9 +687,9 @@ function drawMode() {
     text(m.name, cx + 24, cy + 52, { size: 30, weight: 800, family: FONT_TITLE, color: m.color });
     text(m.tag, cx + 24, cy + 80, { size: 13, color: C.ink2, weight: 600 });
 
-    g.font = font(13, 400, FONT_UI);
-    const dl = wrapText(m.desc, cw - 48).slice(0, 2);
-    dl.forEach((ln, j) => text(ln, cx + 24, cy + 116 + j * 20, { size: 13, color: C.dim }));
+    // 这里原来还有一段 desc，但下面三条要点就是它逐句展开的版本
+    // （"答错只作废这一手，牌还会回来" ≈ "牌回牌堆，下回合一定再回来"）。
+    // 一段总述加三条重复的细节，读起来像同一句话说两遍 —— 去掉总述。
 
     const guard = m.missBlock === 1 ? '答错补全额卡面格挡'
       : m.missBlock === 0.5 ? '答错补半额卡面格挡' : '答错没有格挡补偿';
@@ -696,7 +701,7 @@ function drawMode() {
       `稳固度：答错 ×${m.stabDrop} · 答对 ×${m.stabGain}`,
     ];
     rows.forEach((ln, j) => {
-      const ry = cy + 184 + j * 34;
+      const ry = cy + 128 + j * 34;
       g.beginPath();
       g.arc(cx + 29, ry - 4, 2.4, 0, Math.PI * 2);
       g.fillStyle = m.color;
@@ -740,7 +745,7 @@ function drawHelp() {
       '能力：七种增益牌 —— 本场持续改规则（沙漏多 1 点行动力、索引卡多抽一张……）。',
     ]],
     ['牌面只讲机械，不讲知识', [
-      '卡面上只有类别、牌名、效果、数值、消耗和解锁状态。颜色按四类走（攻击橙 / 防御蓝 / 技能紫 / 能力金）。',
+      '卡面上只有类别、牌名、效果和数值。每张牌都是 1 点行动力，这个价不用逐张印；解锁状态平时不标，只有在免答 / 作废这类"这张牌跟别的牌不一样"的时候才出现。颜色按四类走（攻击橙 / 防御蓝 / 技能紫 / 能力金）。',
       '没有主题名、没有知识点名、没有记忆度、更没有题干 —— 同一个主题的两张牌在牌面上毫无关联。',
       '所以「折半之刃」背后是哪道题，只能靠点开它知道；答完之后，反馈面板才会告诉你是哪个主题。',
     ]],

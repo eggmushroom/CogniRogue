@@ -20,7 +20,6 @@ export interface ModeDef {
   name: string;
   tag: string;
   color: string;
-  desc: string;
   /** 答错时按卡面格挡补偿的比例：1 = 全额，0.5 = 半额，0 = 不补 */
   missBlock: number;
   /** 答错时稳固度乘数 */
