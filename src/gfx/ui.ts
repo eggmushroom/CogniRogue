@@ -348,35 +348,48 @@ export function drawCard(
   const pad = w * 0.09;
   const s = w / 220;
 
+  // 底部再浸一层同色（比顶部弱得多）：卡面上下各有一层颜色，中间夹着的那段最暗，
+  // 文字区因此被"框"出来、对比反而更高；下半部也不再是一块纯黑 —— 没有这层底，
+  // 水印是漂在黑里的，像贴上去的一张贴纸。
+  g.save();
+  roundRect(x, y, w, h, r);
+  g.clip();
+  const lowH = h * 0.44;
+  const low = g.createLinearGradient(0, y + h - lowH, 0, y + h);
+  low.addColorStop(0, withAlpha(tc, 0));
+  low.addColorStop(1, withAlpha(tc, kind === 'junk' ? 0.03 : 0.08));
+  g.fillStyle = low;
+  g.fillRect(x, y + h - lowH, w, lowH);
+  g.restore();
+
   // ── 费用球：左上角 ─────────────────────────────────────────
   // 以前 83 张牌全是 1 点，这个角落空着是对的（印 83 遍同一个数不是信息）。
-  // 现在 0/1/2/3/X 并存，价格成了每张牌最该先读到的一个数，位置沿用杀戮尖塔的
-  // 左上角 —— 右上是锁章，左右各占一角，互不打架。
-  // 手牌排得再密，左边的牌也永远盖在这一张下面，所以费用不会被邻牌吃掉。
+  // 现在 0/1/2/3/X 并存，价格成了每张牌最该先读到的一个数。位置沿用杀戮尖塔的左上角，
+  // 但类别徽章已经挪到右上，所以这一角现在是它独占的 —— 上一版两者并排贴着摆，
+  // 手牌一缩小就糊成一团色块。
   if (kind !== 'junk') {
-    drawCostOrb(x + pad + 5 * s, y + 15 * s, 13 * s, costGlyph(card), {
+    drawCostOrb(x + pad + 13 * s, y + 20 * s, 14 * s, costGlyph(card), {
       x: isXCost(card), afford: opts.afford !== false,
     });
   }
 
-  // ── 正文：牌名 + 类别徽章 + 效果数字 ──────────────────────
-  // 卡面只有机械信息：叫什么、什么类别、打出去发生什么。
-  // 题干、主题、知识点、记忆度一概不出现 —— 那四样都是"知识"，不该在牌面上。
-  const lh = 25 * s;
-  const eh = 21 * s;
   const xc = isXCost(card);
+  const lh = 26 * s;
+  const eh = 24 * s;
 
-  // 类别徽章：知识卡写「类别 · 效果」（攻击·洞察 / 防御·巩固 / 技能·专注），
+  // ── 类别徽章：右上角 ─────────────────────────────────────
+  // 知识卡写「类别 · 效果」（攻击·洞察 / 防御·巩固 / 技能·专注），
   // 基础牌只写类别（攻击 / 防御）—— 它没有效果原型，只负责把数字换成伤害或格挡。
-  // 起点让开费用球（+20s），否则两者会在左上角叠成一团。
+  // 左上归费用、右上归类别，两个角各说一件事，中间那块空白正好留给牌名往上顶。
   const badgeName = kind === 'basic' ? typeMeta.name : `${typeMeta.name}·${eff.name}`;
   const badgeColor = kind === 'basic' ? typeMeta.color : eff.color;
-  const badgeX = x + pad + 20 * s;
   if (kind !== 'junk') {
     g.font = font(Math.round(11 * s), 700, FONT_UI);
     const lw = g.measureText(badgeName).width + 24 * s;
-    const ly = y + 36 * s;
-    roundRect(badgeX, ly, lw, 18 * s, 9 * s);
+    const bh = 18 * s;
+    const bx = x + w - pad - lw;
+    const by = y + 21 * s;
+    roundRect(bx, by, lw, bh, bh / 2);
     g.fillStyle = withAlpha(badgeColor, 0.2);
     g.fill();
     g.strokeStyle = withAlpha(badgeColor, 0.72);
@@ -384,56 +397,120 @@ export function drawCard(
     g.stroke();
     // 前面的小圆点比整块颜色更打眼，扫手牌时先看到点再看字
     g.beginPath();
-    g.arc(badgeX + 8 * s, ly + 9 * s, 2.6 * s, 0, Math.PI * 2);
+    g.arc(bx + 8 * s, by + bh / 2, 2.6 * s, 0, Math.PI * 2);
     g.fillStyle = badgeColor;
     g.fill();
-    text(badgeName, badgeX + 14 * s, ly + 9.5 * s, {
+    text(badgeName, bx + 14 * s, by + bh / 2 + 0.5, {
       size: Math.round(11 * s), align: 'left', color: badgeColor, weight: 700,
     });
   }
 
-  // 牌名正文：最多两行，超出截断（牌名都控制在七个字以内，两行只是兜底）。
-  // 版式改成"从上往下读"：类别徽章 → 牌名 → 效果，下半部留给纹章水印。
-  // 以前正文是垂直居中排的，撤掉主题行和记忆条之后居中会留出一大块空，读起来散。
+  // ── 牌名：卡面上唯一的大字 ──────────────────────────────
+  // 读序是「顶部信息 → 牌名 → 效果 → 下半的纹章」。
+  // 牌名和效果行之间压一条同色渐隐的短线：不加这条线，两段白字在暗底上是同一团，
+  // 眼睛得逐行去数才知道读到哪了（尤其牌名两个字、效果两行的牌）。
+  // 字体要先设、再调 wrapText —— 换行是按当前字体的宽度量的，
+  // 顺序反了就会用上一次遗留的字号去断行。
   g.font = font(Math.round(21 * s), 700, FONT_UI);
   const nameLines = kind === 'junk' ? ['杂念'] : wrapText(card.name, w - pad * 2).slice(0, 2);
-  const by0 = y + 84 * s;
+  const by0 = y + 76 * s;
 
-  // 锁着 = 现在用不了。灰字是这件事的通行语言，比在牌面下沿补一行解释更直接，
-  // 也不用为"一个字的状态"占掉一整条。已解锁的牌才是全亮的。
+  // ── 水印：整张卡的底纹 ─────────────────────────────────────
+  // 两条规矩：
+  //
+  // 1. 它必须画在**文字之前**。上一版画在最后，等于把一层影子盖在效果行上 ——
+  //    alpha 再低也是在压字，于是只好压到 .085，下半部看起来就像"没画完"。
+  //    放到最底层就没这个两难，可以放心画到 .12。
+  // 2. 位置和大小按"效果写完还剩多少地方"算，不是写死一个高度。写死的话：
+  //    一行效果的牌（猛击类）下半空出一大片，三行的牌（X 费）又会和字挤在一起。
+  //    现在按剩余空间取中间、按可用高度定尺寸，一行和四行的牌都填得满。
+  const rows = (per > 0 ? 1 : 0)
+    + (out.blk > 0 || out.pierce || out.healRatio > 0 || out.draw > 0 ? 1 : 0)
+    + (xc ? 0.75 : 0);
+  const textBot = by0 + nameLines.length * lh + 9 * s + rows * eh;
+  const bottomY = y + h - 15 * s;
+  const room = Math.max(0, bottomY - textBot);
+  const artS = Math.min(h * 0.42, Math.max(h * 0.22, room * 1.05));
+  drawArtIcon(
+    kind === 'junk' ? 'junk' : eff.key,
+    x + w * 0.5, textBot + room * 0.5, artS,
+    kind === 'junk' ? C.faint : tc,
+    { alpha: kind === 'junk' ? 0.2 : 0.1 },
+  );
+
+  // 这一回合答错过了 = 现在用不了。灰字是这件事的通行语言，
+  // 比在牌面下沿补一行解释更直接，也不用为"一个字的状态"占掉一整条。
   const bodyCol = kind === 'junk' ? C.faint : sealed ? C.dim : C.ink2;
 
   g.fillStyle = kind === 'junk' ? C.dim : sealed ? C.ink2 : C.ink;
   g.textAlign = 'left';
   nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
 
-  // 效果：数字单独放大上色，和卡牌游戏里"造成 6 点伤害"的读法一致
-  const ey = by0 + nameLines.length * lh;
+  // 精炼 = 这张牌打过一遍、证明过了。标记从右上角的「精炼」两个字改成名字后面的
+  // 一个「+」（杀戮尖塔的写法）：右上角要完整让给类别徽章，而「名字＋」本来就是
+  // 一句话读下来的，不必在另一个角上再立两个字。
+  if (opts.up) {
+    const nw = g.measureText(nameLines[0] ?? '').width;
+    text('+', x + pad + nw + 1.5 * s, by0, {
+      size: Math.round(21 * s), weight: 800, color: C.gold,
+    });
+  }
+
+  // 名字下的短线：长度跟着名字走，向右渐隐 —— 它是分隔符，不是装饰框
+  if (kind !== 'junk') {
+    const nw = Math.max(40 * s, Math.min(w - pad * 2, g.measureText(nameLines[0] ?? '').width));
+    const uy = by0 + (nameLines.length - 1) * lh + 9.5 * s;
+    const ug = g.createLinearGradient(x + pad, 0, x + pad + nw, 0);
+    // 用白而不是类别色。第一版是 tc（0.6 alpha）：在同类色的卡面上根本读不出来 ——
+    // 技能牌的紫线压在紫底上等于没画。白线在八种卡面上都稳，而且它只做分隔，
+    // 不带语义，本来也不该抢类别的颜色。
+    ug.addColorStop(0, 'rgba(255,255,255,.32)');
+    ug.addColorStop(0.6, 'rgba(255,255,255,.1)');
+    ug.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = ug;
+    g.fillRect(x + pad, uy, nw, Math.max(1.6, 2 * s));
+  }
+
+  // ── 效果：动词小、数字大、单位跟着小 ──────────────────────
+  // 和卡牌游戏里"造成 6 点伤害"的读法一致：一眼扫过去先接住数字，再接住单位。
+  const ey = by0 + nameLines.length * lh + 9 * s;
   const effLine = (pre: string, num: number, suf: string, yy: number, col: string) => {
+    const ns = String(num);
+    const small = Math.round(14 * s);
+    const big = Math.round(18 * s);
     g.textAlign = 'left';
-    g.font = font(Math.round(14 * s), 400, FONT_UI);
+    g.font = font(small, 400, FONT_UI);
     g.fillStyle = bodyCol;
-    g.fillText(pre, x + pad, yy);
-    const w1 = g.measureText(pre).width;
+    if (pre) g.fillText(pre, x + pad, yy);
+    const w1 = pre ? g.measureText(pre).width : 0;
+    let w2 = 0;
     if (num > 0) {
+      // 数字必须用它自己的字号量宽度。上一版按正文的 14px 量、按 17px 画，
+      // 算出来的位置永远偏左，数字和后缀会贴在一起（"造成 7 点伤害"里那个 7 就挤）。
+      g.font = font(big, 800, FONT_UI);
+      w2 = g.measureText(ns).width;
       g.save();
-      g.font = font(Math.round(17 * s), 800, FONT_UI);
-      // 先描一圈暗边再填色：牌面底色是类别色浸下来的，同色系数字只靠放大
-      // 是立不住的（攻击牌的橙色 6 叠在橙色卡面上最明显），一道暗边把数字
-      // 从背景里"抠"出来，六个效果共用这一条，不用逐个调色。
+      // 先描一圈暗边：牌面底色是类别色浸下来的，同色系数字只靠放大立不住
+      // （攻击牌的橙色 6 叠在橙色卡面上最明显），一道暗边把数字从背景里"抠"出来，
+      // 六个效果共用这一条，不用逐个调色。
       g.lineJoin = 'round';
       g.lineWidth = 3 * s;
-      g.strokeStyle = 'rgba(6,8,13,.8)';
-      g.strokeText(String(num), x + pad + w1, yy);
-      // 锁着的牌数字跟着压暗：亮红亮蓝会让玩家以为现在就能打出去
+      g.strokeStyle = 'rgba(6,8,13,.85)';
+      g.strokeText(ns, x + pad + w1, yy);
+      // 一点同色辉光：暗底上让数字先跳出来。可读性由描边负责，所以光很弱 ——
+      // 亮过头，整行字会糊成一片。
+      g.shadowColor = withAlpha(col, 0.5);
+      g.shadowBlur = 9 * s;
+      // 这一回合答错过的牌，数字跟着压暗：亮红亮蓝会让玩家以为现在就能打出去
       g.fillStyle = kind === 'junk' ? C.faint : sealed ? withAlpha(col, 0.55) : col;
-      g.fillText(String(num), x + pad + w1, yy);
+      g.fillText(ns, x + pad + w1, yy);
       g.restore();
     }
-    const w2 = num > 0 ? g.measureText(String(num)).width : 0;
-    g.font = font(Math.round(14 * s), 400, FONT_UI);
-    g.fillStyle = bodyCol;
-    g.fillText(suf, x + pad + w1 + w2, yy);
+    if (suf) {
+      g.font = font(small, 400, FONT_UI);
+      g.fillStyle = bodyCol;
+      g.fillText(suf, x + pad + w1 + w2, yy);
+    }
   };
   if (kind === 'junk') {
     effLine('无法打出', 0, '', ey, C.faint);
@@ -461,32 +538,25 @@ export function drawCard(
     } else if (out.draw > 0) { effLine('抽 ', out.draw, ' 张牌', ly, eff.color); ly += eh; }
     // X 费牌必须自己说清"X 是多少" —— 牌面上只有一个 X 字形，不写这一句，
     // 玩家会以为它是"某个固定数字"而不是"这回合剩下的行动力"。
-    if (xc) effLine('耗尽全部行动力', 0, '', ly, C.dim);
+    // 它是注解不是第二项效果，所以字号降一档、染成金色，跟上面的数字行读开。
+    if (xc) {
+      g.textAlign = 'left';
+      g.font = font(Math.round(12.5 * s), 700, FONT_UI);
+      g.fillStyle = withAlpha(C.gold, 0.8);
+      g.fillText('耗尽全部行动力', x + pad, ly + 1 * s);
+    }
   }
 
-  // 效果纹章：按效果原型画一枚小徽记压在右下。六种效果六种形，
-  // 扫手牌时不用读字就能把"串联"和"洞察"分开；杂念是一团乱线。
-  drawArtIcon(
-    kind === 'junk' ? 'junk' : eff.key,
-    x + w - pad - 15 * s, ey + eh * 0.55,
-    (kind === 'junk' ? 25 : 30) * s,
-    kind === 'junk' ? C.faint : eff.color,
-    { alpha: kind === 'junk' ? 0.45 : 0.85 },
-  );
-
-  // 水印：用效果纹章放大压在下半部，单纯填版面 —— 它是机械信息，不是知识。
-  // 以前这里是主题首字，等于把"这张牌属于哪一块知识"印在牌面上，撤掉了。
-  // 底部那行状态带撤掉之后下半部更空了，纹章相应放大一圈，让留白是留白、不是没画完。
+  // 卡面收底：一条几乎看不见的横线。没有它，效果行下面就是一片黑，
+  // 牌的"下沿"是理出来的、不是画出来的 —— 有这条线，下半部才叫留白。
   if (kind !== 'junk') {
-    drawArtIcon(eff.key, x + w * 0.58, y + h * 0.73, h * 0.42, tc, { alpha: 0.085 });
-  }
-
-  // 精炼标记
-  if (opts.up) {
-    g.font = font(Math.round(14 * s), 800, FONT_UI);
-    g.fillStyle = C.gold;
-    g.textAlign = 'right';
-    g.fillText('精炼', x + w - pad - 26 * s, y + 24 * s);
+    const fy = y + h - 15 * s;
+    const fg = g.createLinearGradient(x + pad, 0, x + w - pad, 0);
+    fg.addColorStop(0, withAlpha(tc, 0));
+    fg.addColorStop(0.5, withAlpha(tc, 0.2));
+    fg.addColorStop(1, withAlpha(tc, 0));
+    g.fillStyle = fg;
+    g.fillRect(x + pad, fy, w - pad * 2, Math.max(1, 0.8 * s));
   }
 
   if (opts.note) {
@@ -553,43 +623,71 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
 
   // 费用球和知识卡同一个位置、同一套读法 —— 手牌里两种牌混着，
   // "要先答题的"和"不用答题的"可以长得不一样，但"要花几点"必须读得一样。
-  drawCostOrb(x + pad + 5 * s, y + 15 * s, 13 * s, String(p.cost).toUpperCase(), {
+  drawCostOrb(x + pad + 13 * s, y + 20 * s, 14 * s, String(p.cost).toUpperCase(), {
     x: p.cost === 'x', afford: opts.afford !== false,
   });
 
-  // 左上：类别标签（能力）+ 一个字的图标
-  const ly = y + 38 * s;
+  // 右上：类别标签（能力 + 一个字的图标）。位置和知识卡的「类别·效果」对齐 ——
+  // 于是"左上读价、右上读类别"这条视线在任何一张牌上都成立，不用分两种读法。
   g.font = font(Math.round(11 * s), 700, FONT_UI);
   const lw = g.measureText('能力').width + 38 * s;
-  const bx = x + pad + 20 * s;
-  roundRect(bx, ly - 9 * s, lw, 18 * s, 9 * s);
+  const bh = 18 * s;
+  const bx = x + w - pad - lw;
+  const by = y + 21 * s;
+  roundRect(bx, by, lw, bh, bh / 2);
   g.fillStyle = withAlpha(tc, 0.2);
   g.fill();
   g.strokeStyle = withAlpha(tc, 0.72);
   g.lineWidth = 1.2;
   g.stroke();
-  text(p.icon, bx + 9 * s, ly + 0.5, {
+  text(p.icon, bx + 9 * s, by + bh / 2 + 0.5, {
     size: Math.round(11 * s), weight: 800, align: 'center', color: tc,
   });
-  text('能力', bx + 18 * s, ly + 0.5, {
+  text('能力', bx + 18 * s, by + bh / 2 + 0.5, {
     size: Math.round(11 * s), align: 'left', color: tc, weight: 700,
   });
 
-  // 卡名
+  // 卡名。字体先设、再调 wrapText —— 换行是按当前字体的宽度量的，
+  // 顺序反了就会用上一次遗留的字号去断行（名短的牌看不出来，长的会断在奇怪的地方）。
+  g.font = font(Math.round(22 * s), 700, FONT_UI);
   const nameLines = wrapText(p.name, w - pad * 2).slice(0, 2);
   const lh = 27 * s;
+  const by0 = y + 78 * s;
   g.fillStyle = C.ink;
   g.textAlign = 'left';
-  g.font = font(Math.round(22 * s), 700, FONT_UI);
-  nameLines.forEach((ln, i) => g.fillText(ln, x + pad, y + 80 * s + i * lh));
+  nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
+
+  // 精炼标记。和知识卡一样用名字后的「+」，不用另立一行字
+  if (opts.up) {
+    const nw = g.measureText(nameLines[0] ?? '').width;
+    text('+', x + pad + nw + 1.5 * s, by0, {
+      size: Math.round(22 * s), weight: 800, color: C.gold,
+    });
+  }
+
+  // 名字下的短线：和知识卡同一处。两种牌混在手牌里，"名字"这一层要对得齐，
+  // 否则摊开一排会看出两种版式在打架。
+  {
+    const nw = Math.max(40 * s, Math.min(w - pad * 2, g.measureText(nameLines[0] ?? '').width));
+    const uy = by0 + (nameLines.length - 1) * lh + 9.5 * s;
+    const ug = g.createLinearGradient(x + pad, 0, x + pad + nw, 0);
+    // 用白而不是类别色。第一版是 tc（0.6 alpha）：在同类色的卡面上根本读不出来 ——
+    // 技能牌的紫线压在紫底上等于没画。白线在八种卡面上都稳，而且它只做分隔，
+    // 不带语义，本来也不该抢类别的颜色。
+    ug.addColorStop(0, 'rgba(255,255,255,.32)');
+    ug.addColorStop(0.6, 'rgba(255,255,255,.1)');
+    ug.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = ug;
+    g.fillRect(x + pad, uy, nw, Math.max(1.6, 2 * s));
+  }
 
   // 效果：这段字是唯一要读的内容，所以给它最大的字号和行距。
-  // 在「卡名下沿」和「底部分隔线」之间垂直居中 —— 否则短句会贴着卡名，下面留一大块空白。
-  const bodyTop = y + 80 * s + nameLines.length * lh + 10 * s;
+  // 在「名字下沿」和「底部分隔线」之间垂直居中 —— 否则短句会贴着卡名，下面留一大块空白。
+  const bodyTop = by0 + nameLines.length * lh + 12 * s;
   const bodyBot = y + h - 64 * s;
   g.font = font(Math.round(14 * s), 400, FONT_UI);
   g.fillStyle = C.ink2;
-  const lineH = 21 * s;
+  const lineH = 22 * s;
   const lines = wrapText(p.card, w - pad * 2);
   const off = Math.max(0, (bodyBot - bodyTop - lines.length * lineH) / 2);
   lines.forEach((ln, i) => {
