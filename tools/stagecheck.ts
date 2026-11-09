@@ -11,7 +11,7 @@ import { BAL, FOES, STAGES, STAGE_ROWS } from '../src/core/model';
 import type { MapNode } from '../src/core/model';
 import {
   G, answer, askCard, canAsk, canPay, defOf, dismissFeedback, endTurn, startBattle, startTurn,
-  loadQuestionBank, startRun, takePower, mergePacks, genStage, floorOf,
+  loadQuestionBank, PACK, startRun, takePower, mergePacks, genStage, floorOf,
 } from '../src/core';
 
 (globalThis as unknown as { setTimeout: (fn: () => void) => void }).setTimeout = (fn) => { fn(); };
@@ -159,6 +159,32 @@ function battle(stage: number, key: string) {
   const d0 = e.dmg;
   endTurn();
   ok(e.dmg > d0, `缝线傀儡：攻击 ${d0} → ${e.dmg}`);
+}
+
+// ── 6. 答错的格挡补偿只看这张牌自己 ────────────────────────
+// 每张卡都挂着一个 blk 档位（同价位牌的格挡底数），但「洞察 / 内化 / 串联 / 专注」
+// 的效果里根本没有格挡 —— 卡面上也看不见格挡那一行。补偿要是照着那个纸面数值算，
+// 这几类牌答错就会凭空长出一层甲，"答错"和"挡一下"被解绑。
+// （「猛击」是例外：它的效果本来就带 0.7 倍格挡，卡面写着"获得 N 点格挡"，该补。）
+function missGain(eff: string) {
+  battle(1, 'examiner');
+  const card = PACK.cards.find((c) => c.kind === 'knowledge' && c.eff === eff)!;
+  G.hand[0] = { id: card.id, up: 0 };
+  const before = G.block;
+  askCard(0);
+  if (G.panel.k !== 'question') throw new Error(`「${eff}」那张牌没有弹题`);
+  // 故意答错：这次视图里正确答案的下一个就是错的
+  answer((G.panel.view.answer + 1) % G.panel.view.options.length);
+  const gain = G.block - before;
+  // answer() 会把面板换成反馈页，但类型上 G.panel 还被上面那道守卫窄化成 question
+  if ((G.panel as { k: string }).k === 'feedback') dismissFeedback();
+  return gain;
+}
+{
+  const noBlk = missGain('pierce');
+  ok(noBlk === 0, `卡面没有格挡的牌答错不给格挡（实得 ${noBlk} 点）`);
+  const hasBlk = missGain('guard');
+  ok(hasBlk > 0, `本身有格挡的牌答错仍然补格挡（${hasBlk} 点）`);
 }
 
 console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 结构检查通过');

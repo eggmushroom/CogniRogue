@@ -20,7 +20,10 @@ export interface ModeDef {
   name: string;
   tag: string;
   color: string;
-  /** 答错时按卡面格挡补偿的比例：1 = 全额，0.5 = 半额，0 = 不补 */
+  /**
+   * 答错时补偿多少格挡，按**这张牌自己会产生的格挡**算（不是它身上那个 blk 档位）：
+   * 1 = 全额，0.5 = 半额，0 = 不补。卡面没有格挡那一行的牌，任何模式都不补。
+   */
   missBlock: number;
   /** 答错时稳固度乘数 */
   stabDrop: number;

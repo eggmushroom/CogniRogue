@@ -345,21 +345,21 @@ export const MODES: Record<RunMode, ModeDef> = {
     missBlock: 0.6, stabDrop: 0.6, stabGain: 1,
     missDest: 'draw',
     cardLabel: '学习 · 答错会回来',
-    hint: '答对退回 1 点行动力；答错这一手作废，牌回牌堆、下回合一定再回来，还按卡面格挡全额挡一下。',
+    hint: '答对退回 1 点行动力；答错这一手作废，牌回牌堆、下回合一定再回来，本身有格挡的牌还按六成挡一下。',
   },
   review: {
     key: 'review', name: '复习', tag: '学过，要求稳', color: '#e8b64c',
     missBlock: 0.5, stabDrop: 0.35, stabGain: 1.15,
     missDest: 'discard',
     cardLabel: '复习 · 答错等洗牌',
-    hint: '答对退回 1 点行动力；答错这一手作废，牌进弃牌堆、要等洗牌才回来，还按格挡的一半挡一下。',
+    hint: '答对退回 1 点行动力；答错这一手作废，牌进弃牌堆、要等洗牌才回来，本身有格挡的牌还按一半挡一下。',
   },
   test: {
     key: 'test', name: '测试', tag: '检验，错不起', color: '#d9534f',
     missBlock: 0, stabDrop: 0.15, stabGain: 1.35,
     missDest: 'discard',
     cardLabel: '测试 · 答错没有补偿',
-    hint: '答对退回 1 点行动力；答错这一手作废，牌进弃牌堆，而且没有任何格挡补偿。',
+    hint: '答对退回 1 点行动力；答错这一手作废，牌进弃牌堆，而且一格挡都不补（有格挡的牌也一样）。',
   },
 };
 

@@ -220,6 +220,8 @@ export function answer(choice: number) {
 
   let dmg = 0;
   let blkGain = 0;
+  /** 这张牌自己会给出多少格挡（答错时用来区分"模式没给"和"这张牌本来就没有"） */
+  let ownBlk = 0;
   let absorbed = 0;
   let heal = 0;
   let drawn = 0;
@@ -280,11 +282,17 @@ export function answer(choice: number) {
     // 答错的价码由本局模式决定：学习/复习/测试三档，开局前玩家自己选。
     // 三条都不碰血量：扣血会让人不敢碰不会的知识，正好和目的相反。
     G.failedTurn[card.id] = true;
-    blkGain = Math.max(0, Math.round(st.blk * M.missBlock));
+    // 补偿只给"这张牌自己就会给格挡"的那些，而且读的是 `resolveEff` 算出来的格挡，
+    // 不是 `statOf` 那个纸面数值：**每张卡都挂着一个 blk 档位**（它是同价位牌的格挡
+    // 底数），可 strike / pierce / chain / focus 这些效果里根本没有格挡。
+    // 照着 statOf 补，一张纯攻杀牌答错就会凭空长出一层甲 —— 于是"答错"和"挡一下"
+    // 被解绑，垫子变成人人有份的白送，卡面上还看不出它是哪来的。
+    ownBlk = resolveEff(card.eff, st.atk, st.blk, 1, card.mods, repeat).blk;
+    blkGain = Math.max(0, Math.round(ownBlk * M.missBlock));
     if (blkGain) {
       G.block += blkGain;
       apNote = join(apNote, `答错也挡住了 ${blkGain} 点。`);
-    } else {
+    } else if (ownBlk > 0) {
       apNote = join(apNote, '测试模式：这次答错没有格挡补偿。');
     }
 
@@ -393,7 +401,8 @@ export function answer(choice: number) {
           (blkGain ? `，${blkGain} 格挡` : '') +
           (heal ? `，回 ${heal}` : '') +
           (drawn ? `，抽 ${drawn}` : '')
-        : `，效果作废${blkGain ? `，${blkGain} 格挡` : '，无格挡补偿'}${missNote}`),
+        : `，效果作废${blkGain ? `，${blkGain} 格挡`
+          : ownBlk > 0 ? '，这一手没补格挡' : '，这张牌本身没有格挡'}${missNote}`),
     right ? 'hi' : 'bad',
   );
 
