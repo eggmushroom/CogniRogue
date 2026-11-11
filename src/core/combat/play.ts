@@ -1,18 +1,22 @@
 import { BAL, FOES, MODES } from '../model/data';
 import { EFFS, resolveEff } from '../model/effects';
-import type { CardInst, MapNode } from '../model/types';
+import type { CardId, MapNode } from '../model/types';
 import { G, checkPending, log, topTopic } from '../infra/state';
 import { emit } from '../infra/events';
 import { clamp, pick, shuffle } from '../infra/util';
-import { poolFor } from '../library/bank';
+import { stagePool } from '../library/stage';
+import { floorOf } from '../map/gen';
+import { recordAnswer } from '../library/stagemem';
 import { memOf, saveMem } from '../library/memory';
 import { shuffleOptions } from '../library/question';
 import { defOf, hasPower, powerOf, statOf } from '../cards/registry';
 import { canPay, costNow, isXCost, refundOf } from '../cards/cost';
+import { cardGrade, gradeNeed, needsAsk } from '../cards/grade';
 import { cardKind } from '../cards/kinds';
-import { settlePending } from '../journey/run';
 import { drawCards, startTurn } from './deck';
-import { makeFoe } from './foe';
+import { makeFoe, onPlayerMiss } from './foe';
+import { requestSettle } from './pending';
+import { drawBattleQuestions, takeQuestion } from './questions';
 
 /**
  * combat/play —— 一场战斗的开局，以及玩家出牌的全部路径。
@@ -34,7 +38,12 @@ export function startBattle(nd: MapNode) {
   // 按「这一幕 + 这个节点类型」取怪：一幕一套物种，换幕就换一整套。
   // 找不到时回退到全表（自定义题库 / 调试场景），不让一场战斗因为数据缺失开不起来。
   const pool = FOES.filter((f) => f.stage === G.stage && f.type === nd.type);
-  const e = makeFoe(pick(pool.length ? pool : FOES.filter((f) => f.type === nd.type)), nd.type, nd.r);
+  // 层号从**节点自己的坐标**算，不读 G 里的当前进度：测试和调试会直接把节点塞进来，
+  // 那时 G.pos 还停在上一个节点上，读它就会把怪的强度按错层算。
+  const e = makeFoe(
+    pick(pool.length ? pool : FOES.filter((f) => f.type === nd.type)),
+    floorOf(G.stage, nd.r),
+  );
 
   G.screen = 'battle';
   G.enemy = e;
@@ -42,24 +51,17 @@ export function startBattle(nd: MapNode) {
   G.pending = null;
   G.busy = false;
   G.turn = 1;
-  G.okThisTurn = 0;
-  G.topOkTopic = null;
-  G.cardsPlayed = 0;
-  G.binderUsed = false;
   G.draw = shuffle(G.deck);
   G.discard = [];
   G.hand = [];
 
-  // 战斗里只剩一种锁：这一回合答错过的卡种不能再答（每回合清空）。
-  // "本场解锁"和"本场作废"两档都删了 —— 一场只有 3.3 回合，前者来不及兑现，
-  // 后者等于没收工具。理由见 DESIGN.md 的「已经删掉的东西」。
-  G.failedTurn = {};
-  G.qSeen = {};
-  G.answerDrawsThisTurn = 0;
-  G.missDrawsThisTurn = 0;
+  // 本场要清的是免答计数和题池。答错不扣行动力、也不封牌：
+  // 代价落在"本场新题少一道"上，新题用完后进入复用（见 combat/questions.ts）。
+  G.charge = {};
+  drawBattleQuestions();
   // 蠹蛾这类怪不封牌，它只是让你少看见一张：本场每回合的抽牌数 -1。
   // 记在场上而不是临时减 —— 手牌上限、抽牌动画、日志都得读同一个数。
-  G.drawCut = e.mech === 'fog' ? (e.mechV ?? 1) : 0;
+  G.drawCut = e.mech === 'fog' ? (e.mechV ?? BAL.mech.fog) : 0;
   G.apDown = 0;
 
   // 增益牌每场都要重新打一遍。这一行就是"遗物 → 牌"的整个差别所在。
@@ -70,69 +72,129 @@ export function startBattle(nd: MapNode) {
   // 模式已经在顶栏标了一次，这一行不再复读。"卡是锁着的"只在第一次战斗里说：
   // 那是教学，不是战报 —— 打到第八层还在播同一句，就是把日志的位置浪费掉了。
   log(`── ${e.name} 出现了 ──`, 'turn');
-  if ((G.node?.r ?? 0) === 0) log('点一张知识卡 = 答一道题；答对才打得出去', 'turn');
+  if ((G.node?.r ?? 0) === 0) {
+    log(`这一场准备了 ${G.qLeft.length} 道新题；C 牌免答，B/A/S 各要答对 1/2/3 次。新题用完会复用问得最少的题`, 'turn');
+  }
   // 开局格挡在 startTurn 里给（那里才知道是不是第一回合）—— 写在这里会被 startTurn 清零
   startTurn();
 }
 
 /**
- * 从题池里挑一道，优先问本场还没问过的 —— 同一个池被从不同角度问过几次，
- * 和只蒙对一道题，含金量不一样。`key` 是 `G.qSeen` 的分桶键：
- * 主题池用自己的主题名，回退池用 `GLOBAL_QKEY`，两条路互不串号。
+ * 这张知识卡此刻的状态，给卡面和点击路由用（也是"能不能问"的唯一判断）：
  *
- * 题池来自外部的 md 题库，卡面里没有题；直到玩家点开牌，这里才第一次碰题目。
+ *   'free'   等级已攒满，这一场直接打，不出题
+ *   'ask'    还要答题
+ *   'empty'  要答题，但这一章一道题都没有（题库载入失败时的兜底）
+ *   'other'  不是知识卡
+ *
+ * **不读 `qLeft`**：本场新题用完不会锁牌，`takeQuestion` 会进入复用路径。
+ * 所以"还剩几道新题"（顶栏读数）和"这张牌能不能点"是两个问题。
  */
-function pickQi(key: string, n: number): number {
-  if (n <= 1) return 0;
-  const seen = G.qSeen[key] || [];
-  const fresh: number[] = [];
-  for (let i = 0; i < n; i++) if (seen.indexOf(i) < 0) fresh.push(i);
-  const pool = fresh.length ? fresh : Array.from({ length: n }, (_, i) => i);
-  return pool[Math.floor(Math.random() * pool.length)];
+export function cardAskState(id: CardId | null | undefined): 'free' | 'ask' | 'empty' | 'other' {
+  if (!id) return 'other';
+  const card = defOf(id);
+  if (cardKind(card) !== 'knowledge') return 'other';
+  if (!needsAsk(id, G.charge)) return 'free';
+  return stagePool().length ? 'ask' : 'empty';
 }
+
+/** 这张牌现在点下去会不会出题。费用是另一回事（`canPay`）。 */
+export const canAsk = (id: CardId | null | undefined): boolean => cardAskState(id) === 'ask';
 
 /**
- * 这张牌现在点下去会不会出题。
+ * 等级攒满之后直接打出去：和答对走同一条 `strikeWith`，只是不抽题、不判对错。
  *
- * 只有一条限制：这一回合这个卡种已经答错过。费用够不够是另一回事（`canPay`），
- * 两者都要过，点牌才算数 —— 所以战斗画面判定"能不能点"时两个都要问。
+ * 它**不扣行动力之外的东西**，也不进答题流水 —— 这一手没有"答对/答错"这回事。
+ * 反馈用日志，不弹反馈面板：没有题就没有解析可读，弹一个空面板只是打断节奏。
  */
-export function canAsk(ent: CardInst | null | undefined): boolean {
-  if (!ent) return false;
-  const card = defOf(ent);
-  // 与 askCard 用同一条取池规则：主题没题会回退到全部题目，别在这里把入口关掉
-  if (cardKind(card) !== 'knowledge' || !poolFor(card.topic).list.length) return false;
-  return !G.failedTurn[card.id];
+export function playFree(idx: number) {
+  if (G.busy || G.panel.k !== 'none') return;
+  const id = G.hand[idx];
+  if (!id) return;
+  const card = defOf(id);
+  if (cardKind(card) !== 'knowledge') return;
+  // 免答是"已经攒够了"才有的待遇。没攒够的牌不能从这条路绕过去 ——
+  // 模拟和界面都可能误调，规则要在这里守一次。
+  if (needsAsk(id, G.charge)) return;
+  if (!canPay(card)) return;
+
+  const xcost = isXCost(card);
+  const spent = xcost ? G.ap : costNow(card);
+  const repeat = xcost ? Math.max(1, spent) : 1;
+  const r = strikeWith(id, 1, repeat);
+  const back = thornsBack(r.out.hits);
+
+  G.ap -= spent;
+  G.ap = clamp(G.ap, 0, 10);
+  G.discard.push(id);
+  G.hand.splice(idx, 1);
+  checkPending();
+
+  const shape = r.out.hits.length > 1 ? `${r.out.hits.join('+')} 伤害` : `${r.dmg} 伤害`;
+  log(
+    `「${card.name}」${r.dmg ? shape : ''}${r.blk ? `${r.dmg ? '，' : ''}${r.blk} 格挡` : ''}` +
+      `（${cardGrade(card)} 级，这一场已免答${back ? `；反伤 ${back}` : ''}）`,
+    'hi',
+  );
+  if (r.dmg > 0) {
+    r.parts.forEach((p, i) => {
+      const fire = () => emit({ t: 'dmg', n: p.d, absorbed: p.a, eff: card.eff, seq: i });
+      if (i === 0) fire(); else setTimeout(fire, i * 150);
+    });
+  }
+  if (r.blk) setTimeout(() => emit({ t: 'blk', n: r.blk }), 60);
+  if (r.heal) setTimeout(() => emit({ t: 'heal', n: r.heal }), 60);
+
+  G.busy = true;
+  setTimeout(() => {
+    G.busy = false;
+    requestSettle();
+  }, 200);
 }
 
-/** 点一张知识卡 = 从题库里抽一道题。押注没了，所以点下去没有中间那一步。 */
+/** 点一张知识卡 = 从**本场预抽的题**里取一道。 */
 export function askCard(idx: number) {
   if (G.busy || G.panel.k !== 'none') return;
-  const ent = G.hand[idx];
-  if (!ent) return;
-  const card = defOf(ent);
+  const id = G.hand[idx];
+  if (!id) return;
+  const card = defOf(id);
   // 门前先看价：付不起的牌连题都不该弹出来 —— 让人答完一道题才发现打不出去，
   // 是最难受的一种白费力气。
   if (!canPay(card)) return;
-  // 题库不限制主题：卡面主题没匹配到题池时，poolFor 会回退到全部题目。
-  // 只要题库里还有一道题，任何知识卡都点得开。
-  const { key, list } = poolFor(card.topic);
-  if (cardKind(card) !== 'knowledge' || !list.length) return;
-  // 这回合这个卡种已经答错过就不能再答 —— 不拦的话，看完答案用同种副本重答，
-  // "每回合每种卡一次机会"这条规则就白设了
-  if (G.failedTurn[card.id]) return;
-  const qi = pickQi(key, list.length);
-  // 题号在"点开"这一下就记下，不等答完。否则玩家可以点开看一眼、Esc 关掉、再点开换一道，
-  // 等于免费挑题 —— 和押注时代"读完三档再挑最好答的那道"是同一个漏洞。
-  G.qSeen[key] = (G.qSeen[key] || []).concat([qi]);
-  const q = list[qi];
-  // 题目快照挂在 Panel 上：答题期间就算换了题库，这一手也不会跟着变。
+  if (cardKind(card) !== 'knowledge') return;
+  // 攒满等级：直接打，不抽题
+  if (!needsAsk(id, G.charge)) { playFree(idx); return; }
+
+  const q = takeQuestion();
+  if (!q) {
+    // 只有"整章一道题都没有"才会走到这里（空题库在载入时就被拒绝）；
+    // 不能静默吞掉一次点击，给玩家一个能查的失败原因。
+    log('这一章的题库是空的 —— 检查题库文件，或者先用基础牌撑过去', 'bad');
+    emit({ t: 'fizzle', eff: card.eff });
+    return;
+  }
+  // 题目快照挂在 Panel 上：答题期间就算换了题库/阶段，这一手也不会跟着变。
   // 选项每次点开都重新排，判定与反馈面板一律读 view。
-  G.panel = { k: 'question', idx, qi, topic: card.topic, q, view: shuffleOptions(q) };
+  G.panel = { k: 'question', idx, qid: q.qid, topic: q.topic, q, view: shuffleOptions(q) };
 }
 
 export function cancelPanel() {
-  if (G.panel.k === 'question' || G.panel.k === 'deck' || G.panel.k === 'pile'
+  // 取消**不再作废这张牌**：题目已经从这里扣掉了（`takeQuestion`），
+  // 代价就是"本场少一道新题"，不必再叠一层"这张牌这回合不能用"。
+  // 否则玩家会学会"不点"，而目的恰恰是让他多点。
+  if (G.panel.k === 'question') {
+    G.panel = { k: 'none' };
+    return;
+  }
+  // 选牌面板（精炼 / 遗忘）现在可以取消：事件里"精炼一张、失去 N 点生命"
+  // 的代价挂在 `G.pendingCost` 上，取消就要把它一起丢掉 —— 否则玩家取消一次，
+  // 之后随便做点什么就凭空掉 10 点血。
+  if (G.panel.k === 'cardpick') {
+    G.pendingCost = 0;
+    G.panel = { k: 'none' };
+    return;
+  }
+  if (G.panel.k === 'deck' || G.panel.k === 'pile'
       || G.panel.k === 'help' || G.panel.k === 'pack' || G.panel.k === 'mode') {
     G.panel = { k: 'none' };
   }
@@ -149,14 +211,14 @@ function damageEnemy(raw: number, pierce = false) {
 }
 
 /**
- * 一张卡真正打出去的那一下。`mult` 现在是常数 1（答对就是全额，不再有
- * "免答 ×1.5"那种卡面之外的倍率），保留这个参数是因为 X 费的 `repeat` 走同一条路；
- * `repeat` 是 X 费牌花掉的点数 —— 一张牌结算几遍只看这一个参数，所以
- * "卡面写 8 点伤害 ×X"和实际打出的段数永远由同一份 `resolveEff` 决定。
+ * 一张卡真正打出去的那一下。`mult` 只给装订线的"半额结算"传 0.5，其余路径
+ * 一律 1 —— 没有全局倍率，卡面写的数就是打出来的数。
+ * `repeat` 是 X 费牌花掉的点数，走同一条结算路径，所以牌面写的段数和实际打出的段数
+ * 永远由同一份 `resolveEff` 决定。
  */
-function strikeWith(ent: CardInst, mult: number, repeat = 1) {
-  const card = defOf(ent);
-  const st = statOf(ent);
+function strikeWith(id: CardId, mult: number, repeat = 1) {
+  const card = defOf(id);
+  const st = statOf(id);
   // card.mods 必须一起传：卡面（ui.ts）和答题面板（overlay.ts）都是按 mods 画的，
   // 结算漏掉它，带签名改动的 15 张卡就会「卡面写的」和「实际发生的」两张皮。
   const out = resolveEff(card.eff, st.atk, st.blk, mult, card.mods, repeat);
@@ -172,23 +234,37 @@ function strikeWith(ent: CardInst, mult: number, repeat = 1) {
   if (out.blk) G.block += out.blk;
   let heal = 0;
   let drawn = 0;
-  if (out.healRatio > 0) {
-    heal = Math.max(1, Math.round(dmg * out.healRatio));
-    G.hp = Math.min(G.maxHp, G.hp + heal);
+  // 按**实际打进去的伤害**回血。0 伤害不该回 1 点 —— 那是卡面上没有的保底。
+  // `heal` 记的是血量真的涨了多少：满血时是 0，反馈和飘字才不会凭空多报一个 +N。
+  if (out.healRatio > 0 && dmg > 0) {
+    const before = G.hp;
+    G.hp = Math.min(G.maxHp, G.hp + Math.max(1, Math.round(dmg * out.healRatio)));
+    heal = G.hp - before;
   }
   if (out.draw > 0) drawn = drawCards(out.draw);
   return { out, dmg, absorbed, blk: out.blk, heal, drawn, parts };
 }
 
 /**
- * 反伤。你打它一下，它回你一下 —— **格挡挡不住**，因为它不是攻击，
+ * 反伤。你打它一下，它回你一下 —— **你的格挡挡不住**，因为它不是攻击，
  * 是纸割手。这条机制只惩罚"数量"：一回合打三张 1 费牌，就挨三次；
- * 打一张 3 费牌，只挨一次。所以它逼的是"把伤害集中"。
+ * 打一张 3 费牌，只挨一次（多段牌也只挨一次，它数的是打出几张，不是打中几段）。
+ *
+ * 触发条件看的是"这张牌有没有攻击段"，不看实际打进去多少：
+ * 完全被敌方格挡吃掉的攻击照样算打了一下 —— 机制条写的是"打它一次"，
+ * 不是"打穿它一次"。纯格挡牌没有攻击段，所以不触发。
+ *
+ * 反伤可以致死。它和敌人的攻击落在同一条血线上，不做隐形保底：
+ * "只剩 1 点血还能白打它一下"会是一条玩家读不到的规则。
+ *
+ * 但**击杀的那一下不反伤**：这一击已经赢了，不能再让玩家在胜利帧掉血。
+ * 双方同时倒下时按胜利算（见 checkPending）；这条跳过让"同归于尽"不再发生，
+ * 反伤只在敌人还活着的时候收。
  */
-function thornsBack(dealt: number) {
+function thornsBack(hits: number[]) {
   const e = G.enemy;
-  if (!e || e.mech !== 'thorns' || dealt <= 0) return 0;
-  const n = Math.min(G.hp - 1, e.mechV ?? BAL.mech.thorns);
+  if (!e || e.mech !== 'thorns' || e.hp <= 0 || !hits.some((h) => h > 0)) return 0;
+  const n = e.mechV ?? BAL.mech.thorns;
   if (n <= 0) return 0;
   G.hp -= n;
   log(`${e.name} 的反伤：你受到 ${n} 点伤害`, 'bad');
@@ -198,16 +274,16 @@ function thornsBack(dealt: number) {
 
 export function answer(choice: number) {
   if (G.panel.k !== 'question' || G.busy) return;
-  const { idx, qi, q, view } = G.panel;
-  const ent = G.hand[idx];
-  if (!ent) return;
-  const card = defOf(ent);
+  const { idx, qid, q, view } = G.panel;
+  const id = G.hand[idx];
+  if (!id) return;
+  const card = defOf(id);
   // 键盘数字键会直接打进来，越界的选项不算答错 —— 手滑按到 9 不该扣行动力
   if (!Number.isInteger(choice) || choice < 0 || choice >= view.options.length) return;
   // 判定只看本次打乱后的视图。回头读 t.answer 会「点对了却算错」。
   const right = choice === view.answer;
   const m = memOf(card.id);
-  const st = statOf(ent);
+  const st = statOf(id);
   /** 这一局的答错价码。开局前选好，整局不变 —— 不再看这张卡自己到了哪个阶段。 */
   const M = MODES[G.mode];
   /**
@@ -232,7 +308,7 @@ export function answer(choice: number) {
   let backToDraw = false;
 
   if (right) {
-    const r = strikeWith(ent, 1, repeat);
+    const r = strikeWith(id, 1, repeat);
     hits = r.out.hits;
     dmg = r.dmg;
     absorbed = r.absorbed;
@@ -243,7 +319,7 @@ export function answer(choice: number) {
     if (xcost) apNote = join(apNote, `耗尽 ${spent} 点行动力，效果结算 ${repeat} 次。`);
     if (drawn) apNote = join(apNote, `专注：抽 ${drawn} 张。`);
     // 反伤在这张牌结算完之后收：先看见自己打了多少，再看见手上被割了一道。
-    const back = thornsBack(dmg);
+    const back = thornsBack(hits);
     if (back) apNote = join(apNote, `反伤：你受到 ${back} 点。`);
 
     // 答对抽一张：想起来的越多，这一回合看到的牌越多。走的是信息，不是倍率 ——
@@ -261,27 +337,39 @@ export function answer(choice: number) {
       apNote = join(apNote, `答对：抽 ${BAL.answerDraw} 张（本回合 ${G.answerDrawsThisTurn}/${cap}）。`);
     }
 
+    // 答对的次数用来攒这张牌的等级：攒到 `gradeNeed` 之后，这一场剩下的时间里它免答。
+    // 记在卡 id 上而不是实例上 —— 同名牌的两张副本共用"我记住这张牌了"这件事。
+    const need = gradeNeed(card);
+    if (need > 0) {
+      const before = G.charge[card.id] ?? 0;
+      G.charge[card.id] = Math.min(need, before + 1);
+      if (G.charge[card.id] >= need && before < need) {
+        apNote = join(apNote, `这一场「${card.name}」已免答：再打它不用答题。`);
+      }
+    }
+
     G.okThisTurn += 1;
     G.runOk += 1;
     // 记的是"本回合答对了哪个主题"，不是计数：遗忘了的 -3 是当回合的，
     // 而且 topTopic() 可能在同一回合里被新的错误改写，结算时要重新对一次。
-    if (card.topic === topTopic()) G.topOkTopic = card.topic;
+    // 卡题解耦之后，这里读的是**这道题**的主题，不是卡面主题。
+    if (q.topic === topTopic()) G.topOkTopic = q.topic;
     m.reps += 1;
     m.ok += 1;
     // 答对也涨稳固度，但涨多少看模式：测试模式是"检索练习"，记得更牢；
     // 学习模式是第一次接触，涨得最少。1 = 原来的 ×1.8 / +1。
     m.stab = Math.min(60, Math.max(m.stab * (1 + 0.8 * M.stabGain), m.stab + M.stabGain));
     m.due = Math.round(m.stab);
-    // 荧光笔：本回合第一道答对才给牌。答对本来就是目标，所以它不给"额外奖励"，
-    // 它奖励的是"这一回合你先答对了什么"这个顺序。
-    if (hasPower('marker') && G.okThisTurn === 1 && drawCards(1)) {
-      drawn += 1;
-      apNote = join(apNote, '荧光笔：本回合第一道答对，抽 1 张。');
+    // 荧光笔：本回合第一道答对，退回的行动力 +1（在下面统一结算退款）。
+    // 它曾经是"抽 1 张"——和双面镜逐字相同，于是两张牌是同一张，而 1 费的还比 0 费的弱。
+    // 现在它改成加钱：两条线分开（镜给牌，笔给行动力），各自的量级也说得清。
+    if (hasPower('marker') && G.okThisTurn === 1) {
+      G.markerRefund += 1;
+      apNote = join(apNote, '荧光笔：本回合第一道答对，这一手多退 1 点行动力。');
     }
   } else {
     // 答错的价码由本局模式决定：学习/复习/测试三档，开局前玩家自己选。
     // 三条都不碰血量：扣血会让人不敢碰不会的知识，正好和目的相反。
-    G.failedTurn[card.id] = true;
     // 补偿只给"这张牌自己就会给格挡"的那些，而且读的是 `resolveEff` 算出来的格挡，
     // 不是 `statOf` 那个纸面数值：**每张卡都挂着一个 blk 档位**（它是同价位牌的格挡
     // 底数），可 strike / pierce / chain / focus 这些效果里根本没有格挡。
@@ -293,14 +381,16 @@ export function answer(choice: number) {
       G.block += blkGain;
       apNote = join(apNote, `答错也挡住了 ${blkGain} 点。`);
     } else if (ownBlk > 0) {
-      apNote = join(apNote, '测试模式：这次答错没有格挡补偿。');
+      // 这里不能写死"测试模式"：学习模式的 missBlock 也是 0。
+      // 用模式名拼，改数值不用回来改文案。
+      apNote = join(apNote, `${M.name}模式：这张牌的格挡这次不生效。`);
     }
 
     if (M.missDest === 'draw') {
       // 学习：牌不进弃牌堆，回抽牌堆 —— 下一回合你一定会再抽到它。
       // 惩罚只剩"这一手作废"，不没收工具：还在学的东西，该让你再试一次。
       backToDraw = true;
-      apNote = join(apNote, '学习模式：牌回到牌堆，下一回合会再抽到它。');
+      apNote = join(apNote, '这张牌回到牌堆，下一回合会再抽到它。');
     } else {
       // 复习 / 测试：这张牌进弃牌堆，这一场它不再自动回来 —— 想再见它得等洗牌。
       apNote = join(apNote, '它进了弃牌堆，要等洗牌才回来。');
@@ -308,8 +398,8 @@ export function answer(choice: number) {
 
     // 补抽一张：答错的那张牌要离开手牌，不补位的话，一个中等正确率的人两回合就把手牌
     // 打空了 —— 那时他不是"答不对"，是"没牌可答"。补的是位置，不是奖励：
-    // 这一手照样作废、行动力照样不退。
-    if (BAL.missDraw && G.missDrawsThisTurn < BAL.missDrawCap) {
+    // 这一手照样作废、行动力照样不退。学习模式不补：练的是牌感，手牌少了就少了。
+    if (M.missDraw && BAL.missDraw && G.missDrawsThisTurn < BAL.missDrawCap) {
       const got = drawCards(BAL.missDraw);
       if (got) {
         G.missDrawsThisTurn += got;
@@ -318,96 +408,102 @@ export function answer(choice: number) {
       }
     }
 
-    G.topicWrong[card.topic] = (G.topicWrong[card.topic] || 0) + 1;
+    G.topicWrong[q.topic] = (G.topicWrong[q.topic] || 0) + 1;
     G.runBad += 1;
     m.lapses += 1;
     m.bad += 1;
-    if (spent > 1) apNote = join(apNote, `这一手花掉的 ${spent} 点行动力不退。`);
+    apNote = join(apNote, '这一手不花行动力 —— 代价是这一场少了一道题。');
 
-    // 以失误为食的敌人机制。挂在"答错"这个动作上而不是敌人回合上，
-    // 因为它们惩罚的正是"这次答错"本身。
-    if (G.enemy) {
-      if (G.enemy.mech === 'leech') {
-        // 名字必须读 e.name：这条机制挂在三种怪身上（书蛀 / 书蛀母 / 饕餮书虫），
-        // 写死"书蛀"的话，第二幕 Boss 回血时日志会告诉玩家是另一只怪干的。
-        const cap = G.enemy.mechV ?? BAL.mech.leech;
-        const n = Math.min(cap, G.enemy.maxHp - G.enemy.hp);
-        if (n > 0) {
-          G.enemy.hp += n;
-          apNote = join(apNote, `${G.enemy.name}啃食这次失误，回复 ${n} 点。`);
-          log(`${G.enemy.name}啃食你的失误，回复 ${n} 点`, 'bad');
-          // 血条往上跳却没有数字，读起来像"我看错了"。回血也要有一声。
-          emit({ t: 'foeHeal', n });
-        }
-      } else if (G.enemy.mech === 'lethe') {
-        G.enemy.dmg += 1;
-        apNote = join(apNote, '忘川吞下这次遗忘：它的攻击永久 +1。');
-        log('忘川吞下这次遗忘，攻击 +1', 'bad');
-      } else if (G.enemy.mech === 'bulwark') {
-        // 答错 = 它多一层甲。这条机制把"不会"变成"打不动"，
-        // 而不是变成扣血 —— 惩罚落在节奏上，不落在血量上。
-        const n = G.enemy.mechV ?? BAL.mech.bulwark;
-        G.enemy.block += n;
-        apNote = join(apNote, `它趁机加固：获得 ${n} 点格挡。`);
-        log(`${G.enemy.name} 加固了 ${n} 点格挡`, 'bad');
-      }
-    }
+    const missNote = onPlayerMiss();
+    if (missNote) apNote = join(apNote, missNote);
 
     // 稳固度按模式掉：学习最轻、测试最狠。到期也提前 —— 惩罚不靠扣血警告，靠日程。
     // 测试模式直接 due=0：下一局它会被排到最前面。
     m.stab = Math.max(1, m.stab * M.stabDrop);
     m.due = G.mode === 'test' ? 0 : 1;
-    if (hasPower('log')) {
-      const cur = G.topicAtk[card.topic] || 0;
-      if (cur < 6) { G.topicAtk[card.topic] = cur + BAL.logAtk; apNote = join(apNote, `错题本：「${card.topic}」攻击 +1。`); }
-    }
   }
 
-  // 节奏结算：先付整份费用，答对再退回 1 点 —— 不是全退。
+  // 节奏结算：答对付费用再退回 1 点；**答错一分不扣**。
   //
-  // 1 费牌答对等于免费，和引入费用之前的规则完全一样；2 费净花 1 点、3 费净花 2 点。
-  // 所以行动力同时买两样东西：犯错的机会，和一次打得更重的机会。
-  // （改成全退，高费牌会变成"同样免费、输出三倍"的纯优化，牌组会一路收敛到最贵的那几张。）
-  G.ap -= spent;
-  G.cardsPlayed += 1;
-  const back = right ? refundOf(spent) : 0;
-  if (back > 0) {
-    G.ap += back;
-    // 这条不进日志，进反馈面板：它是这一版唯一的经济规则，玩家得看得到
-    apNote = join(apNote, back >= spent
-      ? '答对了，这一手不花行动力。'
-      : `答对了，退回 ${back} 点 —— 这张牌净花 ${spent - back} 点。`);
+  // 答错不扣行动力是这一版的明确选择：错的代价已经落在"本场少一道新题"上，
+  // 再扣一次行动力等于同一个错误收两次钱，而且会让人不敢碰不会的知识 ——
+  // 正好和这个游戏的目的相反。高费牌因此变成"答错也不亏节奏、但要赔一道题"，
+  // 赔的是学习机会，不是这一回合的出手次数。
+  if (right) {
+    G.ap -= spent;
+    // 退款上限是"最多退 1 点"（`BAL.refund`），荧光笔是**额外**的一层，
+    // 所以它不能塞进 refundOf 里 —— 那会把 1 费牌的全额退款一起改掉。
+    // 它也因此允许退得比花掉的多：1 费牌答对 = +1 点净收入，这才是"笔给行动力"。
+    const back = refundOf(spent) + G.markerRefund;
+    G.markerRefund = 0;
+    if (back > 0) {
+      G.ap += back;
+      apNote = join(apNote, back > spent
+        ? `答对了，退回 ${back} 点 —— 这一手净赚 ${back - spent} 点。`
+        : back >= spent
+          ? '答对了，这一手不花行动力。'
+          : `答对了，退回 ${back} 点 —— 这张牌净花 ${spent - back} 点。`);
+    }
+  } else {
+    G.markerRefund = 0;
   }
 
-  // 装订线：每回合第一次答错把这一整手退回来。答错的代价是"这回合少一张牌"，
-  // 而不是"这回合什么都没发生" —— 这张牌买的就是一次容错。
-  // 退的是整份费用：正因为如此，它在一副高费牌里比在一副 1 费牌里值钱得多。
+  // 装订线：每回合第一次答错，这一手**仍然按一半结算**。
+  //
+  // 旧文案是"答错不花行动力"，而现行规则里答错本来就不扣行动力 —— 那句话恒真，
+  // 这张牌于是等于没有效果（这正是"能力牌和机制冲突"最直白的一例）。
+  // 改成半额结算之后，它买的东西变成"错了还有一点输出"，和"答错的代价落在题池上"
+  // 这条新规则互补而不是打架。
   if (!right && hasPower('binder') && !G.binderUsed) {
     G.binderUsed = true;
-    G.ap += spent;
-    apNote = join(apNote, '装订线：这次答错不花行动力。');
+    const r = strikeWith(id, 0.5, repeat);
+    hits = r.out.hits;
+    parts = r.parts;
+    dmg = r.dmg;
+    absorbed = r.absorbed;
+    // 格挡也减半：只补伤害会让一张纯防御的牌在这条路上凭空变强。
+    const halfBlk = Math.round(r.blk / 2);
+    if (halfBlk > 0) { G.block += halfBlk; blkGain += halfBlk; }
+    heal = r.heal;
+    drawn += r.drawn;
+    apNote = join(apNote, `装订线：这一手仍然按一半结算`
+      + `${dmg ? `（${dmg} 伤害` : '（'}${halfBlk ? `${dmg ? '，' : ''}${halfBlk} 格挡` : ''}）。`);
   }
   G.ap = clamp(G.ap, 0, 10);
 
   G.busy = true;
   // 学习模式答错的牌回抽牌堆（push 到尾部 = 下一张抽到的就是它）；其余都进弃牌堆
-  if (backToDraw) G.draw.push(ent);
-  else G.discard.push(ent);
+  if (backToDraw) G.draw.push(id);
+  else G.discard.push(id);
   G.hand.splice(idx, 1);
   saveMem();
+
+  // 章节记忆按题号记账，和卡牌记忆（memOf）分开：同一张卡在不同阶段抽到
+  // 不同章节的题，卡上的统计会把它们混成一个数。
+  recordAnswer({ stageTopic: G.stageTopic, qid, right });
+  G.answers.push({
+    qid, topic: q.topic, stageTopic: G.stageTopic, stage: G.stage, right, choice,
+    answer: view.answer, stem: q.q.slice(0, 80),
+  });
+  // 环形缓冲：只留最近若干条，够结算/导出读，不把整局题面塞进内存。
+  if (G.answers.length > 120) G.answers.shift();
 
   const effName = EFFS[card.eff].name;
   const shape = hits.length > 1 ? `${hits.join('+')} 伤害` : `${dmg} 伤害`;
   const missNote = backToDraw ? '，牌回牌堆' : '，进弃牌堆';
+  const leftNote = G.qLeft.length
+    ? `本场还剩 ${G.qLeft.length} 道新题`
+    : '本场新题已用完，开始复用';
   log(
-    `「${effName}·${card.topic}」${right ? '答对' : '答错'}` +
+    `「${effName}·${q.topic}」${right ? '答对' : '答错'}` +
       (right
         ? `，${shape}${absorbed ? `（${absorbed} 被挡）` : ''}` +
           (blkGain ? `，${blkGain} 格挡` : '') +
           (heal ? `，回 ${heal}` : '') +
           (drawn ? `，抽 ${drawn}` : '')
         : `，效果作废${blkGain ? `，${blkGain} 格挡`
-          : ownBlk > 0 ? '，这一手没补格挡' : '，这张牌本身没有格挡'}${missNote}`),
+          : ownBlk > 0 ? '，这一手没补格挡' : '，这张牌本身没有格挡'}${missNote}`) +
+      `　·　${leftNote}`,
     right ? 'hi' : 'bad',
   );
 
@@ -435,10 +531,10 @@ export function answer(choice: number) {
   G.panel = {
     k: 'feedback',
     fb: {
-      idx, qi, choice, right,
-      dmg, absorbed, blk: blkGain, eff: card.eff, hits, heal, draw: drawn, apNote,
+      idx, qid, choice, right,
+      dmg, absorbed, blk: blkGain, eff: card.eff, hits, parts, heal, draw: drawn, apNote,
       explain: q.explain, question: q.q, options: view.options, answer: view.answer,
-      topic: card.topic,
+      topic: q.topic,
     },
   };
 }
@@ -455,9 +551,9 @@ export function answer(choice: number) {
  */
 export function playPower(idx: number) {
   if (G.busy || G.panel.k !== 'none') return;
-  const ent = G.hand[idx];
-  if (!ent) return;
-  const card = defOf(ent);
+  const id = G.hand[idx];
+  if (!id) return;
+  const card = defOf(id);
   const p = powerOf(card);
   if (!p) return;
   if (hasPower(p.id)) return;
@@ -465,7 +561,6 @@ export function playPower(idx: number) {
 
   const spent = costNow(card);
   G.ap -= spent;
-  G.cardsPlayed += 1;
   G.powers.push(p.id);
   G.hand.splice(idx, 1);
 
@@ -484,9 +579,13 @@ export function playPower(idx: number) {
     G.block += blk;
     note = `获得 ${blk} 点格挡。`;
   } else if (p.id === 'mirrorcard') {
-    // 它不改数值，只把"答对抽牌"的上限从 2 抬到 3 —— 效果在 answer() 里读 hasPower。
+    // 它不改数值，只把"答对抽牌"的上限从 0 抬到 BAL.answerDrawCap —— 效果在 answer() 里读 hasPower。
     // 之所以做成"改规则"而不是"当场发一次收益"：增益牌本来就是本场持续的东西。
     note = '本场答对后抽 1 张（每回合一次）。';
+  } else if (p.id === 'marker') {
+    note = '本场每回合第一道答对时，退回的行动力 +1。';
+  } else if (p.id === 'binder') {
+    note = '本场每回合第一次答错，那一手按一半结算。';
   }
   G.ap = clamp(G.ap, 0, 10);
 
@@ -509,20 +608,19 @@ export function playPower(idx: number) {
  */
 export function playBasic(idx: number) {
   if (G.busy || G.panel.k !== 'none') return;
-  const ent = G.hand[idx];
-  if (!ent) return;
-  const card = defOf(ent);
+  const id = G.hand[idx];
+  if (!id) return;
+  const card = defOf(id);
   if (cardKind(card) !== 'basic') return;
   if (!canPay(card)) return;
 
   const spent = costNow(card);
-  const r = strikeWith(ent, 1);
-  thornsBack(r.dmg);
+  const r = strikeWith(id, 1);
+  thornsBack(r.out.hits);
   G.ap -= spent;
-  G.cardsPlayed += 1;
   G.ap = clamp(G.ap, 0, 10);
 
-  G.discard.push(ent);
+  G.discard.push(id);
   G.hand.splice(idx, 1);
   checkPending();
 
@@ -545,7 +643,7 @@ export function playBasic(idx: number) {
   G.busy = true;
   setTimeout(() => {
     G.busy = false;
-    settlePending();
+    requestSettle();
   }, 200);
 }
 

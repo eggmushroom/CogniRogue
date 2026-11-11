@@ -2,18 +2,19 @@ import { g, roundRect, VH, VW, wrapText } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, topicColor, withAlpha } from '../gfx/theme';
 import { action, drawCard, squeeze, text } from '../gfx/ui';
 import { consumeWheel, hover, onClick } from '../input';
-import { BAL, EFFS, MODE_KEYS, MODES, effSummary } from '../core/model';
+import { BAL, EFFS, MODE_KEYS, MODES, effSummary, resolveEff } from '../core/model';
 import { clamp, G } from '../core/infra';
-import { BANK, bankQuestionCount, bankTopics, memOf, memRatio } from '../core/library';
+import { countQuestions, sourceBank } from '../core/library';
 import {
-  BASICS, basicsSummary, cardKind, cardType, CARD_TYPE_META, costOf, defOf, isXCost, statOf,
+  BASICS, baseIdOf, basicsSummary, cardKind, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded,
+  isXCost, statOf, UP_GAIN,
 } from '../core/cards';
 import { answer, cancelPanel } from '../core/combat';
 import {
   chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal, startRun,
   skipPower, skipReward, takeCard, takePower, upgradeCard,
 } from '../core/journey';
-import type { CardInst, Question, QView } from '../core/model';
+import type { Question, QView } from '../core/model';
 import { drawReport } from './report';
 import { requestPackFile, pastePack } from './packio';
 
@@ -40,7 +41,16 @@ function dimQuestion() {
   g.fillRect(0, 0, VW, VH);
 }
 
-function box(x: number, y: number, w: number, h: number, glow: string = C.line) {
+/**
+ * 面板外壳。
+ *
+ * `onClose` 为 `null` 时不画右上角的 × —— 强制选择的面板（复习、事件、选卡）
+ * 没有"关掉"这个语义，画一个点了没反应的 × 比不画更糟。
+ */
+function box(
+  x: number, y: number, w: number, h: number,
+  glow: string = C.line, onClose: (() => void) | null = cancelPanel,
+) {
   g.save();
   g.shadowColor = 'rgba(0,0,0,.75)';
   g.shadowBlur = 48;
@@ -75,6 +85,7 @@ function box(x: number, y: number, w: number, h: number, glow: string = C.line) 
   g.restore();
 
   // 关闭
+  if (!onClose) return;
   const cx = x + w - 34;
   const cy = y + 34;
   const chv = hover(cx - 16, cy - 16, 32, 32);
@@ -83,7 +94,7 @@ function box(x: number, y: number, w: number, h: number, glow: string = C.line) 
   g.fillStyle = chv ? 'rgba(255,255,255,.14)' : 'rgba(255,255,255,.05)';
   g.fill();
   text('×', cx, cy + 1, { size: 22, align: 'center', color: chv ? C.ink : C.dim });
-  onClick(cx - 16, cy - 16, 32, 32, cancelPanel);
+  onClick(cx - 16, cy - 16, 32, 32, onClose);
 }
 
 function heading(s: string, x: number, y: number, sub?: string) {
@@ -298,7 +309,8 @@ function drawFeedback() {
   const y = Math.max(56, (VH - h) / 2);
 
   dim(0.55);
-  box(x, y, w, h, withAlpha(col, 0.6));
+  // × = 继续：反馈页没有别的动作，关掉它和按"继续"是同一件事。
+  box(x, y, w, h, withAlpha(col, 0.6), dismissFeedback);
 
   text(fb.right ? '正确' : '答错', x + 34, y + 52, {
     size: 30, weight: 800, family: FONT_TITLE, color: col,
@@ -342,8 +354,10 @@ function drawFeedback() {
 
   if (fb.right) {
     const eff = EFFS[fb.eff] ?? EFFS.strike;
-    const hits = fb.hits && fb.hits.length ? fb.hits : [fb.dmg];
-    const shape = hits.length > 1 ? `${hits.join(' + ')}` : `${fb.dmg}`;
+    // 多段要显示**实际**每段伤害，不能用 fb.hits：那是扣格挡前的原始值，
+    // 敌人有甲时 hits 相加会大于 fb.dmg（屏幕会凭空多报伤害）。
+    const segs = fb.parts.length ? fb.parts : [{ d: fb.dmg, a: fb.absorbed }];
+    const shape = segs.length > 1 ? segs.map((p) => p.d).join(' + ') : `${fb.dmg}`;
     text(`${eff.name} · 造成 ${shape} 点伤害${fb.absorbed ? `（${fb.absorbed} 被格挡吸收）` : ''}`,
       x + 34, cy, { size: 18, color: C.gold, weight: 700 });
 
@@ -388,10 +402,13 @@ function drawReward() {
   const h = 640;
   const x = (VW - w) / 2;
   const y = 130;
-  box(x, y, w, h, withAlpha(C.gold, 0.4));
+  // × = 跳过：奖励面板本来就有"跳过"，关掉和跳过同义。
+  box(x, y, w, h, withAlpha(C.gold, 0.4), skipReward);
 
   heading('战斗结束', x + 44, y + 66,
-    isElite ? '精英倒下了。挑一张卡，它还会留下一样东西。' : '挑一张放进牌组。');
+    G.powerFallback
+      ? '增益牌已经拿齐了；这次从知识卡里挑一张。'
+      : isElite ? '精英倒下了。挑一张卡，它还会留下一样东西。' : '挑一张放进牌组。');
 
   const cw = 280;
   const ch = 356;
@@ -404,15 +421,9 @@ function drawReward() {
     const px = cx0 + i * (cw + gap);
     const hv = hover(px, cy, cw, ch);
     const lift = hv ? -10 : 0;
-    drawCard(px, cy + lift, cw, ch, c, c.atk, c.blk, { glow: hv });
-    // "还没答过"不写：三张新卡都是同一句，写三遍等于给屏幕加噪声。
-    // 只有你真学过这张（有记录）时才把掌握度摆出来，那是"值不值得占一个位置"的依据。
-    const m = memOf(c.id);
-    if (m.reps) {
-      text(`掌握 ${Math.round(memRatio(c.id) * 100)}%`, px + cw / 2, cy + ch + 22, {
-        size: 13, align: 'center', color: hv ? C.gold : C.dim,
-      });
-    }
+    // 奖励预览也用同一套卡面数值；直接画 c.atk 会和入牌组后的卡面不一致。
+    const st = statOf(c.id);
+    drawCard(px, cy + lift, cw, ch, c, st.atk, st.blk, { glow: hv });
     onClick(px, cy, cw, ch, () => takeCard(i), 'rewardcard');
   });
 
@@ -440,9 +451,10 @@ function drawPowerPick() {
   const h = ch + 214;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.gold, 0.45));
+  // × = 不要这张增益牌，和底部"跳过"同义。
+  box(x, y, w, h, withAlpha(C.gold, 0.45), skipPower);
 
-  heading('精英留下了东西', x + 44, y + 66,
+  heading('战斗留下了东西', x + 44, y + 66,
     '它现在是一张牌：进牌组，抽到手，付它的费用打出去，本场剩下的时间里一直生效。');
 
   p.pool.forEach((c, i) => {
@@ -471,14 +483,15 @@ function drawRest(t: number) {
   const h = 412;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.cyan, 0.4));
+  // 复习点必须选一项才能继续：没有"关掉"这个语义，不画 ×。
+  box(x, y, w, h, withAlpha(C.cyan, 0.4), null);
 
   heading('复习', x + 44, y + 66, '这一层没有敌人。你可以休息，也可以把一张卡磨得更利。');
 
   const opts: Array<{ t: string; s: string; fn: () => void; col: string }> = [
-    { t: '休息', s: `回复 ${Math.round(G.maxHp * 0.32)} 点生命`, col: C.green, fn: restHeal },
-    { t: '精炼一张卡', s: '永久改写卡面：攻 +3、挡 +3', col: C.gold, fn: () => openCardPick('up') },
-    { t: '遗忘', s: '永久移除一张卡（至少留 5 张）', col: C.purple, fn: () => openCardPick('rm') },
+    { t: '休息', s: `回复 ${Math.round(G.maxHp * BAL.restPct)} 点生命`, col: C.green, fn: restHeal },
+    { t: '精炼一张卡', s: '挑中的那一张：攻/挡底数 +3（同名的其余几张不变）', col: C.gold, fn: () => openCardPick('up') },
+    { t: '遗忘', s: '永久移除一张卡（牌组至少留 5 张）', col: C.purple, fn: () => openCardPick('rm') },
   ];
 
   const bw = 288;
@@ -513,52 +526,123 @@ function drawRest(t: number) {
 
 /* ── 选一张牌 ─────────────────────────────────────────────── */
 
+/**
+ * 精炼 / 遗忘的选牌面板。
+ *
+ * 两处曾经让玩家读不到自己买了什么：
+ *
+ *   1. **精炼看不出效果**。面板上画的还是当前数值，选完才变 —— 于是"这次精炼
+ *      到底加了什么"只能靠猜。现在卡面右下角直接写「4 伤 → 7 伤」，
+ *      并且把加粗的那一档数值画在卡面上（预览即结果）。
+ *   2. **精炼只作用于挑中的那一张**。所以列表里**每份副本各占一格**：
+ *      牌组里四张基础斩击就是四个格子，挑哪个格子就只改哪一张。
+ *      已经精炼过的那一张会标上 `+`，并且不再列进精炼列表。
+ *
+ * 面板可以取消了（右上角 ×）。这是"直接扣血、没有回头路"那件事的修法：
+ * 事件里的代价记在 `G.pendingCost` 上，取消就丢掉，选了才付。
+ */
 function drawCardPick(mode: 'up' | 'rm') {
   dim(0.8);
   const w = 1280;
-  const h = 700;
+  const h = 740;
   const x = (VW - w) / 2;
-  const y = 110;
+  const y = 90;
   box(x, y, w, h, withAlpha(mode === 'up' ? C.gold : C.purple, 0.45));
 
+  const pending = G.pendingCost;
   heading(mode === 'up' ? '精炼哪一张' : '遗忘哪一张', x + 44, y + 66,
-    mode === 'up' ? '卡面数值会永久改变——这是构筑，不是赌博。' : '移除后这张卡本局不会再出现。牌组会更薄，也更好抽。');
+    mode === 'up'
+      ? '卡面数值会永久改变——这是构筑，不是赌博。基础牌也能精炼，但只强化你挑中的那一张。'
+      : '移除后这张卡本局不会再出现。牌组会更薄，也更好抽；基础牌也能丢。');
+  if (pending > 0) {
+    text(`选完要付 ${pending} 点生命 —— 取消则不付。`, x + 44, y + 106, {
+      size: 13, color: C.red, weight: 700,
+    });
+  }
 
+  // 每一份副本单独一格：精炼是**按张**的，所以 `i`（牌组下标）才是身份。
+  // 去重会把"四张基础斩击"压成一个格子，玩家点了也不知道改的是哪一张。
   const items = G.deck
-    .map((e, i) => ({ e, i, d: defOf(e) }))
-    // 基础牌是初始牌组的保底：不可精炼、不可删除，所以两个列表里都不出现它。
+    .map((id, i) => ({ id, i, d: defOf(id) }))
+    // 基础牌也在列表里：精炼它、或者丢掉它换一张知识卡，都是合法的构筑决定。
     // 增益牌没有数值可精炼（要么在要么不在），只在"遗忘"列表里保留。
-    .filter((o) => cardKind(o.d) !== 'basic')
     .filter((o) => mode === 'rm' || cardKind(o.d) !== 'power')
-    .sort((a, b) => a.d.topic.localeCompare(b.d.topic) || statOf(a.e).atk - statOf(b.e).atk);
+    // 已精炼的那一张不再出现：一张牌只能精炼一次，列出来点了也没反应。
+    .filter((o) => mode === 'rm' || !isUpgraded(o.id))
+    // 同名牌排在一起，但顺序保持牌组内的相对次序 —— 下标 i 才是这一格指向的牌。
+    .sort((a, b) => a.d.topic.localeCompare(b.d.topic) || a.i - b.i);
 
-  // 尺寸是按"开局 10 张刚好两排、不用滚"反推的
+  // 尺寸是按"开局 10 张刚好两排、不用滚"反推的。
+  // gapy 里要留出卡面底下那行「伤 4→7」—— 它画在 y+h+18，行距不够就会压到下一排的卡上。
   const cols = 5;
   const cw = 196;
-  const ch = 252;
+  const ch = 248;
   const gapx = 26;
-  const gapy = 26;
+  const gapy = 32;
+  const noteH = 22;
   const totalW = cols * cw + (cols - 1) * gapx;
   const gx0 = x + (w - totalW) / 2;
   const rows = Math.ceil(items.length / cols);
-  const gridH = rows * (ch + gapy);
+  // 最后一排底下也要留出 note，否则最后一行会紧贴裁剪边
+  const gridH = rows * (ch + gapy) - gapy + noteH;
   const areaH = h - 180;
   const area = scrollArea(x + 30, y + 130, w - 60, areaH, gridH, `pick:${mode}`);
 
+  // 同名副本在视觉上要能分开：同一张牌的第二份起，右下角标一个份数序号。
+  const seen: Record<string, number> = {};
   items.forEach((o, k) => {
     const col = k % cols;
     const row = Math.floor(k / cols);
     const px = gx0 - x - 30 + area.x + col * (cw + gapx);
     const py = area.y + row * (ch + gapy);
     const hv = hover(px, py, cw, ch);
-    const st = statOf(o.e);
-    drawCard(px, py, cw, ch, o.d, st.atk, st.blk, { up: !!o.e.up, glow: hv });
-    onClick(px, py, cw, ch, () => (mode === 'up' ? upgradeCard(o.i) : forgetCard(o.i)));
+    const st = statOf(o.id);
+    const up = mode === 'up';
+    // 卡面画的是**选完之后的数值**，note 写"原来 → 之后"。
+    // 数值必须走 resolveEff 折算，不能直接拿 atk/blk —— 牌面上那两行就是折算后的数
+    //（基础斩击 4 攻会同时折算成 2 挡），用原值当说明会和牌面对不上。
+    const after = { atk: st.atk + (up ? UP_GAIN : 0), blk: st.blk + (up ? UP_GAIN : 0) };
+    const faceOf = (atk: number, blk: number) => {
+      const out = resolveEff(o.d.eff, atk, blk, 1, o.d.mods);
+      return { dmg: out.hits.reduce((n, v) => n + v, 0), blk: out.blk };
+    };
+    const b = faceOf(st.atk, st.blk);
+    const a = faceOf(after.atk, after.blk);
+    // note 只写"变了哪一格"。判据是**前后不想等**，不是"原值大于 0"：
+    // 基础斩击本身没有格挡，但 +3 底数经猛击的 0.7 折算会变成 2 点格挡 ——
+    // 按"原值大于 0"筛就会把这一格藏掉，玩家选完才发现多出 2 挡。
+    // 用的字和牌面同一套（伤 / 挡），否则一行说明里要重复"造成 X 点伤害"。
+    const note = up
+      ? [
+        b.dmg !== a.dmg ? `伤 ${b.dmg}→${a.dmg}` : '',
+        b.blk !== a.blk ? `挡 ${b.blk}→${a.blk}` : '',
+      ].filter(Boolean).join('  ')
+      : undefined;
+    drawCard(px, py, cw, ch, o.d, after.atk, after.blk, {
+      // `up` 只画**真的已经精炼过**的牌。精炼列表里的牌还没精炼，
+      // 给它们全画上金边和 + 号会让"四张基础斩击"看起来都强化过了 ——
+      // 那恰好和"只改一张"相反。
+      up: isUpgraded(o.id), glow: hv, note,
+    });
+    // 第几份：只在同名牌有第二份时才标，避免每张牌都挂一个没意义的 ×1。
+    // 放右下角是因为卡面上半部被费用/类别/牌名/效果四行占满了。
+    const base = baseIdOf(o.id);
+    seen[base] = (seen[base] ?? 0) + 1;
+    const total = G.deck.filter((v) => baseIdOf(v) === base).length;
+    if (total > 1) {
+      text(`第 ${seen[base]}/${total} 张`, px + cw - 12, py + ch - 10, {
+        size: 12, align: 'right', color: C.faint, weight: 600,
+      });
+    }
+    onClick(px, py, cw, ch, () => (up ? upgradeCard(o.i) : forgetCard(o.i)), 'pick', o.i);
   });
   area.restore();
   overflowAffordance(area, x + 30, w - 60);
 
-  if (area.max > 0) {
+  if (!items.length) {
+    text(mode === 'up' ? '所有能精炼的牌都精炼过了。' : '没有可以移除的牌。',
+      x + w / 2, y + h / 2, { size: 17, align: 'center', color: C.faint });
+  } else if (area.max > 0) {
     text('滚轮查看更多', x + w / 2, y + h - 26, { size: 12, align: 'center', color: C.faint });
   }
 }
@@ -579,7 +663,8 @@ function drawEvent() {
   const y = Math.max(80, (VH - h) / 2);
 
   dim(0.76);
-  box(x, y, w, h, withAlpha(C.purple, 0.45));
+  // 事件必须选一个选项：没有"关掉"这个语义，不画 ×。
+  box(x, y, w, h, withAlpha(C.purple, 0.45), null);
 
   heading(p.ev.title, x + 44, y + 66, `事件 · 第 ${(G.node?.r ?? 0) + 1} 层`);
 
@@ -609,7 +694,7 @@ function drawEvent() {
 
 /* ── 牌组 / 牌堆 ──────────────────────────────────────────── */
 
-function drawGallery(title: string, list: CardInst[]) {
+function drawGallery(title: string, list: string[]) {
   dim(0.8);
   const w = 1280;
   const h = 740;
@@ -617,7 +702,7 @@ function drawGallery(title: string, list: CardInst[]) {
   const y = 80;
   box(x, y, w, h, C.line);
 
-  const nCards = list.filter((e) => !e.junk).length;
+  const nCards = list.filter((id) => defOf(id).kind !== 'junk').length;
   const nJunk = list.length - nCards;
   heading(title, x + 44, y + 66,
     `${list.length} 张${nJunk ? `（含 ${nJunk} 张杂念）` : ''} · 抽到关键卡的概率随牌组变厚而下降`);
@@ -635,14 +720,14 @@ function drawGallery(title: string, list: CardInst[]) {
   const areaH = h - 180;
   const area = scrollArea(x + 30, y + 130, w - 60, areaH, gridH, `gallery:${title}`);
 
-  list.forEach((e, k) => {
+  list.forEach((id, k) => {
     const col = k % cols;
     const row = Math.floor(k / cols);
     const px = gx0 - x - 30 + area.x + col * (cw + gapx);
     const py = area.y + row * (ch + gapy);
-    const d = defOf(e);
-    const st = statOf(e);
-    drawCard(px, py, cw, ch, d, st.atk, st.blk, { up: !!e.up });
+    const d = defOf(id);
+    const st = statOf(id);
+    drawCard(px, py, cw, ch, d, st.atk, st.blk, { up: isUpgraded(id) });
   });
   area.restore();
   overflowAffordance(area, x + 30, w - 60);
@@ -668,7 +753,7 @@ function drawMode() {
   const y = (VH - h) / 2;
   box(x, y, w, h, withAlpha(C.gold, 0.42));
   heading('这一局怎么打', x + 48, y + 66,
-    '答对退回 1 点行动力。三种模式只改答错的价码；另外固定带 3 张不答题的基础牌做保底。');
+    '答对退回 1 点行动力。三种模式只改答错的价码；另外固定带 8 张不答题的基础牌做保底。');
 
   const gap = 24;
   const cw = (w - 96 - gap * 2) / 3;
@@ -697,12 +782,12 @@ function drawMode() {
     // （"答错只作废这一手，牌还会回来" ≈ "牌回牌堆，下回合一定再回来"）。
     // 一段总述加三条重复的细节，读起来像同一句话说两遍 —— 去掉总述。
 
-    // 这段话原来按 missBlock 是不是 1 / 0.5 硬分三档，100 层那次把学习模式改成 0.6
-    // 之后就落进了 else 分支，卡片上写着"答错没有格挡补偿"—— 说的是测试模式，不是它自己。
-    // 现在直接按数值算，改数值不用再回来改文案；措辞也只承诺"有格挡的牌"。
+    // 按 missBlock 与 missDraw 算，不再手写三档：学习模式是"不给格挡 + 不补抽"，
+    // 复习/测试是"有格挡的按比例补 + 补抽"。改数据不用再回来改文案。
     const pct = Math.round(m.missBlock * 100);
-    const guard = pct === 0 ? `答错：不给格挡，补抽 ${BAL.missDraw} 张`
-      : `有格挡的牌补 ${pct}% 格挡、补抽 ${BAL.missDraw} 张`;
+    const draw = m.missDraw ? `、补抽 ${BAL.missDraw} 张` : '、不补抽';
+    const guard = pct === 0 ? `答错：不给格挡${draw}`
+      : `有格挡的牌补 ${pct}% 格挡${draw}`;
     const dest = m.missDest === 'draw' ? '牌回牌堆，下回合一定再回来'
       : '牌进弃牌堆，等洗牌才回来';
     const rows = [
@@ -743,56 +828,68 @@ function drawHelp() {
 
   // 效果/类别表不再写死在帮助页：卡面徽章上就印着「类别·效果」，帮助页只讲分工
   const blocks: Array<[string, string[]]> = [
-    [`初始牌组：${BASICS.length} 张，不答题`, [
-      `一局开始就有 ${BASICS.length} 张基础牌（${basicsSummary()}），它们不答题、随时可打、各要 1 点行动力。`,
-      '它们不可获取、不可精炼、不可删除 —— 是这一局的"地板"：答错之后至少还有牌能打，不会整手空转。',
+    [`初始牌组：10 张（8 基础 + 2 随机知识）`, [
+      `一局开始有 ${BASICS.length} 张基础牌（${basicsSummary()}），它们不答题、随时可打、各要 1 点行动力；再加 2 张随机知识卡。`,
+      '基础牌**无法从游戏中获取**，但可以精炼、也可以遗忘 —— 它们是地板，不是圣物；只是把一次精炼花在基础牌上，就没花在知识卡上。',
       '数值刻意压得比知识卡低：保底不等于变强，想赢还是得答对题、把知识卡打出去。',
     ]],
     ['四类牌：攻击 / 防御 / 技能 / 能力', [
       '攻击：猛击、洞察、串联、内化 —— 把行动力换成伤害（内化再按伤害回血）。',
       '防御：巩固 —— 把行动力换成格挡，伤害减半、格挡翻倍。',
       '技能：专注 —— 伤害偏低但抽一张牌，处理的是"手上没牌了"这个节奏问题。',
-      '能力：七种增益牌 —— 本场持续改规则（沙漏多 1 点行动力、索引卡多抽一张……）。',
-    ]],
+      '能力：六种增益牌 —— 本场持续改规则（沙漏多 1 点行动力、索引卡多抽一张……）。',    ]],
     ['牌面只讲机械，不讲知识', [
       '卡面上只有费用、类别、牌名、效果和数值。左上角那个数是费用：0–3 点，或 X（花光行动力，花几点结算几次）。付不起时它会变红。',
-      '右下角是纹章：八种效果各有原型（攻 / 防 / 技 / 能四类靠顶部色条区分）。这一回合答错过的牌会压暗并改成虚线边框，下回合恢复。',
-      '没有主题名、没有知识点名、没有记忆度、更没有题干。所以「折半之刃」背后是哪道题，只能靠点开它知道。',
+      '费用右边那个字母是等级：C 不用答题、B 答对 1 次、A 两次、S 三次，攒够这一场就免答。',
+      '右下角是纹章：六种效果各有原型（攻 / 防 / 技 / 能四类靠顶部色条区分）。',
+      '没有主题名、没有知识点名、没有记忆度、更没有题干。所以「折半之刃」这一手会问哪道题，只能靠点开它知道 —— 题来自当前这一章，不和这张牌绑定。',
     ]],
     ['答对算数，答错这一手作废', [
-      '答对：卡面效果按原值结算，退回 1 点行动力。会的人一回合能把牌打完，不会的人两张就没油。',
-      '答错：这一手什么都不发生，费用不退；这个卡种这回合不再问（免得看完答案用副本重答）。',
-      `但手牌不会枯竭：答错会补抽 1 张（每回合至多 ${BAL.missDrawCap} 次）—— 代价是这一手，不是整回合。`,
-      '挡不挡、牌去哪里，由本局模式决定（见下一条）。补多少只看这张牌自己：卡面上有格挡那一行（巩固、猛击）才补，洞察 / 内化 / 串联 / 专注 没有，答错也就没有。',
+      '答对：卡面效果按原值结算，退回 1 点行动力，并给这张牌攒一次免答。会的人一回合能把牌打完，不会的人两张就没油。',
+      '答错：这一手什么都不发生，**但一分行动力都不扣** —— 代价是本场的新题少一道。',
+      '一张牌攒满等级（C 0 / B 1 / A 2 / S 3）之后，这一场剩下的时间里它直接打、不再出题。计数每场清零。',
+      `复习 / 测试答错会补抽 1 张（每回合至多 ${BAL.missDrawCap} 次）；学习模式不补 —— 它是练习场，手牌会真的少一张。`,
+      '挡不挡、牌去哪里、补不补抽，由本局模式决定（见下一条）。复习模式补的格挡只看这张牌自己：卡面上有格挡那一行（巩固、猛击）才补，洞察 / 内化 / 串联 / 专注 没有，答错也就没有。',
+    ]],
+    ['每一场都有自己的题池', [
+      '开战时按你的牌组算题量：越贵的牌越多，这一场的新题越多。顶栏「题 N」数的是本场还没问过的新题。',
+      '点开一张知识卡就消耗一道新题；答错也消耗。新题用完不会锁牌 —— 顶栏改成「题 复用」，之后问的是本章被问得最少的题。',
+      '同一道题在一局里最多进 3 次新题池 —— 问过的题不会在下一场立刻再来一遍。',
     ]],
     ['三种模式，开局前选', [
-      '学习：答错只作废这一手，牌回抽牌堆，下一回合一定再抽到；本身有格挡的牌还按六成挡一下。适合第一次见这些题。',
-      '复习：答错作废，牌进弃牌堆，要等洗牌才回来；本身有格挡的牌按一半挡一下。适合学过一遍、要求稳。',
-      '测试：答错作废，牌进弃牌堆，而且一格挡都不补 —— 三种模式里唯一不给垫子的。答对稳固度涨得更多。',
+      '学习：答错只作废这一手，牌回抽牌堆，下一回合一定再抽到；但**不补格挡、不补抽** —— 练习场不负责让你通关。适合第一次见这些题。',
+      '复习：答错作废，牌进弃牌堆，要等洗牌才回来；本身有格挡的牌按一半挡一下，答错补抽 1 张。适合学过一遍、要求稳。',
+      '测试：答错作废，牌进弃牌堆，一格挡都不补（学习也不补，但学习回牌堆且不补抽），答错仍补抽 1 张。答对稳固度涨得更多。',
       '模式只影响这一局的答错价码，不改卡面数值、不改题库，也不动你已经攒下的记忆。',
     ]],
     ['行动力是唯一的节奏', [
       `每回合 ${BAL.baseAp} 点行动力、抽 ${BAL.drawPerTurn} 张牌。每张牌标 0–3 点，X 费牌吃光剩下的全部。`,
       '答对只退回 1 点：1 费牌等于免费，2 费净花 1 点、3 费净花 2 点。贵牌不是"更强的一手"，是"更大的一张票"。',
+      '答错不扣行动力 —— 错的代价落在"本场新题少一道"上，不落在这一回合的出手次数上。',
       '基础牌和增益牌不答题，所以一分不退 —— 拿行动力打基础牌，就是拿这回合的答题机会换保底输出。',
-      '双面镜在场时，每回合第一次答对还会抽 1 张 —— 那是这张牌给的规则，不是人人白吃。',
+      '双面镜在场时，每回合第一次答对还会抽 1 张；荧光笔让那次答对多退 1 点。两条都是牌给的规则，不是人人白吃。',
       '键盘：1–4 选选项，空格/回车推进面板，空场时空格结束回合。',
     ]],
     ['增益牌：也要打出去才算', [
       '精英战后和部分事件会给你一张增益牌（能力牌）。它没有题，也没有伤害 —— 它改的是这一场的规则：',
-      '沙漏多 1 点行动力、索引卡多抽一张、长明灯每回合给格挡、错题本把答错变成攻击。',
+      '沙漏每回合多 1 点行动力 · 索引卡每回合多抽一张 · 长明灯每回合开局 3 点格挡 ·',
+      '双面镜让每回合第一次答对抽 1 张 · 荧光笔让那次答对多退 1 点 · 装订线让每回合第一次答错仍按一半结算。',
+      '它们都对着现行的规则说话：答错不扣行动力，所以没有一张牌还在"免掉行动力"。',
       '它和知识卡一样占手牌、一样要付费用（只是不答题，所以这笔钱不退）。打出后从牌组循环里出去，本场一直生效；下一场要重新打。',
     ]],
     ['一百层，五幕', [
       '整座塔 100 层，每 20 层是一幕，幕末一只 Boss。打赢 Boss 会换一张新地图、血回满、生命上限 +14。',
       '一幕一套物种：目录厅教你出牌、虫蛀区搅你的牌堆、报刊区靠反伤治薄刀、修复室叠甲、禁书区专挑你错得最多的主题。',
-      '地图一屏只显示 9 层，当前层在下三分之一 —— 上面那几行就是你接下来能选的路。',
+      // 怪的血量现在是一条连续上坡：同一种小怪在第 15 层和第 90 层不是同一个厚度。
+      '越往上爬，怪越厚、打得越疼 —— 同一只小怪在第 90 层会明显比第 15 层难缠。开局想靠一张高费牌横推前几层，是做不到了。',
+      '地图一屏显示 8 层；滚轮或按住拖动能看到整张 20 层的地图 —— 先看清上面是不是精英，再决定走哪条。',
       '节点类型全部可见：战斗、精英、复习、事件、Boss。',
-      '复习点三选一：回复 62% 生命、精炼一张卡（攻/挡 +3）、或永久移除一张让牌组更薄。',
+      '复习点三选一：回复 62% 生命、精炼一张卡（攻/挡底数 +3）、或永久移除一张让牌组更薄。',
+      '精炼是**按张**算的：牌组里每份副本各占一格，只强化你挑中的那一张；同名的另一张不动。精炼过的那张会带一个 + 号。',
       '牌组越厚，关键卡越难抽到 —— 拿不拿那张增益牌，是这个游戏里最像构筑的决定。',
     ]],
     ['它会记住你', [
-      '复习状态存在本地。下一局的起始牌组按模式取：学习先取没碰过的，复习先取逾期的，测试先取已经掌握的。',
+      '复习状态存在本地；起手固定 10 张（4 斩击 + 4 格挡 + 2 张随机**低费**知识卡 —— A/S 级要自己挣），模式只改答错的价码。',
       '结算页会告诉你：这一局答了多少题、对了几成、答错了多少次 —— 蒙对和记住的差别在那里。',
     ]],
   ];
@@ -864,7 +961,7 @@ function drawPack() {
     'A) 选项 / B) 选项 …    → 2–4 个',
     '= B                   → 正确答案字母（不能越过选项数）',
     '+ 解析（可选，答完会显示）',
-    '点开一张牌 → 优先抽同名题池，没题就抽全部题目',
+    '点开一张牌 → 从当前这一章的 BANK 抽题；章节没题就抽全部题目',
     '卡面（83 张 / 攻挡 / 效果）内置，md 改不了',
   ];
   roundRect(x + 44, y + 120, w - 88, 216, 10);
@@ -883,7 +980,8 @@ function drawPack() {
     // 底部只留 4 行，超出截断：格式诊断可能很长，别让它顶出面板
     wrapText(p.msg, w - 88).slice(0, 4).forEach((ln, i) => g.fillText(ln, x + 44, y + 428 + i * 21));
   } else {
-    text(`当前题库：${BANK.name} · ${bankQuestionCount()} 道题 / ${bankTopics().length} 个题池`,
+    const src = sourceBank();
+    text(`当前题库：${src.name} · ${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个题池`,
       x + 44, y + 430, { size: 13, color: C.dim });
     text('只校验格式：题干、2–4 个选项、= 答案字母；写错会列出第几行。复习进度按内置卡片 id 保存，不会丢。',
       x + 44, y + 454, { size: 13, color: C.faint });

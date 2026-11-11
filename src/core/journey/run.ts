@@ -1,20 +1,27 @@
-import { BAL, MODES, STAGES, STAGE_ROWS, stageOf } from '../model/data';
+import { BAL, MODES, STAGES, STAGE_ROWS, planFor, stageOf } from '../model/data';
 import type { GameState, RunMode } from '../model/types';
-import { G, log } from '../infra/state';
+import { G, log, resetTurnState } from '../infra/state';
 import { pick } from '../infra/util';
 import { basicDeck } from '../cards/basics';
-import { startDeck, tickDue } from '../library/memory';
+import { startDeck } from '../cards/starter';
+import { enterStage } from '../library/stage';
+import { saveStageMem } from '../library/stagemem';
+import { tickDue } from '../library/memory';
 import { availableNodes, curFloor, FLOOR_MAX, genStage } from '../map/gen';
-import { startBattle } from '../combat/play';
+import { setSettleHandler, startBattle } from '../combat';
 import { EVENTS } from './events';
 import { openReward, openBossReward } from './rewards';
 import { endRun } from './report';
 import { clearRun } from './save';
 
+// combat 只负责标 `G.pending`；真正开奖励/过幕/结算由这里接管。
+// 注册发生在 journey 加载时，战斗代码不再反向 import journey。
+setSettleHandler(settlePending);
+
 /**
  * journey/run —— 一局的编排层。
  *
- * 开一局（记忆推进 → 按模式组牌 → 生成第一幕地图）、进入节点、反馈面板关闭后
+ * 开一局（记忆推进 → 固定起手 → 生成第一幕地图）、进入节点、反馈面板关闭后
  * 决定下一步去哪。它把 library / map / combat 串起来，但自己不实现规则。
  *
  * 100 层的结构在 `nextStage()` 这一件事上：幕 Boss 死掉不是结局，是**换地图**。
@@ -22,29 +29,37 @@ import { clearRun } from './save';
  */
 export function startRun(mode: RunMode = G.mode) {
   tickDue();
+  // 上一局如果是中途退出的，答题流水只进了内存；开局前落一次盘，
+  // 免得"没打完的那一局"把章节记忆丢掉。
+  saveStageMem();
   // 新开一局 = 丢掉上一个断点。否则首页会一直挂着一条"继续"，指向已经被覆盖的地图。
   clearRun();
-  // 初始牌组 = 固定的 3 张基础牌 + 按模式挑的知识卡。
-  // 基础牌不可获取、不可精炼、不可删除 —— 它们是"永远有牌可打"的那半边。
-  const deck = basicDeck().concat(startDeck(mode));
+  // 初始牌组 = 8 张基础牌（4 斩击 + 4 格挡）+ 2 张随机知识卡；模式只改答错价码。
+  // 基础牌不可获取，但可以精炼 / 遗忘 —— 它们是"永远有牌可打"的那半边。
+  const deck = basicDeck().concat(startDeck());
 
   Object.assign(G, {
-    screen: 'map', mode, stage: 1, panel: { k: 'none' }, log: [], deck,
+    screen: 'map', mode, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck,
     draw: [], discard: [], hand: [],
     map: genStage(1), pos: null, seen: {}, node: null,
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0,
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
-    powers: [], topicAtk: {}, failedTurn: {}, qSeen: {},
+    powers: [], qPicked: {}, qLeft: [], charge: {}, answers: [],
     topicWrong: {},
-    okThisTurn: 0, topOkTopic: null, cardsPlayed: 0, binderUsed: false,
-    answerDraws: 0, answerDrawsThisTurn: 0, missDrawsThisTurn: 0,
+    answerDraws: 0,
     apDown: 0, drawCut: 0,
-    runOk: 0, runBad: 0, floors: 0, pending: null, busy: false,
+    runOk: 0, runBad: 0, floors: 0, powerFallback: false,
+    pending: null, pendingCost: 0, busy: false,
   } satisfies Partial<GameState>);
+  resetTurnState();
+  // 第一幕的题库从来源题库里切出来。卡和题解耦之后，这一步才是"这一章问什么"
+  // 的唯一入口；牌组、卡面、奖励都不参与。
+  enterStage(1);
 
   const st = stageOf(1);
   log(`── 你走进记忆的档案馆 · ${MODES[mode].name}模式 ──`, 'turn');
-  log(`第一幕 · ${st.name} —— 全塔 ${FLOOR_MAX} 层，每 ${STAGE_ROWS} 层一幕，幕末有 Boss`, 'turn');
+  log(`第一幕 · ${st.name} —— 本章「${G.stageTopic}」，题目从这一章的题库里抽`, 'turn');
+  log(`全塔 ${FLOOR_MAX} 层，每 ${STAGE_ROWS} 层一幕，幕末有 Boss`, 'turn');
 }
 
 export function enterNode(key: string) {
@@ -90,7 +105,11 @@ export function dismissFeedback() {
  */
 function nextStage() {
   const next = G.stage + 1;
+  // 这一章的答题流水先落盘，再换阶段 —— 阶段记忆按 topic 存，
+  // 换完再存就会写到下一章头上。
+  saveStageMem();
   G.stage = next;
+  enterStage(next);
   G.pos = null;
   G.node = null;
   G.seen = {};
@@ -109,7 +128,9 @@ function nextStage() {
   G.busy = false;
 
   const st = stageOf(next);
+  const plan = planFor(next);
   log(`── 第 ${next} 幕 · ${st.name}：${st.sub} ──`, 'turn');
+  log(`${plan.title}：题目从这一章的题库里抽，牌还是那副牌`, 'turn');
   log(`你在幕间喘了口气：生命回满，上限 +${BAL.stageMaxHp}（现在 ${G.maxHp}）`, 'hi');
   log(`现在在第 ${curFloor()} / ${FLOOR_MAX} 层`, '');
   openBossReward();

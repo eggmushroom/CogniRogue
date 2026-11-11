@@ -1,8 +1,8 @@
 import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
 import { C, font, FONT_UI, FONT_TITLE, withAlpha } from './theme';
-import { EFFS, POWER_BY_ID, resolveEff } from '../core/model';
-import { cardKind, cardType, costGlyph, isXCost, CARD_TYPE_META } from '../core/cards';
+import { EFFS, POWER_BY_ID, effFace, resolveEff } from '../core/model';
+import { cardGrade, cardKind, cardType, costGlyph, GRADE_META, isXCost, CARD_TYPE_META } from '../core/cards';
 import type { CardDef, PowerDef } from '../core/model';
 import { drawArtIcon } from './art/icons';
 
@@ -191,24 +191,9 @@ export function bar(
 export interface CardOpts {
   up?: boolean;
   glow?: boolean;
-  dim?: boolean;
   hovered?: boolean;
   /** 底部额外说明（奖励/牌组列表用） */
   note?: string;
-  /** 隐藏底部的攻/挡 */
-  bare?: boolean;
-  /**
-   * 这张牌此刻在战斗里的状态。只有手牌会传 —— 牌组/奖励列表传了没意义，
-   * 那两个界面关心的是"这张卡是什么"，不是"这一手能不能打"。
-   *
-   * `ask` = 点下去会出题（知识卡的常态）；`spent` = 这一回合这个卡种已经答错过，
-   * 本回合不能再答；`basic` = 初始牌组，不答题、随时可打。
-   *
-   * 只有 `spent` 会被压暗。**没有"锁着"这一档了** —— 本场解锁删掉之后，
-   * 知识卡从第一回合起就是能打的，只是要答题；一张牌"能不能打"不再取决于历史，
-   * 只取决于费用和这一回合有没有答错。
-   */
-  state?: 'ask' | 'spent' | 'basic';
   /**
    * 现在付不付得起这张牌的费用。只有手牌会传 false —— 牌组、奖励、牌堆列表里
    * 不存在"此刻能不能打"这个问题，传了反而是噪音。
@@ -239,7 +224,7 @@ export interface CardOpts {
  */
 function drawCostMark(
   left: number, midY: number, s: number, glyph: string,
-  o: { x: boolean; afford: boolean; dim?: boolean },
+  o: { x: boolean; afford: boolean },
 ) {
   const col = !o.afford ? C.red : o.x ? C.gold : C.ink;
   const size = 19 * s;
@@ -258,9 +243,7 @@ function drawCostMark(
   g.strokeText(glyph, left, y);
   g.shadowColor = withAlpha(col, 0.45);
   g.shadowBlur = 8 * s;
-  // 这一回合答错过了：数字跟着效果行一起压暗。牌面上"现在打不出去"是一个整体状态，
-  // 效果行的数字暗了而费用还亮着，会让人以为只有效果失效。
-  g.fillStyle = o.dim ? withAlpha(col, 0.5) : col;
+  g.fillStyle = col;
   g.fillText(glyph, left, y);
   g.restore();
 }
@@ -291,12 +274,11 @@ export function drawCard(
   const tc = kind === 'junk' ? C.faint : typeMeta.color;
   const eff = EFFS[card.eff] ?? EFFS.strike;
   const out = resolveEff(card.eff, atk, blk, 1, card.mods);
-  const per = out.hits[0];
+  const face = effFace(out);
+  const per = face.per;
   const r = 12;
 
   g.save();
-  if (opts.dim) g.globalAlpha = 0.45;
-
   // 投影
   g.save();
   g.shadowColor = opts.glow ? withAlpha(tc, 0.75) : 'rgba(0,0,0,.65)';
@@ -317,28 +299,11 @@ export function drawCard(
   g.fill();
 
   // 内描边 + 主题色外框。
-  // 这张牌现在能不能打，只有一种判断（`sealed`）；边框、暗幕、正文都用它。
-  // 唯一被压暗的状态是"这一回合答错过了" —— 它是临时的，新回合就恢复。
-  const sealed = opts.state === 'spent';
-
-  // 压暗一层。只把正文变灰不够：字暗了，牌面还是亮的，整张卡看上去依旧"可以打"。
-  if (sealed) {
-    g.save();
-    roundRect(x, y, w, h, r);
-    g.clip();
-    g.fillStyle = 'rgba(6,8,13,.34)';
-    g.fillRect(x, y, w, h);
-    g.restore();
-  }
-
   roundRect(x + 1.5, y + 1.5, w - 3, h - 3, r - 1);
   g.strokeStyle = opts.up ? withAlpha(C.gold, 0.85)
-    : sealed ? withAlpha(tc, 0.26)
     : withAlpha(tc, opts.hovered ? 0.95 : 0.5);
   g.lineWidth = opts.up ? 2.2 : 1.5;
-  if (sealed) g.setLineDash([6, 4]);
   g.stroke();
-  g.setLineDash([]);
 
   // 顶部色条：一条实色 + 一层往下散的辉光。
   // 原来只有 3px 细线，手牌摊开时主题色几乎读不出来；加一层浸染后，
@@ -384,7 +349,7 @@ export function drawCard(
   // 顶部那一行于是读成"几点 · 什么类别"一整条，而不是两个高度不一的小件。
   if (kind !== 'junk') {
     drawCostMark(x + pad, y + 30 * s, s, costGlyph(card), {
-      x: isXCost(card), afford: opts.afford !== false, dim: sealed,
+      x: isXCost(card), afford: opts.afford !== false,
     });
   }
 
@@ -417,6 +382,29 @@ export function drawCard(
     g.fill();
     text(badgeName, bx + 14 * s, by + bh / 2 + 0.5, {
       size: Math.round(11 * s), align: 'left', color: badgeColor, weight: 700,
+    });
+  }
+
+  // ── 等级：左上角费用旁边的一个小字 ───────────────────────
+  // 等级不是稀有度，是"这张牌这一场要答对几次才免答"（C 0 / B 1 / A 2 / S 3）。
+  // 它必须画在卡面上：玩家选牌时的第一个问题就是"这一手要不要答题"，
+  // 而答案由等级决定。位置紧贴费用数字右侧，读成"几点 · 几级"一个词组。
+  if (kind === 'knowledge') {
+    const gr = cardGrade(card);
+    const gm = GRADE_META[gr];
+    g.font = font(Math.round(11 * s), 800, FONT_UI);
+    const gw = g.measureText(gr).width + 12 * s;
+    const gh = 15 * s;
+    const gx = x + pad + 16 * s;
+    const gy = y + 23 * s;
+    roundRect(gx, gy, gw, gh, 4 * s);
+    g.fillStyle = withAlpha(gm.color, 0.18);
+    g.fill();
+    g.strokeStyle = withAlpha(gm.color, 0.7);
+    g.lineWidth = 1;
+    g.stroke();
+    text(gr, gx + gw / 2, gy + gh / 2 + 0.5, {
+      size: Math.round(11 * s), align: 'center', color: gm.color, weight: 800,
     });
   }
 
@@ -453,11 +441,9 @@ export function drawCard(
     { alpha: kind === 'junk' ? 0.2 : 0.1 },
   );
 
-  // 这一回合答错过了 = 现在用不了。灰字是这件事的通行语言，
-  // 比在牌面下沿补一行解释更直接，也不用为"一个字的状态"占掉一整条。
-  const bodyCol = kind === 'junk' ? C.faint : sealed ? C.dim : C.ink2;
+  const bodyCol = kind === 'junk' ? C.faint : C.ink2;
 
-  g.fillStyle = kind === 'junk' ? C.dim : sealed ? C.ink2 : C.ink;
+  g.fillStyle = kind === 'junk' ? C.dim : C.ink;
   g.textAlign = 'left';
   nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
 
@@ -516,8 +502,7 @@ export function drawCard(
       // 亮过头，整行字会糊成一片。
       g.shadowColor = withAlpha(col, 0.5);
       g.shadowBlur = 9 * s;
-      // 这一回合答错过的牌，数字跟着压暗：亮红亮蓝会让玩家以为现在就能打出去
-      g.fillStyle = kind === 'junk' ? C.faint : sealed ? withAlpha(col, 0.55) : col;
+      g.fillStyle = kind === 'junk' ? C.faint : col;
       g.fillText(ns, x + pad + w1, yy);
       g.restore();
     }
@@ -535,22 +520,26 @@ export function drawCard(
     let ly = ey;
     // 纯防御的牌（基础格挡）没有伤害行，格挡那一行直接顶上来
     if (per > 0) {
-      const many = out.hits.length > 1 ? `${out.hits.length}` : '';
+      const many = face.hits > 1 ? `${face.hits}` : '';
       // X 费牌的数字是"每一点行动力"的量，所以后缀写 ×X（串联是 ×2X）
       const suf = xc ? ` 点伤害 ×${many}X`
-        : out.hits.length > 1 ? ` 点伤害 ×${many}` : ' 点伤害';
+        : face.hits > 1 ? ` 点伤害 ×${many}` : ' 点伤害';
       effLine('造成 ', per, suf, ly, C.numDmg);
       ly += eh;
     }
     // 第二行写的是"这张卡特殊在哪"：格挡 / 破防 / 回血 / 抽牌 / 分段。
     // 猛击本身没有第二件事（它的价值全在数字上），所以这一行留空，不硬凑一句。
-    if (out.blk > 0) { effLine('获得 ', out.blk, xc ? ' 点格挡 ×X' : ' 点格挡', ly, C.numBlk); ly += eh; }
-    else if (out.pierce) { effLine('无视格挡', 0, '', ly, eff.color); ly += eh; }
-    else if (out.healRatio > 0) {
-      effLine('回复 ', Math.max(1, Math.round(per * out.hits.length * out.healRatio)),
-        xc ? ' 点生命 ×X' : ' 点生命', ly, eff.color);
+    if (face.blk > 0) { effLine('获得 ', face.blk, xc ? ' 点格挡 ×X' : ' 点格挡', ly, C.numBlk); ly += eh; }
+    else if (face.pierce) { effLine('无视格挡', 0, '', ly, eff.color); ly += eh; }
+    else if (face.healMax > 0) {
+      // 「最多」不是谦词：回血按实际打进去的伤害算，被格挡吃掉的部分不回。
+      effLine('最多回复 ', face.healMax, xc ? ' 点生命 ×X' : ' 点生命', ly, eff.color);
       ly += eh;
-    } else if (out.draw > 0) { effLine('抽 ', out.draw, ' 张牌', ly, eff.color); ly += eh; }
+    } else if (face.drawMax > 0) {
+      // 同理：抽牌堆和弃牌堆都空时抽不满，牌面写的是上限。
+      effLine('最多抽 ', face.drawMax, ' 张牌', ly, eff.color);
+      ly += eh;
+    }
     // X 费牌必须自己说清"X 是多少" —— 牌面上只有一个 X 字形，不写这一句，
     // 玩家会以为它是"某个固定数字"而不是"这回合剩下的行动力"。
     // 它是注解不是第二项效果，所以字号降一档、染成金色，跟上面的数字行读开。
@@ -594,7 +583,6 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   const s = w / 220;
 
   g.save();
-  if (opts.dim) g.globalAlpha = 0.45;
 
   // 投影
   g.save();

@@ -18,7 +18,23 @@ export const pointer = {
   down: false,
   /** 滚轮增量，绘制时消费掉 */
   wheel: 0,
+  /**
+   * 本次按下以来指针累计移动了多少逻辑像素。
+   *
+   * 地图要能**按住拖动**，而拖动与点击是同一个手势 —— 区别只在松开时的距离。
+   * 累计值放在这里是因为判定必须发生在 pointerup：只有那一刻才知道
+   * 玩家是"按了一下"还是"拖了一段"。超过 `DRAG_MIN` 就不当成点击。
+   */
+  dragDist: 0,
+  /** 上一帧之间累计的竖直位移，`consumeDragY()` 取走 */
+  dragY: 0,
 };
+
+/** 超过这个距离就算拖动，不再触发点击。8px 在 1600×900 逻辑坐标下约等于一颗指尖的抖动。 */
+const DRAG_MIN = 8;
+
+let lastX = 0;
+let lastY = 0;
 
 let last: Hot[] = [];
 let building: Hot[] = [];
@@ -107,11 +123,35 @@ export function consumeWheel() {
   return w;
 }
 
+/**
+ * 取走这一帧累计的竖直拖动距离（逻辑像素，向下为正）。
+ *
+ * 地图用它来滚动镜头：`cam -= dy / ROW_GAP`。之所以要"取走"，是因为
+ * 绘制是每帧重算的 —— 留着不清会让镜头一直往一个方向漂。
+ */
+export function consumeDragY() {
+  const d = pointer.dragY;
+  pointer.dragY = 0;
+  return d;
+}
+
 export function bindInput(el: HTMLCanvasElement, toLogic: (cx: number, cy: number) => { x: number; y: number }) {
   const set = (e: PointerEvent) => {
     const p = toLogic(e.clientX, e.clientY);
+    lastX = pointer.x;
+    lastY = pointer.y;
     pointer.x = p.x;
     pointer.y = p.y;
+    if (pointer.down) {
+      // 只在按下期间累计：没按住时的移动只是悬停，不该被当成拖拽。
+      const dx = p.x - lastX;
+      const dy = p.y - lastY;
+      // 起点那一帧 lastX/lastY 可能是 (-9999,-9999)，那一下的位移不算拖动
+      if (Math.abs(dx) < 4000 && Math.abs(dy) < 4000) {
+        pointer.dragDist += Math.hypot(dx, dy);
+        pointer.dragY += dy;
+      }
+    }
   };
 
   el.addEventListener('pointermove', set);
@@ -119,6 +159,9 @@ export function bindInput(el: HTMLCanvasElement, toLogic: (cx: number, cy: numbe
   el.addEventListener('pointerdown', (e) => {
     set(e);
     pointer.down = true;
+    // 归零：上一次拖动的余量不应算进这一次
+    pointer.dragDist = 0;
+    pointer.dragY = 0;
     if (locked) { downRect = null; downIdx = null; return; }
     const h = hit(pointer.x, pointer.y);
     downRect = h ? { x: h.x, y: h.y, w: h.w, h: h.h } : null;
@@ -129,8 +172,14 @@ export function bindInput(el: HTMLCanvasElement, toLogic: (cx: number, cy: numbe
 
   el.addEventListener('pointerup', (e) => {
     set(e);
+    const dragged = pointer.dragDist > DRAG_MIN;
     pointer.down = false;
+    pointer.dragDist = 0;
+    pointer.dragY = 0;
     if (locked) { downRect = null; downIdx = null; return; }
+    // 拖动过的这一下不算点击：否则"拖着地图找路"会在松手时把镜头底下那个节点点进去。
+    // 这是拖动和点击共存唯一需要的规则 —— 不必给它们分配不同的按键。
+    if (dragged) { downRect = null; downIdx = null; return; }
     const h = hit(pointer.x, pointer.y);
     // 按下的和抬起的是同一个按钮 → 才算一次点击；顺带用当前帧的回调，避免闭包读到过期状态。
     // 同一张牌（下标相同）不看几何：悬停抬升本身就会让它离开原来那块矩形。
@@ -147,6 +196,8 @@ export function bindInput(el: HTMLCanvasElement, toLogic: (cx: number, cy: numbe
     pointer.x = -9999;
     pointer.y = -9999;
     pointer.down = false;
+    pointer.dragDist = 0;
+    pointer.dragY = 0;
     downRect = null;
     downIdx = null;
   });

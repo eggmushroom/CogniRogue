@@ -1,21 +1,62 @@
-import { BAL } from '../model/data';
-import type { CardInst, MemEntry, RunMode } from '../model/types';
+import type { MemEntry } from '../model/types';
 import { LS_KEY, readStore, writeStore } from '../infra/storage';
-import { PACK } from '../cards/pack';
+import { LEGACY_CARD_IDS } from '../cards/legacy';
 
 /**
- * library/memory —— FSRS-lite 复习调度。
+ * library/memory —— 卡牌熟练度 + FSRS-lite 调度状态。
  *
- * 只管「记不记得」：持久化、稳固度、到期日、按记忆状态组起手牌组。
- * 战斗中"这一回合答错过没有"是**本场**状态，归 combat/play 的 `G.failedTurn`，
- * 不要和这里混在一起。
+ * 只管「记不记得」：持久化、稳固度、到期日。
+ * 起手牌组在 cards/ 下（basics + starter）—— 那是牌面数据，不是记忆调度。
+ * 战斗中"这一回合已经答对几次"（免答计数）是**本场**状态，归 combat 的
+ * `G.charge`，不要和这里混在一起。
+ *
+ * **这里没有任何百分比。** 曾经有一个 `memRatio()` 把稳固度归一成"掌握 63%"，
+ * 画在奖励页和牌组列表里 —— 那是卡题绑定时代的遗留：那时一张卡对应一道题，
+ * "这张卡你答对过几次"还能读成"这个知识点你多熟"。卡题解耦之后，
+ * 同一张卡在五章里抽到五章的题，`MEM[card.id]` 只是一个战斗熟练度计数，
+ * 拿它当"掌握度"会直接误导玩家。要读学习进度，去 `stagemem.ts` 按章节看。
  */
-function loadMem(): Record<string, MemEntry> {
+const isFiniteNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+/** 计数类字段：负数、小数、字符串都不该进记忆表 —— 它们会在结算页变成 NaN%。 */
+const countOf = (v: unknown): number => isFiniteNum(v) && v > 0 ? Math.floor(v) : 0;
+
+/**
+ * 把一段 JSON 读成安全的记忆表。
+ *
+ * 导出是给结构检查用的：坏条目（null / 字符串 / 缺字段）以前会被原样塞进 `MEM`，
+ * `tickDue` 读 null 会抛、`memOf` 读 undefined 会算出 NaN。
+ * 这里不拒绝整个文件 —— 玩家跨局积累的掌握度不该因为一条坏记录全丢；
+ * 能留的字段就留，读不懂的字段回落到默认值。
+ */
+export function parseMem(raw: string): Record<string, MemEntry> {
   try {
-    return JSON.parse(readStore(LS_KEY) ?? '{}') as Record<string, MemEntry>;
+    const data: unknown = JSON.parse(raw);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return {};
+    // 无原型表：JSON 里的 "__proto__" 只会变成一条普通键，不会污染原型链
+    const out: Record<string, MemEntry> = Object.create(null);
+    for (const rawId of Object.keys(data)) {
+      // 旧档案里的 key 是题干前缀；先迁到稳定 card id，再写回 MEM。
+      const id = LEGACY_CARD_IDS[rawId] ?? rawId;
+      const v = (data as Record<string, unknown>)[rawId];
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      const e = v as Record<string, unknown>;
+      out[id] = {
+        stab: isFiniteNum(e.stab) && e.stab >= 1 ? e.stab : 1,
+        due: isFiniteNum(e.due) ? Math.round(e.due) : 0,
+        reps: countOf(e.reps),
+        lapses: countOf(e.lapses),
+        ok: countOf(e.ok),
+        bad: countOf(e.bad),
+      };
+    }
+    return out;
   } catch {
     return {};
   }
+}
+
+function loadMem(): Record<string, MemEntry> {
+  return parseMem(readStore(LS_KEY) ?? '{}');
 }
 
 export let MEM: Record<string, MemEntry> = loadMem();
@@ -39,52 +80,3 @@ export function tickDue() {
   for (const id in MEM) MEM[id].due -= 1;
   saveMem();
 }
-
-/**
- * 起始牌组：**按这一局选的模式取牌**，而不是按卡片自己处在哪个阶段。
- *
- *   学习：没碰过的优先 —— 这一局是来见新东西的
- *   复习：逾期的最优先，其次是学过但还没到期的 —— 这一局是来过一遍的
- *   测试：稳固度最高的优先 —— 这一局是来验已经"会了"的东西的
- *
- * 三种排序都先分桶再按 due / stab 排；桶内顺序稳定，所以同一份记忆开局可复现。
- */
-export function startDeck(mode: RunMode): CardInst[] {
-  const seen = (id: string) => { const m = memOf(id); return m.ok + m.bad > 0; };
-  const bucket = (c: (typeof PACK.cards)[number]) => {
-    const m = memOf(c.id);
-    if (mode === 'learn') return seen(c.id) ? 2 : 0;
-    if (mode === 'test') return isMastered(c.id) ? 0 : seen(c.id) ? 1 : 2;
-    // review：逾期 > 学过但没到期 > 没碰过
-    return m.due <= 0 && seen(c.id) ? 0 : seen(c.id) ? 1 : 2;
-  };
-  const sorted = PACK.cards.slice().sort((a, b) => {
-    const d = bucket(a) - bucket(b);
-    if (d) return d;
-    if (mode === 'test') {
-      return memOf(b.id).stab - memOf(a.id).stab || memOf(a.id).due - memOf(b.id).due;
-    }
-    return memOf(a.id).due - memOf(b.id).due;
-  });
-  return sorted.slice(0, Math.min(10, sorted.length)).map((c) => ({ id: c.id, up: 0 }));
-}
-
-/**
- * 这张卡的稳固度是否已经够「掌握」。只用于测试模式的选牌，
- * 不再决定答错价码 —— 价码由 `MODES[G.mode]` 决定。
- */
-export function isMastered(id: string): boolean {
-  return memOf(id).stab >= BAL.reviewStab;
-}
-
-/**
- * 记忆条的归一化。
- *
- * 用 `stab / (stab + 2×门槛)` 而不是线性除：这样「掌握」的门槛**正好落在 1/3**，
- * 而且越往上越平 —— 稳固度能长到 60，线性归一的话十几点就顶到 100%，
- * 一张"刚学会"的牌和一张"滚瓜烂熟"的牌看上去一模一样。
- */
-export const memRatio = (id: string) => {
-  const s = Math.max(0, memOf(id).stab);
-  return s / (s + BAL.reviewStab * 2);
-};

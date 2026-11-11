@@ -1,9 +1,9 @@
 import type { ReportRow } from '../model/types';
+import { CURRICULUM } from '../model/data';
 import { G } from '../infra/state';
-import { clamp } from '../infra/util';
-import { memOf, saveMem } from '../library/memory';
-import { PACK, topics } from '../cards/pack';
-import { deckPowers, isPowerId } from '../cards/registry';
+import { saveMem } from '../library/memory';
+import { saveStageMem, stageDigest } from '../library/stagemem';
+import { baseIdOf, deckPowers, isPowerId } from '../cards/registry';
 import { curFloor } from '../map/gen';
 import { clearRun } from './save';
 
@@ -12,19 +12,22 @@ import { clearRun } from './save';
  *
  * 只读记忆与 G 的统计，不改规则、不驱动战斗。它不 import combat，
  * 所以 combat/foe.ts 可以在死亡延迟里安全地调用 endRun。
+ *
+ * 掌握度按**章节**算，不按卡牌：卡题解耦后，同一张卡在五章里抽到五章的题，
+ * 拿卡牌统计当"学习进度"会串。卡牌熟练度仍然在卡面/牌组里显示，那是另一层。
  */
 export function endRun(win: boolean) {
   saveMem();
   // 一局结束就没有断点了：首页那个「继续」不该继续到一个已经结算的局
   clearRun();
-  const rows: ReportRow[] = topics().map((t) => {
-    const cs = PACK.cards.filter((c) => c.topic === t);
-    const ok = cs.reduce((n, c) => n + memOf(c.id).ok, 0);
-    const bad = cs.reduce((n, c) => n + memOf(c.id).bad, 0);
-    const mast = cs.reduce((n, c) => n + clamp(memOf(c.id).stab / 25, 0, 1), 0) / cs.length;
-    return { t, ok, bad, mast };
+  const rows: ReportRow[] = CURRICULUM.map((plan) => {
+    const d = stageDigest(plan.stage, plan.topic);
+    return { t: plan.topic, ok: d.ok, bad: d.bad, mast: d.mastery };
   });
   const total = rows.length ? rows.reduce((n, r) => n + r.mast, 0) / rows.length : 0;
+  // rows 会把没打过的章节也补成空条目，所以章节记忆在算完 rows 之后再落盘，
+  // 否则刚建的空条目要等下一次结算才写进去。
+  saveStageMem();
 
   // 押注没了，结算页也就不再有"你押的档准不准"—— 现在只剩一个问题：
   // 这一局的伤害里，多少是你记住的，多少是你当时蒙对的那一下。
@@ -38,23 +41,30 @@ export function endRun(win: boolean) {
       + '后半场你不是在赌，是在用记住的东西打仗 —— 答对退回的行动力和多抽的那张牌，都是这么来的。';
   } else if (acc >= 0.6) {
     verdict = `你答对了 ${Math.round(acc * 100)}%。这个区间是"半懂"：牌打得出去，但每一手都要重新想一次。`
-      + '把错得最多的那个主题连着答两轮，比换一副更强的牌有用。';
+      + '把错得最多的那一章连着答两轮，比换一副更强的牌有用。';
   } else {
     verdict = `你答对了 ${Math.round(acc * 100)}%。牌面够强，题没记住 —— 这副牌现在是借来的。`
       + '先把牌组压薄，让同一张卡多被问几次。';
   }
 
   G.screen = 'report';
+  // 本章本局的答题数：从流水里数，而不是从卡牌记忆里推 —— 同一张卡可能
+  // 在前几章问过别的题。流水只留最近若干条，所以它是"这一章打到现在"的下限。
+  const stageAs = G.answers.filter((a) => a.stage === G.stage && a.stageTopic === G.stageTopic);
   G.panel = {
     k: 'report',
     data: {
       win,
       mode: G.mode,
       stage: G.stage,
+      stageTopic: G.stageTopic,
+      stageOk: stageAs.filter((a) => a.right).length,
+      stageBad: stageAs.filter((a) => !a.right).length,
       floor: curFloor(),
       runOk: G.runOk, runBad: G.runBad, floors: G.floors, deckSize: G.deck.length,
-      // 增益牌不算卡种：它没有题，混进来会把牌组的多样性说多
-      kinds: new Set(G.deck.filter((e) => !isPowerId(e.id)).map((e) => e.id)).size,
+      // 增益牌不算卡种：它没有题，混进来会把牌组的多样性说多。
+      // 精炼后缀也要剥掉：同一张牌的普通版和精炼版是两种 id，但只是一种卡。
+      kinds: new Set(G.deck.filter((id) => !isPowerId(id)).map(baseIdOf)).size,
       mastery: total, rows, answerDraws: G.answerDraws,
       verdict, powers: deckPowers().map((p) => p.name),
     },

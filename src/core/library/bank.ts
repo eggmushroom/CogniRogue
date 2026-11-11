@@ -3,65 +3,62 @@ import type { Question, QuestionBank } from '../model/types';
 import { QUESTION_FORMAT, parseAnyQuestionBank } from './parse';
 
 /**
- * library/bank —— 当前题库，也是**唯一允许外部替换的东西**。
+ * library/bank —— 当前阶段题库，也是**唯一允许外部替换的东西**。
  *
  * 卡牌库在 `cards/catalog.ts` 里写死；这里只持有题目。导入一份 md
- * 会换掉 BANK，但 PACK（卡池）一个字节都不会变 —— 卡数、卡名、
+ * 会换掉整份来源题库，但 PACK（卡池）一个字节都不会变 —— 卡数、卡名、
  * 攻挡、效果、card id 全部保持，玩家的复习进度因此也不会失效。
+ *
+ * 两个层次必须分清：
+ *   - `sourceBank()` 是**载入的完整题库**（内置 400 道临时单词题，或玩家导入的那份）；
+ *   - `BANK` 是**当前阶段正在用的题库**，由 `library/stage.ts` 从来源题库切出来。
+ * 战斗中只读 `BANK`，所以换阶段不会把整座塔的题一起换掉；换题库只改来源，
+ * 下一次进阶段时才会重新切。
  *
  * `BANK` 是 let 绑定：ESM live binding 保证所有工具包读到的都是当前题库，
  * 调试入口必须用 getter 读它，不能快照（和以前 PACK 的坑一样）。
  *
  * 主题**不设白名单**：`byTopic` 的键只是写题人自己起的分组名。
  * 校验只看格式（见 `QUESTION_FORMAT`），不要求覆盖内置卡牌库的 16 个主题，
- * 也不要求主题名和卡面一致。出题用 `poolFor()` 兜底，任何题库都能玩。
+ * 也不要求主题名和卡面一致。
  */
 export let BANK: QuestionBank = { name: '（尚未载入题库）', byTopic: {}, issues: [] };
 
-export const bankTopics = (): string[] => Object.keys(BANK.byTopic);
-export const bankQuestionCount = (): number =>
-  Object.values(BANK.byTopic).reduce((n, pool) => n + pool.length, 0);
+/** 载入的完整题库。切阶段、换题库都从它出发，而不是从上一阶段的切片出发。 */
+let SOURCE: QuestionBank | null = null;
+/**
+ * 来源题库的版本号。`loadQuestionBank` 换一次就 +1；阶段层靠它判断
+ * "手上这份 BANK 还是不是从当前来源切的"。
+ */
+let GEN = 0;
 
-/** 某个主题的题目池。可能为空 —— 空了由 `poolFor` 回退到全部题目。 */
-export const questionsFor = (topic: string): Question[] => BANK.byTopic[topic] ?? [];
+export const bankGeneration = (): number => GEN;
+export const sourceBank = (): QuestionBank => SOURCE ?? BANK;
+
+export const countQuestions = (bank: QuestionBank): number =>
+  Object.values(bank.byTopic).reduce((n, pool) => n + pool.length, 0);
+export const bankQuestionCount = (): number => countQuestions(BANK);
 
 /**
- * `G.qSeen` 里全局题池专用的键。用一个题目名不可能出现的字符串，
- * 免得写题人起一个同名的 `##` 主题把两套「已问过」记录混在一起。
+ * 把题库摊平成一个池，按题号去重。顺序只取决于 `byTopic` 的键顺序与池内顺序，
+ * 同一次载入里是稳定的。以前按题干去重，现在按 `qid` —— 题号已经包含主题。
  */
-export const GLOBAL_QKEY = '\u0000global';
-
-/**
- * 全部题目摊平成一个池，按题干去重。顺序只取决于 `byTopic` 的键顺序与池内顺序，
- * 同一次载入里是稳定的 —— `qSeen` 记的题号才不会指到别的题上。
- */
-export function allQuestions(): Question[] {
+export function flattenBank(bank: QuestionBank): Question[] {
   const out: Question[] = [];
   const seen = new Set<string>();
-  for (const pool of Object.values(BANK.byTopic)) {
+  for (const pool of Object.values(bank.byTopic)) {
     for (const q of pool) {
-      if (seen.has(q.q)) continue;
-      seen.add(q.q);
+      if (seen.has(q.qid)) continue;
+      seen.add(q.qid);
       out.push(q);
     }
   }
   return out;
 }
 
-/**
- * 点开一张牌时用哪一份题池：
- *   1. 这张卡的主题有题 → 用这个主题池（内置题库走这条路，行为不变）；
- *   2. 没有 → 从**全部题目**里抽。
- *
- * 第 2 条是「题库不限制主题」能成立的关键：只写一个主题、主题名随便起、
- * 甚至完全不写 `##` 的题库，照样能喂饱全部 83 张卡；没有哪张牌会变成
- * 点不开的死牌。返回值里的 `key` 是 `G.qSeen` 的分桶键，两条路互不串号。
- */
-export function poolFor(topic: string): { key: string; list: Question[] } {
-  const own = questionsFor(topic);
-  return own.length
-    ? { key: topic, list: own }
-    : { key: GLOBAL_QKEY, list: allQuestions() };
+/** 当前阶段题库的全部题目。 */
+export function allQuestions(): Question[] {
+  return flattenBank(BANK);
 }
 
 /**
@@ -78,12 +75,19 @@ export function mergePacks(texts: string[], name = '合集题库'): string {
   return `# ${name}\n\n${body}`;
 }
 
+/** 阶段层切出一份题库后挂上来。只改"当前阶段用哪份题"，不改来源。 */
+export function setActiveBank(next: QuestionBank) {
+  BANK = next;
+}
+
 /**
  * 载入外部题库：**只校验格式，不校验主题**。
  *
  * 解析层把不合规的题收进 `issues`，这里有任何一条就整体拒绝并把前几条
  * 原样报出来（静默丢题会让写题人以为题写进去了）。校验失败时原题库
  * 原封不动，不会出现「一半是新题、一半是旧题」的中间状态。
+ *
+ * 它换的是**来源题库**；当前阶段会等下一次 `enterStage()` 才重新切片。
  */
 export function loadQuestionBank(text: string): { ok: boolean; msg: string } {
   let next: QuestionBank;
@@ -110,11 +114,13 @@ export function loadQuestionBank(text: string): { ok: boolean; msg: string } {
     return { ok: false, msg: `没有解析出任何题目。格式要求：${QUESTION_FORMAT}。` };
   }
 
+  SOURCE = next;
   BANK = next;
+  GEN += 1;
   const pools = Object.keys(next.byTopic).length;
   return {
     ok: true,
     msg: `载入「${next.name}」：${total} 道题 / ${pools} 个题池。`
-      + `卡池仍是内置的 ${CATALOG.length} 张卡；题目按主题优先，没匹配到就从全部题目里抽。`,
+      + `卡池仍是内置的 ${CATALOG.length} 张卡；每个阶段会从这份题库里切出自己那一章。`,
   };
 }

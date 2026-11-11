@@ -1,7 +1,7 @@
 import { BAL } from '../model/data';
-import { G, log } from '../infra/state';
+import { G, log, resetTurnState } from '../infra/state';
 import { shuffle } from '../infra/util';
-import { hasPower } from '../cards/registry';
+import { JUNK_ID, hasPower } from '../cards/registry';
 
 /**
  * combat/deck —— 牌堆循环与回合开始。
@@ -10,6 +10,7 @@ import { hasPower } from '../cards/registry';
  * 这里只动牌堆和手牌，不动敌人、不动面板。
  */
 export function startTurn() {
+  resetTurnState();
   // 沙漏已经在 playPower 里把 apMax 抬高了，这里不再额外加 ——
   // 上限和当前值必须是同一个数，否则能量球会显示成 4 / 3。
   G.ap = G.apMax;
@@ -29,18 +30,8 @@ export function startTurn() {
     G.block += BAL.startBlock;
     if (BAL.startBlock) log(`开局 ${BAL.startBlock} 点格挡`, 'hi');
   }
-  G.okThisTurn = 0;
-  // 遗忘 Boss 的 -3 只保一回合：每回合重新等"这一回合你有没有答对它"
-  G.topOkTopic = null;
-  G.cardsPlayed = 0;
-  G.binderUsed = false;
-  // 答对抽牌的每回合上限在 startTurn 归零，不是"每场"
-  G.answerDrawsThisTurn = 0;
-  G.missDrawsThisTurn = 0;
-  // 答错锁的是"这一回合"，新回合重新给机会
-  G.failedTurn = {};
   // 杂念不进入弃牌堆：它是虚无的，回合结束就散
-  G.hand.forEach((c) => { if (!c.junk) G.discard.push(c); });
+  G.hand.forEach((id) => { if (id !== JUNK_ID) G.discard.push(id); });
   G.hand = [];
   // 手牌在回合末尾整把进弃牌堆，所以"抽几张"= 这回合能看见几张。
   // 默认 5 张（BAL.drawPerTurn）：10 张起手牌组一回合看一半，构筑才有意义。
@@ -61,7 +52,7 @@ export function drawTo(n: number) {
   }
 }
 
-/** 额外抽 n 张（专注、索引卡、荧光笔）。返回实际抽到的张数，反馈面板要写这个数。 */
+/** 额外抽 n 张（专注、索引卡、双面镜）。返回实际抽到的张数，反馈面板要写这个数。 */
 export function drawCards(n: number) {
   let got = 0;
   while (n-- > 0) {

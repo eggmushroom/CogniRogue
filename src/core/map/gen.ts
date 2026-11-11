@@ -26,9 +26,6 @@ export function curFloor(): number {
   return floorOf(G.stage, r);
 }
 
-/** 全局层号 → 第几幕（1..100 → 1..5） */
-export const stageOfFloor = (floor: number) => Math.min(STAGES.length, Math.floor((floor - 1) / STAGE_ROWS) + 1);
-
 /**
  * 生成一幕的地图。
  *

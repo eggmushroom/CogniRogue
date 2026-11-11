@@ -4,8 +4,8 @@ import { action, text } from '../gfx/ui';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { G } from '../core/infra';
 import { resumeRun, runSaveInfo } from '../core/journey';
-import { BANK, bankQuestionCount } from '../core/library';
-import { PACK, topics } from '../core/cards';
+import { countQuestions, sourceBank } from '../core/library';
+import { PACK } from '../core/cards';
 
 export function drawTitle(t: number, openHelp: () => void, openPack: () => void) {
   drawBackdrop(t, 0.72);
@@ -73,14 +73,18 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   // 卡池是内置的、题库是可换的，两行分开写才不会让人以为导入会换牌。
   // "进度自动存在本地"撤了：这句话是承诺不是数据，帮助页里讲得比这里清楚。
   const py = save ? 744 : 760;
-  text(BANK.name, cx, py, { size: 16, align: 'center', color: C.gold, weight: 700 });
+  // 首页展示的是**来源题库**（载入的那份），不是某一幕切出来的切片。
+  // 数的是**题池**而不是卡面主题：卡题解耦之后 `card.topic` 只是牌组排序用的旧标签，
+  // 玩家真正会遇到的分组是题库里的 `## 主题`。
+  const src = sourceBank();
+  text(src.name, cx, py, { size: 16, align: 'center', color: C.gold, weight: 700 });
   text(
-    `内置 ${PACK.cards.length} 张卡 · ${topics().length} 个主题 · ${bankQuestionCount()} 道题`,
+    `内置 ${PACK.cards.length} 张卡 · ${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个题池`,
     cx, py + 26, { size: 13, align: 'center', color: C.dim },
   );
 
   if (G.deck.length) {
-    text('上一次的牌组还在。开新局会按所选模式重新抽牌。', cx, py + 50, {
+    text('上一次的牌组还在。开新局会用固定的 10 张起手牌。', cx, py + 50, {
       size: 12, align: 'center', color: C.faint,
     });
   }

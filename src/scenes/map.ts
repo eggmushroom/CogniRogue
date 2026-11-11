@@ -1,11 +1,10 @@
 import { g, roundRect, VH, VW } from '../gfx/canvas';
 import { C, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { bar, panel, text } from '../gfx/ui';
-import { onClick, hover } from '../input';
+import { consumeDragY, consumeWheel, hover, onClick } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
-import { NODE_META, STAGES, STAGE_ROWS, stageOf } from '../core/model';
+import { CURRICULUM, NODE_META, STAGES, STAGE_ROWS, stageOf } from '../core/model';
 import { G } from '../core/infra';
-import { topics } from '../core/cards';
 import { deckPowers } from '../core/cards';
 import { FLOOR_MAX, availableNodes, curFloor, floorOf } from '../core/map';
 import { enterNode } from '../core/journey';
@@ -16,30 +15,110 @@ const TOP_Y = 132;
 const BOT_Y = 788;
 const X0 = 540;
 const DX = 260;
-/** 一行 74px：一屏刚好看见 9 行，当前层落在下三分之一处 —— 上面 6 行是"接下来能走的路" */
-const ROW_GAP = 74;
+/**
+ * 一行 92px。这个数是从**节点本身的大小**反推的，不是凑出来的：
+ * 普通节点半径 30（直径 60），留 32px 的空才读得清"这是两个节点、不是一条珠链"。
+ * 以前是 74px + 半径 32 → 间距只有 10px，一整屏看下去 9 个图标糊成一条竖线，
+ * 这就是"所有图标挤在一起"的来源。
+ */
+const ROW_GAP = 92;
 const VISIBLE = Math.floor((BOT_Y - TOP_Y) / ROW_GAP) + 1;
+/** 普通 / Boss 节点的底盘半径。也跟着行距收了一档，让两者都留得出空。 */
+const NODE_R = 30;
+const BOSS_R = 38;
 
 /**
- * 纵向镜头。**地图一次只显示 9 行**，因为一幕有 20 层 ——
- * 全画出来每行只有 33px，节点会挤成一条珠链，分支就不存在了。
+ * 纵向镜头。**地图一次只显示 8 行**（一幕 20 层），但玩家可以自己滚。
  *
- * 镜头不做缓动：这一屏的信息是"我下一步能去哪"，任何拖影都只是延迟。
- * 当前层固定在下数第三行，于是"往上爬"在视觉上永远成立。
+ * 以前这里只有 `camRow()`：镜头永远贴在第 `r - 2` 行，玩家**没有任何办法**
+ * 往上或往下看一眼 —— 20 层的地图只露出 8 层，剩下的全靠"↑ 上面还有 12 层"
+ * 这一行字脑补。想规划路线（上面那层是不是精英？）就只能一层一层走过去。
+ *
+ * 现在有三条输入：滚轮、按住拖动、以及"进入下一个节点后自动回到跟随"。
+ * 自动跟随只在玩家还没手动动过镜头时生效（`camManual`）——否则玩家刚翻到
+ * 顶上看看 Boss，一进节点就被拽回来，那等于没得看。
  */
-function camRow(): number {
-  const r = G.pos ? G.pos.r : G.node ? G.node.r : 0;
-  return Math.max(0, Math.min(STAGE_ROWS - VISIBLE, r - 2));
+let cam = 0;
+/** 玩家手动调过镜头之后，就不再自动跟随当前层。 */
+let camManual = false;
+/** 上一帧聚焦的那一行。变了就说明走了一步，自动跟随该复位。 */
+let lastFocus = -1;
+/** 上一帧是哪一幕。换幕要把镜头复位。 */
+let camStage = 0;
+/** 上一帧画的是哪张地图（数组身份）。重开一局也会换一张，同样要复位。 */
+let camMap: MapNode[][] | null = null;
+
+const clampCam = (v: number) => Math.max(0, Math.min(STAGE_ROWS - VISIBLE, v));
+const followRow = (r: number) => clampCam(r - 2);
+
+/**
+ * 每帧更新镜头。
+ *
+ * 平滑是必要的：拖动的路径是像素级的，直接把它当行号会让节点在手指下打滑；
+ * 而"自动跟随"是一步跳两行，硬切会在画面上读成闪烁。两者都收敛到 `target`。
+ */
+function updateCam(dt: number) {
+  // 换幕 / 重开一局：镜头复位，否则新地图会带着上一张图的滚动位置打开。
+  if (camStage !== G.stage || camMap !== G.map) {
+    camStage = G.stage;
+    camMap = G.map;
+    cam = followRow(G.pos ? G.pos.r : 0);
+    camManual = false;
+    lastFocus = G.pos ? G.pos.r : -1;
+  }
+  const focus = G.pos ? G.pos.r : G.node ? G.node.r : 0;
+  if (focus !== lastFocus) {
+    // 走了一步：恢复自动跟随。这样"边走边看"不需要玩家自己把镜头拨回来。
+    lastFocus = focus;
+    camManual = false;
+  }
+
+  // 有面板盖在地图上时不吃滚轮/拖动：那一下属于面板里的列表（`scrollArea`），
+  // 顺手把背后的地图也滚一遍，关掉面板就会发现自己飘到了别处。
+  // 但**必须把增量取走**：留着不清，关掉面板的第一帧会把攒下的位移一次性用掉。
+  const wheel0 = consumeWheel();
+  const dy0 = consumeDragY();
+  if (G.panel.k !== 'none') return;
+
+  // 滚轮：一格（约 100px）接近一行。滚轮向下 = 往塔底看。
+  if (wheel0) { cam -= wheel0 / (ROW_GAP * 1.2); camManual = true; }
+
+  // 拖动：把地图当成一张纸往下拽。纸往下走，露出来的就是**上面那几层**（行号更大），
+  // 所以 `dy0`（向下为正）和 cam 同向。除以行距，拖动才会"跟手"。
+  if (dy0) { cam += dy0 / ROW_GAP; camManual = true; }
+
+  const target = camManual ? clampCam(cam) : followRow(focus);
+  // 手动时 target 就是 cam 本身（已经夹住），这里只把浮点尾巴收敛掉
+  cam += (target - cam) * (camManual ? 1 : 1 - Math.exp(-dt * 9));
+  cam = clampCam(cam);
 }
 
-const yOf = (r: number, cam: number) => BOT_Y - (r - cam) * ROW_GAP;
+/** 换幕 / 重开一局时把镜头复位，否则会带着上一张图的滚动位置。 */
+export function resetMapCam() {
+  cam = 0;
+  camManual = false;
+  lastFocus = -1;
+  camStage = 0;
+}
+
+/**
+ * 调试/冒烟用：当前镜头在哪一行、是不是被玩家手动拨过。
+ *
+ * 冒烟测试需要它，因为"地图能不能滚"**没法**从命中矩形上读：
+ * 只有可选的节点才注册热区，而镜头一离开当前层，屏幕上就一个可点节点都没有了。
+ */
+export function mapCam() {
+  return { cam, manual: camManual };
+}
+
+const yOf = (r: number) => BOT_Y - (r - cam) * ROW_GAP;
 const xOf = (c: number) => X0 + c * DX;
 
-export function drawMap(t: number) {
+export function drawMap(t: number, dt = 1 / 60) {
   drawBackdrop(t, 0.66);
   drawMotes(t);
 
-  const cam = camRow();
+  updateCam(dt);
   const st = stageOf(G.stage);
 
   // 每一幕给整屏加一层自己的色：换幕时最先察觉的不是新怪，是"这里的光变了"。
@@ -58,16 +137,16 @@ export function drawMap(t: number) {
 
   const avail = new Set(availableNodes());
   const cur = G.pos ? G.map[G.pos.r][G.pos.i].key : null;
-  const lo = Math.max(0, cam - 1);
-  const hi = Math.min(STAGE_ROWS - 1, cam + VISIBLE);
+  const lo = Math.max(0, Math.floor(cam) - 1);
+  const hi = Math.min(STAGE_ROWS - 1, Math.ceil(cam) + VISIBLE);
 
   // 连线先画，节点压在上面
   for (let r = lo; r < hi; r++) {
     for (const nd of G.map[r]) {
-      const a = { x: xOf(nd.col), y: yOf(nd.r, cam) };
+      const a = { x: xOf(nd.col), y: yOf(nd.r) };
       const walked = G.seen[nd.key];
       for (const j of nd.next) {
-        const b = { x: xOf(G.map[r + 1][j].col), y: yOf(r + 1, cam) };
+        const b = { x: xOf(G.map[r + 1][j].col), y: yOf(r + 1) };
         const live = walked || avail.has(`${r + 1}:${j}`);
         g.save();
         g.beginPath();
@@ -95,34 +174,61 @@ export function drawMap(t: number) {
   }
 
   for (let r = lo; r <= hi; r++) {
+    if (!G.map[r]) continue;
     for (const nd of G.map[r]) {
-      if (!G.map[r]) continue;
-      drawNode(nd, t, avail.has(nd.key), nd.key === cur, cam);
+      drawNode(nd, t, avail.has(nd.key), nd.key === cur);
     }
   }
 
   // 层号刻度：每 5 层一支，画在地图左缘 —— 挂在节点旁边会读成"这个节点叫 10"
   for (let r = lo; r <= hi; r++) {
     if (r !== 0 && (r + 1) % 5 !== 0 && r !== STAGE_ROWS - 1) continue;
-    const yy = yOf(r, cam);
-    text(`${floorOf(G.stage, r)}`, X0 - 62, yy + 4, {
+    text(`${floorOf(G.stage, r)}`, X0 - 70, yOf(r) + 4, {
       size: 11, align: 'right', color: r === STAGE_ROWS - 1 ? withAlpha(C.gold, 0.8) : C.faint, weight: 600,
     });
   }
 
-  // 视野之外还有多少路：不给这个数，玩家会以为地图到顶了。
-  // 摆在右缘（地图列之外），免得和刻度尺、底部提示挤在同一个角上。
-  if (cam > 0) {
-    text(`↑ 上面还有 ${cam} 层`, VW - 76, TOP_Y - 26, { size: 12, align: 'right', color: C.dim });
-  }
-  if (hi < STAGE_ROWS - 1) {
-    text(`↓ 下面还有 ${STAGE_ROWS - 1 - hi} 层`, VW - 76, BOT_Y + 40, { size: 12, align: 'right', color: C.faint });
-  }
+  scrollBar();
+  hint(avail.size > 0);
+}
 
-  text(
-    avail.size ? '点击发光的节点继续' : '这条路的尽头，是你要面对的东西',
-    X0 + DX, 878, { size: 14, align: 'center', color: C.dim },
-  );
+/**
+ * 右侧滚动条：把"这是 20 层里的第几层"画出来。
+ *
+ * 只有文字（"上面还有 12 层"）回答不了"我现在看到的是整张图的哪一段"，
+ * 而地图最需要的判断恰恰是"再往上两行就是精英，要不要绕"。条子只有 4px 宽，
+ * 但它是这一屏唯一能把"看到的部分"和"整张图"对上的东西。
+ */
+function scrollBar() {
+  const x = VW - 60;
+  const top = TOP_Y - 10;
+  const h = BOT_Y - TOP_Y + 20;
+  roundRect(x, top, 4, h, 2);
+  g.fillStyle = 'rgba(255,255,255,.06)';
+  g.fill();
+  const span = VISIBLE / STAGE_ROWS;
+  const thumbH = Math.max(36, h * span);
+  // cam 越大 = 看到的位置越高（行号大），而屏幕上方是"上面"，所以进度要反过来。
+  const prog = (STAGE_ROWS - VISIBLE - cam) / Math.max(1, STAGE_ROWS - VISIBLE);
+  const ty = top + (h - thumbH) * prog;
+  roundRect(x, ty, 4, thumbH, 2);
+  g.fillStyle = withAlpha(C.lineHi, camManual ? 0.95 : 0.6);
+  g.fill();
+  if (camManual) {
+    text('手动', x - 8, top - 12, { size: 10, align: 'right', color: withAlpha(C.gold, 0.7) });
+  }
+}
+
+function hint(hasAvail: boolean) {
+  text(hasAvail ? '点击发光的节点继续' : '这条路的尽头，是你要面对的东西',
+    X0 + DX, 862, { size: 14, align: 'center', color: C.dim });
+  text('滚轮 / 按住拖动 · 走一步自动回到当前位置',
+    X0 + DX, 884, { size: 11, align: 'center', color: C.faint });
+  // 上下还有多少路：和滚动条一起回答"我是不是看到底了"
+  const above = Math.max(0, STAGE_ROWS - 1 - Math.round(cam));
+  const below = Math.max(0, Math.round(cam));
+  if (above > 0) text(`↑ 上面还有 ${above} 层`, VW - 86, TOP_Y - 26, { size: 12, align: 'right', color: C.dim });
+  if (below > 0) text(`↓ 下面还有 ${below} 层`, VW - 86, BOT_Y + 34, { size: 12, align: 'right', color: C.faint });
 }
 
 /**
@@ -155,12 +261,12 @@ function platePath(type: MapNode['type'], x: number, y: number, r: number) {
   g.arc(x, y, r, 0, Math.PI * 2);
 }
 
-function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean, cam: number) {
+function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   const x = xOf(nd.col);
-  const y = yOf(nd.r, cam);
+  const y = yOf(nd.r);
   const meta = NODE_META[nd.type];
   const seen = !!G.seen[nd.key];
-  const baseR = nd.type === 'boss' ? 44 : 32;
+  const baseR = nd.type === 'boss' ? BOSS_R : NODE_R;
   // 可前往的节点呼吸着长大一点点。满屏都在发光的时候，尺寸变化比亮度更抗噪 ——
   // "亮"在这张图上已经很廉价了，光柱、浮纸、走过的路全都在发亮。
   const p = 0.5 + 0.5 * Math.sin(t * 3 + nd.r * 0.8);
@@ -239,15 +345,17 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean, cam: n
   }
 
   if (isCur) {
-    // 当前位置做成胶囊：原来是一行 12px 裸字，和 hover 时才出现的地名混在一起
+    // 当前位置做成胶囊：原来是一行 12px 裸字，和 hover 时才出现的地名混在一起。
+    // 贴着底盘下沿 6px —— 行距 92、半径 30 之后，"这里"和下一行节点只剩 2px 的余量，
+    // 放到 10px 就会和下面那个节点咬在一起。
     const tw = 52;
-    roundRect(x - tw / 2, y + baseR + 10, tw, 20, 10);
+    roundRect(x - tw / 2, y + baseR + 6, tw, 19, 9.5);
     g.fillStyle = withAlpha(C.gold, 0.16);
     g.fill();
     g.strokeStyle = withAlpha(C.gold, 0.6);
     g.lineWidth = 1;
     g.stroke();
-    text('这里', x, y + baseR + 21, { size: 12, align: 'center', color: C.gold, weight: 700 });
+    text('这里', x, y + baseR + 16, { size: 11, align: 'center', color: C.gold, weight: 700 });
   }
 
   if (avail) {
@@ -362,7 +470,8 @@ function header(st: { name: string; sub: string; color: string }) {
   const floor = curFloor();
   // 幕名是这一屏最重要的一个字：它告诉玩家"换地方了"，层号只回答"爬了多远"
   text(`第 ${G.stage} 幕 · ${st.name}`, 40, 86, { size: 16, color: st.color, weight: 700 });
-  text(`第 ${floor} / ${FLOOR_MAX} 层`, 40, 110, { size: 13, color: C.dim });
+  // 卡题解耦后，"这一章问什么"要单独说：它和牌组没有关系。
+  text(`第 ${floor} / ${FLOOR_MAX} 层 · 本章 ${G.stageTopic}`, 40, 110, { size: 13, color: C.dim });
   // 一道短金线把标题和层级收在一起，和地图里"走过的路"同一个颜色
   g.fillStyle = withAlpha(st.color, 0.55);
   g.fillRect(40, 122, 46, 2);
@@ -396,7 +505,7 @@ function leftPanel() {
   g.lineWidth = 1;
   g.stroke();
   text(`牌组 · ${G.deck.length} 张`, x + 30, dy + 17, { size: 14, color: dhv ? C.ink : C.ink2 });
-  text(`${topics().length} 个主题`, x + w - 24, dy + 17, { size: 12, color: C.dim, align: 'right' });
+  text(`${CURRICULUM.length} 章 · 本章 ${G.stageTopic}`, x + w - 24, dy + 17, { size: 12, color: C.dim, align: 'right' });
   onClick(x + 16, dy, w - 32, 34, () => { G.panel = { k: 'deck' }; });
 
   // 增益牌：它们就躺在牌组里，这里只回答"这一局我带了什么进场"

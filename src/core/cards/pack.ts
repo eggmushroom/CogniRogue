@@ -13,9 +13,7 @@ import type { Pack } from '../model/types';
  * （见 `library/bank.ts`）。PACK 从头到尾都是同一副牌。
  *
  * 它属于 cards 而不是 library：卡池是**卡牌数据**，不是知识内容。
- * library 的复习调度要读它（`startDeck` 得知道有哪些卡才排得出起手牌组），
- * 所以依赖方向是 library → cards，而不是反过来。
+ * 开局 10 张住在 cards/starter.ts 和 cards/basics.ts（8 基础 + 2 随机知识卡）；
+ * 所以 library 不需要为了排起手牌组反过来依赖卡池。
  */
 export const PACK: Pack = { name: '内置卡牌库', cards: CATALOG };
-
-export const topics = (): string[] => [...new Set(PACK.cards.map((c) => c.topic))];

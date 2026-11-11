@@ -8,18 +8,18 @@ import { bindInput, beginInput, endInput, hitAt, hotRects, keyHandler, lastClick
 import { C } from './gfx/theme';
 import { text } from './gfx/ui';
 import { G, onFx } from './core/infra';
-import { BANK, loadQuestionBank, memOf } from './core/library';
+import { BANK, enterStage, loadQuestionBank, stageMemOf } from './core/library';
 import { costNow, defOf, PACK, powerCardOf } from './core/cards';
 import { FOES } from './core/model';
 import { answer, askCard, cancelPanel, canAsk, endTurn, playPower } from './core/combat';
-import { EVENTS, dismissFeedback, endRun, enterNode, saveRun, startRun } from './core/journey';
+import { EVENTS, dismissFeedback, endRun, enterNode, openCardPick, saveRun, startRun } from './core/journey';
 import { genStage } from './core/map';
-import { STAGES } from './core/model';
+import { CURRICULUM, STAGES } from './core/model';
 import type { Move } from './core/model';
 import {
   drawBattle, DISCARD_TO, ENEMY, fxCount, handSettled, HERO, heroHand, resetBattleView, syncBattle,
 } from './scenes/battle';
-import { drawMap } from './scenes/map';
+import { drawMap, mapCam } from './scenes/map';
 import { drawOverlay } from './scenes/overlay';
 import { drawTitle } from './scenes/title';
 import { drawAtlas } from './scenes/atlas';
@@ -132,7 +132,8 @@ keyHandler((k) => {
   if (panelHold > 0 || enemyHold > 0) return;
   if (k === 'escape') {
     if (G.screen === 'atlas') { G.screen = 'title'; return; }
-    if (p.k === 'question' || p.k === 'deck' || p.k === 'pile' || p.k === 'help' || p.k === 'pack') cancelPanel();
+    if (p.k === 'question' || p.k === 'deck' || p.k === 'pile'
+        || p.k === 'help' || p.k === 'pack' || p.k === 'mode') cancelPanel();
     return;
   }
   if (k === 'confirm') {
@@ -175,7 +176,7 @@ function frame(now: number) {
   } else if (G.screen === 'title') {
     drawTitle(t, () => { G.panel = { k: 'help' }; }, () => { G.panel = { k: 'pack', msg: '', ok: true }; });
   } else if (G.screen === 'map') {
-    drawMap(t);
+    drawMap(t, dt);
   } else {
     syncBattle();
     drawBattle(t, dt);
@@ -219,6 +220,8 @@ declare global {
       probe: (x: number, y: number) => { label: string; idx?: number } | null;
       /** 手牌是不是全部落位并停稳：代替"睡一会儿再点" */
       handReady: () => boolean;
+      /** 地图镜头：滚轮/拖动有没有真的生效（节点热区读不出这件事） */
+      mapCam: () => { cam: number; manual: boolean };
       /** 最近一次真正被接受的点击，用来确认"这一下点的是谁" */
       lastClick: () => { label: string; idx?: number } | null;
       toScreen: (x: number, y: number) => { x: number; y: number };
@@ -232,11 +235,6 @@ declare global {
       pick: (i: number) => void;
       /** 调试/截图用：直接打出手牌里第 i 张增益牌 */
       power: (i: number) => void;
-      /**
-       * 调试/自动化用：直接改一张卡的记忆（稳固度）。模式只决定答错时掉多少，
-       * 冒烟测试没有时间去真的答对两次，所以开一个后门。
-       */
-      markMem: (id: string, ok: number, bad?: number) => void;
       /** 调试/截图用：把当前这一局写成断点（首页「继续这一局」的那条存档） */
       save: () => void;
       /** 调试/自动化用：还在飞的单元数（抽牌 / 弃牌 / 敌人动作），用来盯"飞行单元漏清" */
@@ -257,6 +255,7 @@ window.cog = {
   hots: hotRects,
   probe: hitAt,
   handReady: handSettled,
+  mapCam,
   lastClick: lastClickInfo,
   toScreen,
   strike: (kind = 'strike', target: 'enemy' | 'hero' = 'enemy') => {
@@ -275,14 +274,7 @@ window.cog = {
   pick: (i: number) => answer(i),
   power: (i: number) => playPower(i),
   // X 费牌的费用是活的，读的是"此刻"——冒烟测试断言扣了几点时用它，别去猜卡表
-  costOf: (id: string) => costNow(defOf({ id, up: 0 })),
-  markMem: (id: string, ok: number, bad = 0) => {
-    const m = memOf(id);
-    m.ok = ok;
-    m.bad = bad;
-    // 顺手把稳定度抬起来，卡面上的记忆条才和"学过了"对得上
-    m.stab = Math.max(m.stab, ok * 4);
-  },
+  costOf: (id: string) => costNow(defOf(id)),
   fx: () => ({ ...fxCount(), enemy: FX.enemyActCount() }),
   enemyAct: (k: FX.EnemyActKind = 'atk', taken = 9) => {
     // 每种动作给一个像真的数值：杂念一次塞两张，不是十二张
@@ -334,6 +326,8 @@ function devJump() {
   const gotoStage = (n: number) => {
     if (!n) return;
     G.stage = n;
+    // 截图/调试也要切当前章的题库，否则幕名和"本章"会对不上。
+    enterStage(n);
     G.map = genStage(n);
     G.pos = null;
     G.seen = {};
@@ -342,6 +336,10 @@ function devJump() {
   if (d === 'rest') { startRun(); G.panel = { k: 'rest' }; return; }
   if (d === 'event') { startRun(); G.panel = { k: 'event', ev: EVENTS[0] }; return; }
   if (d === 'deck') { startRun(); G.panel = { k: 'deck' }; return; }
+  // 精炼选牌面板：每份副本各一格，卡面写的是"选完之后的数值"。
+  // 专门留一个入口，是因为这张面板的版式最容易在改动里悄悄退回去
+  //（去重、格子数、预览数值），而它正好是玩家报过"看不到效果"的那一屏。
+  if (d === 'refine') { startRun(); openCardPick('up'); return; }
   if (d === 'pack') { startRun(); G.panel = { k: 'pack', msg: '', ok: true }; return; }
   if (d === 'help') { startRun(); G.panel = { k: 'help' }; return; }
   // 敌人动作截图：把招式表固定成单招循环，头顶意图和演出才是同一件事；
@@ -363,7 +361,7 @@ function devJump() {
       if (tpl) {
         Object.assign(G.enemy, {
           key: tpl.key, name: tpl.name, art: tpl.art, hue: tpl.hue,
-          tag: tpl.tag, hint: tpl.hint, mech: tpl.mech, mechV: tpl.mechV,
+          tag: tpl.tag, mech: tpl.mech, mechV: tpl.mechV,
           moves: tpl.moves, mv: 0,
         });
       } else {
@@ -386,20 +384,19 @@ function devJump() {
   }
   if (d === 'power') {
     startRun();
-    G.deck.push({ id: 'pow:hourglass', up: 0 }, { id: 'pow:lamp', up: 0 });
+    G.deck.push('pow:hourglass', 'pow:lamp');
     enterNode(G.map[0][0].key);
     // 正常是抽牌抽到的；截图要确定性，所以直接从牌堆挪两张进手
     ['pow:hourglass', 'pow:lamp'].forEach((id) => {
-      const i = G.draw.findIndex((e) => e.id === id);
+      const i = G.draw.indexOf(id);
       if (i >= 0) G.hand.push(G.draw.splice(i, 1)[0]);
     });
     return;
   }
 
-  // 复习模式：卡面下沿写「复习 · 答错等洗牌」
+  // 复习模式：`?dev=review` 只用来拍"复习模式"那一档的卡面文案
   if (d === 'review') {
     startRun('review');
-    G.deck.forEach((e) => { const m = memOf(e.id); m.ok = 3; m.stab = 14; m.due = 3; });
     enterNode(G.map[0][0].key);
     return;
   }
@@ -424,7 +421,7 @@ function devJump() {
     // X 费牌：牌面上只有一个 X，得看答题面板怎么把它换算成"现在等于几"。
     // 换一张真的 X 费知识卡进手牌，而不是靠抽牌运气。
     const xid = PACK.cards.find((c) => c.cost === 'x')!.id;
-    G.hand[0] = { id: xid, up: 0 };
+    G.hand[0] = xid;
     G.ap = G.apMax;
     askCard(0);
   } else if (d === 'reward') {
@@ -432,19 +429,28 @@ function devJump() {
     G.pending = 'clear';
     dismissFeedback();
   } else if (d === 'report') {
-    // 只是为了让文档截图里不是一排 0 —— 正常游戏里这些数字全部来自真实答题
-    PACK.cards.forEach((c, i) => {
-      const m = memOf(c.id);
-      m.ok = 4 - (i % 3);
-      m.bad = i % 2;
-      m.stab = 13 + ((i * 5) % 12);
+    // 只是为了让文档截图里不是一排 0 —— 正常游戏里这些数字全部来自真实答题。
+    // 章节掌握读的是 STAGE_MEM，所以这里造的是章节档案，不是卡牌记忆。
+    const demo: Array<[number, number]> = [[9, 2], [7, 4], [12, 6], [4, 5], [0, 0]];
+    CURRICULUM.forEach((p, i) => {
+      const e = stageMemOf(p.topic);
+      e.ok = demo[i][0];
+      e.bad = demo[i][1];
+      e.q = {};
+      for (let j = 0; j < e.bad; j++) e.q[`q_demo_${p.stage}_${j}`] = { ok: 0, bad: 1 };
     });
     G.answerDraws = 14;
     G.runOk = 12;
     G.runBad = 6;
     G.floors = 5;
     G.stage = 3;
-    G.deck.push({ id: 'pow:log', up: 0 }, { id: 'pow:lamp', up: 0 });
+    enterStage(3);
+    // 本章答题也来自流水，不是卡牌记忆；造 18 条，12 对 6 错。
+    G.answers = Array.from({ length: 18 }, (_, i) => ({
+      qid: `q_demo_3_${i}`, topic: G.stageTopic, stageTopic: G.stageTopic, stage: G.stage,
+      right: i < 12, choice: 0, answer: 0, stem: `演示题 ${i + 1}`,
+    }));
+    G.deck.push('pow:lamp');
     endRun(true);
   }
 }

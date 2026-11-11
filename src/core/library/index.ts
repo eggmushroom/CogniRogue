@@ -2,7 +2,9 @@
  * library —— 知识内容工具包。
  *
  * parse    把 md / JSON 解析成题库 + 格式诊断（主题是可选分组）
- * bank     当前题库（唯一可外部替换的东西）+ 格式校验 + 主题优先/全局兜底的题池
+ * bank     来源题库 / 当前阶段题库 / 每题稳定题号
+ * stage    按课程表把来源题库切成每一幕的 BANK
+ * stagemem 按章节记的学习档案（题号 + 章节，不是卡）
  * memory   跨局记忆与起手牌组
  * question 每次出题的选项乱序视图
  *
@@ -12,5 +14,7 @@
  */
 export * from './parse';
 export * from './bank';
+export * from './stage';
+export * from './stagemem';
 export * from './memory';
 export * from './question';

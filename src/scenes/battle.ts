@@ -8,11 +8,11 @@ import * as FX from '../gfx/fx';
 import { BAL, MODES, POWER_BY_ID, stageOf } from '../core/model';
 import { G } from '../core/infra';
 import { curFloor } from '../core/map';
-import { canPay, cardKind, costOf, defOf, isXCost, powerOf, statOf } from '../core/cards';
+import { canPay, cardKind, costOf, defOf, isUpgraded, isXCost, powerOf, statOf } from '../core/cards';
 import {
-  askCard, canAsk, endTurn, intentText, playBasic, playPower,
+  askCard, cardAskState, endTurn, intentText, playBasic, playFree, playPower,
 } from '../core/combat';
-import type { CardDef, CardInst, Foe, Mech } from '../core/model';
+import type { CardDef, Foe, Mech } from '../core/model';
 
 /** 增益牌飞向的位置：右上角第一个增益槽。和 topBar 里的排布常量对齐。 */
 export const POWER_SLOT = { x: VW - 82, y: 32 };
@@ -32,8 +32,10 @@ export function syncBattle() {
   if (key !== lastEnemyKey) {
     lastEnemyKey = key;
     // 新的一场战斗：手牌表清空，开局那 5–6 张才能重新从牌堆飞进来。
-    // 牌实例是跨战斗复用的（deck 里就是同一批对象），不清的话它们会带着上场的坐标出现。
-    prevHand = new Set();
+    // 记录是跨战斗复用的，不清的话新的手牌会带着上一场的坐标出现。
+    prevHand = [];
+    prevFx = [];
+    handFx = [];
     discardFx.length = 0;
   }
 }
@@ -107,7 +109,7 @@ function topBar(t: number) {
   const st = stageOf(G.stage);
   icon('floor', 424, 31, 9, C.dim);
   text(`第 ${curFloor()} 层`, 438, 31, { size: 17, color: C.ink2, weight: 600 });
-  text(`${st.i} · ${st.name}`, 438, 52, { size: 11, color: st.color, weight: 600 });
+  text(`${st.name} · ${G.stageTopic}`, 438, 52, { size: 11, color: st.color, weight: 600 });
 
   // 模式胶囊：整局不变，所以只说一次。它原来印在每张手牌的下沿 ——
   // 一句话重复五遍，等于没说。敌人等级不放在这里：名字下面已经标了，两处重复。
@@ -121,6 +123,26 @@ function topBar(t: number) {
     g.lineWidth = 1.2;
     g.stroke();
     text(`${md.name}模式`, 524 + tw / 2, 31, { size: 14, color: md.color, weight: 700, align: 'center' });
+  }
+
+  // 本场还剩几道**新题**（不是"还能不能答"）。答错不扣行动力，代价落在
+  // 这个数上；新题用完会进入复用，所以 0 不该报警 —— 它显示「题 复用」，
+  // 知识卡仍然能打，只是问的是本章被问得最少的题。
+  {
+    const left = G.qLeft.length;
+    const reusing = left === 0;
+    const col = reusing ? C.dim : left <= 2 ? C.red : left <= 4 ? C.gold : C.cyan;
+    const bx = 524 + md.name.length * 16 + 44;
+    g.font = font(13, 700, FONT_UI);
+    const label = reusing ? '题 复用' : `题 ${left}`;
+    const bw = g.measureText(label).width + 30;
+    roundRect(bx, 18, bw, 26, 13);
+    g.fillStyle = withAlpha(col, 0.12);
+    g.fill();
+    g.strokeStyle = withAlpha(col, 0.5);
+    g.lineWidth = 1.2;
+    g.stroke();
+    text(label, bx + bw / 2, 31, { size: 13, color: col, weight: 700, align: 'center' });
   }
 
   // 本场已打出的增益牌。它不再是"装备栏"：每场开头清空、每场重新打，
@@ -308,15 +330,16 @@ function mechNote(e: Foe): string | null {
   const v = e.mechV ?? (BAL.mech as Partial<Record<Mech, number>>)[e.mech] ?? 0;
   switch (e.mech) {
     case 'leech': return `你答错，它回 ${v} 点血`;
-    case 'thorns': return `你打它一次，自己挨 ${v} 点`;
+    case 'thorns': return `你每打出一次攻击，自己挨 ${v} 点（击杀不反伤；你的格挡挡不住）`;
     case 'bulwark': return `你答错，它 +${v} 格挡`;
     case 'fog': return `每回合少抽 ${v} 张`;
     case 'siphon': return `被它打中，下回合 −${v} 行动力`;
     case 'haste': return `每回合攻击 +${v}`;
-    case 'reviewer': return `一回合没答对，额外 ${v} 点`;
+    case 'reviewer': return `一回合没答对，额外 ${v} 点（意图已计入）`;
     case 'pierce': return '攻击无视一半格挡';
-    case 'oblivion': return '专挑你错得最多的主题';
-    case 'lethe': return '你错一次，它永久 +1 攻';
+    case 'oblivion':
+      return `错题主题：它 +${v}；该主题答对则 −${BAL.mech.oblivionReduce}（意图已计入）`;
+    case 'lethe': return `你错一次，它永久 +${v} 攻`;
     default: return null;
   }
 }
@@ -813,6 +836,13 @@ interface Slot { x: number; y: number; rot: number; i: number }
  * 逻辑层是"瞬间抽满"的（drawTo 一次 push 完），如果照原样画，玩家看到的是
  * 手牌凭空出现 —— 抽牌这件事在画面上根本没有发生过。所以这里补上"牌从牌堆
  * 出来"的那 0.3 秒：每张牌自己算一个出生时间，排队起飞。
+ *
+ * ## 为什么按**槽位下标**记，而不是按 card id 记
+ *
+ * 手牌里现在只是一串 id（见 `CardId`），同名的牌会出现好几次 —— 一副起手
+ * 有 4 张基础斩击。按 id 记的话，两张基础斩击会共用同一条飞行记录，
+ * 于是"打掉一张"这件事在画面上完全看不出来（另一张还挂着同一条 fx）。
+ * 所以手牌这边一律按 `G.hand` 的下标记：id 只用来取卡面。
  */
 interface DrawFx {
   /** 出生后经过的秒数。负数 = 还在排队，不画也不可点 */
@@ -870,9 +900,19 @@ interface DiscardFx {
   mode: 'discard' | 'return' | 'junk' | 'power';
 }
 
-const handFx = new Map<CardInst, DrawFx>();
+/**
+ * 手牌的飞行记录，**按槽位下标**存（见 `DrawFx` 的说明）。
+ *
+ * `prevFx` 和 `prevHand` 平行：上一帧画出来的那一排。手牌是一串 id，
+ * 出牌会让后面的牌整体左移，所以每帧先用 `alignHand()` 求一份对齐表，
+ * 把还活着的记录挪到新下标上，再让多出来的那些飞进来、少掉的那些飞出去。
+ */
+let handFx: DrawFx[] = [];
 const discardFx: DiscardFx[] = [];
-let prevHand = new Set<CardInst>();
+/** 上一帧的手牌 id 序列（与 `prevFx` 平行）。 */
+let prevHand: string[] = [];
+/** 上一帧的手牌记录，用来给"飞走的那张"提供出发点。 */
+let prevFx: DrawFx[] = [];
 /** 弃牌堆收到牌时冒一下：0..1 衰减，用来让计数跳起来 */
 let discardPulse = 0;
 
@@ -896,69 +936,112 @@ function layoutHand(): Slot[] {
 const easeOut = (p: number) => 1 - Math.pow(1 - p, 3);
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-function drawHand(t: number, dt: number) {
-  const slots = layoutHand();
-
-  // 先认一遍"这一帧新进手的牌"。用上一帧的手牌表比对，而不是用逻辑层的事件：
-  // 回合开始抽满、专注抽牌、杂念，三种来源都会走这里，表现层不需要知道是谁抽的。
-  const inHand = new Set<CardInst>();
-  // 敌人出手期间，新抽的手牌先留在牌堆里：core 已经同步换好了手牌，
-  // 但两拨飞行物叠在一起会糊成一片。演完再让它们依次飞进来。
-  const foeActing = FX.enemyBusy();
-  let lane = 0;
-  for (const s of slots) {
-    const ent = G.hand[s.i];
-    if (!ent) continue;
-    inHand.add(ent);
-    let fx = handFx.get(ent);
-    if (!prevHand.has(ent) || !fx) {
-      fx = { age: -lane * DRAW_GAP, px: DRAW_FROM.x, py: DRAW_FROM.y, dx: DRAW_FROM.x, dy: DRAW_FROM.y, rot: -0.42 };
-      handFx.set(ent, fx);
-      lane += 1;
-    }
-    const before = fx.age;
-    if (!foeActing) fx.age += dt;
-    // 排队结束、真正起飞的那一帧：牌堆抖一下，牌是从这里出去的
-    if (before < 0 && fx.age >= 0) {
-      FX.burst(DRAW_FROM.x, DRAW_FROM.y, C.blue, 4, {
-        speed: 150, size: 3, grav: -70, life: 0.4,
-      });
+/**
+ * 上一帧的手牌 → 这一帧的手牌，谁还是谁。
+ *
+ * 用手牌 id 序列求最长公共子序列：手牌最多八张，O(n·m) 可以忽略。
+ * 之所以要 LCS 而不是逐位比对：牌组里有四张一模一样的基础斩击，逐位比对
+ * 无法区分"打掉了左边那张"和"打掉了右边那张"，而后者会让整排牌看起来
+ * 全都错位飞了一次。LCS 选出的是**最大化保留**的那种对齐，画面上最稳。
+ *
+ * 返回 `keep[j] = 上一帧的下标`（-1 = 这一帧新抽到的）。
+ */
+function alignHand(prev: string[], hand: string[]): number[] {
+  const n = prev.length;
+  const m = hand.length;
+  // dp[i][j] = prev[i..] 与 hand[j..] 的 LCS 长度
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = prev[i] === hand[j]
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
     }
   }
+  const keep: number[] = new Array(m).fill(-1);
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (prev[i] === hand[j]) { keep[j] = i; i += 1; j += 1; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i += 1;
+    else j += 1;
+  }
+  return keep;
+}
 
-  // 离手的牌：出牌、或者回合结束整把弃掉。这里先按"上一帧还在手里"算出来，
-  // 拿它最后画到的位置当起点 —— 玩家看到的就是那张牌自己飞走的，不是一张新的。
+function drawHand(t: number, dt: number) {
+  const slots = layoutHand();
+  const foeActing = FX.enemyBusy();
+
+  // 先对齐，再决定"谁飞进来、谁飞出去"。这一帧的手牌和上一帧的差集就是全部答案。
+  const keep = alignHand(prevHand, G.hand);
+  const kept = new Set(keep.filter((i) => i >= 0));
+  const nextFx: DrawFx[] = new Array(G.hand.length);
+  keep.forEach((pi, j) => { if (pi >= 0) nextFx[j] = prevFx[pi]; });
+
+  // 离手的牌：上一帧在、这一帧没被保留下来的那些。拿它最后画到的位置当起点 ——
+  // 玩家看到的就是那张牌自己飞走的，不是一张新的。
   let laneOut = 0;
-  for (const ent of prevHand) {
-    if (inHand.has(ent)) continue;
-    const fx = handFx.get(ent);
-    handFx.delete(ent);
-    const card = defOf(ent);
-    if (!card || !fx) continue;
+  for (let pi = 0; pi < prevHand.length; pi++) {
+    if (kept.has(pi)) continue;
+    const fx = prevFx[pi];
+    const id = prevHand[pi];
+    if (!fx || !id) continue;
+    const card = defOf(id);
     // 判断去处的唯一依据是"逻辑层把它放哪了"：学习模式答错的牌在 draw 里，
     // 其余不是弃掉就是离开循环。表现层不重复算一遍规则。
     const kind = cardKind(card);
     const mode: DiscardFx['mode'] = kind === 'power' ? 'power'
-      : G.draw.includes(ent) ? 'return'
+      : G.draw.includes(id) ? 'return'
         : kind === 'junk' ? 'junk' : 'discard';
-    const st = statOf(ent);
+    const st = statOf(id);
     discardFx.push({
-      card, atk: st.atk, blk: st.blk, up: !!ent.up,
+      card, atk: st.atk, blk: st.blk, up: isUpgraded(id),
       x: fx.dx, y: fx.dy, rot: fx.rot,
       age: mode === 'power' || mode === 'junk' ? 0 : -laneOut * DISCARD_GAP,
       mode,
     });
     if (mode === 'discard' || mode === 'return') laneOut += 1;
   }
-  prevHand = inHand;
+
+  // 新进手的牌：排一个队，一张接一张从牌堆起飞
+  let lane = 0;
+  for (let j = 0; j < G.hand.length; j++) {
+    if (nextFx[j]) continue;
+    nextFx[j] = {
+      age: -lane * DRAW_GAP,
+      px: DRAW_FROM.x, py: DRAW_FROM.y,
+      dx: DRAW_FROM.x, dy: DRAW_FROM.y,
+      rot: -0.42,
+    };
+    lane += 1;
+  }
+  handFx = nextFx;
+  // 敌人出手期间，新抽的手牌先留在牌堆里：core 已经同步换好了手牌，
+  // 但两拨飞行物叠在一起会糊成一片。演完再让它们依次飞进来 ——
+  // 所以 age 的推进放在下面按牌走，而不是在这里统一加 dt。
 
   for (const s of slots) {
-    const ent = G.hand[s.i];
-    if (!ent) continue;
-    const fx = handFx.get(ent);
-    if (!fx || fx.age < 0) continue; // 还在队列里，这张牌此刻不存在
-    const card = defOf(ent);
-    const st = statOf(ent);
+    const id = G.hand[s.i];
+    if (!id) continue;
+    const fx = handFx[s.i];
+    if (!fx) continue;
+    // **排队中的牌也要推进 age**。负数变成 0 这一步只发生在这里，
+    // 所以"还在队列里"必须是 `continue` 之前的状态判断，而不是它的原因 ——
+    // 先 continue 再推进，那些牌就永远停在 -0.045，一手牌永远不落位（冒烟测试
+    // 会一直等 handSettled，玩家则会看到一排半空中的牌）。
+    const before = fx.age;
+    if (!foeActing) fx.age += dt;
+    if (fx.age < 0) continue; // 还在队列里，这张牌此刻不存在
+    const card = defOf(id);
+    const st = statOf(id);
+
+    // 排队结束、真正起飞的那一帧：牌堆抖一下，牌是从这里出去的
+    if (before < 0) {
+      FX.burst(DRAW_FROM.x, DRAW_FROM.y, C.blue, 4, {
+        speed: 150, size: 3, grav: -70, life: 0.4,
+      });
+    }
 
     const flying = fx.age < DRAW_DUR;
     let px: number;
@@ -968,7 +1051,7 @@ function drawHand(t: number, dt: number) {
     let alpha = 1;
 
     if (flying) {
-      const p = clamp01(fx.age / DRAW_DUR);
+      const p = clamp01(Math.max(0, fx.age) / DRAW_DUR);
       const e = easeOut(p);
       // 抛物线而不是直线：从牌堆甩上来再落进手里，才有"抽"的重量。
       // 每张牌弧高差一点，六张连着抽时才不会叠成一条线上的珠子。
@@ -1002,25 +1085,28 @@ function drawHand(t: number, dt: number) {
     fx.dx = px;
     fx.dy = py;
 
-    // 三种状态：基础牌（不答题，随时可打）/ 要答题 / 这回合已经答错过。
+    // 三种状态：基础牌（不答题，随时可打）/ 要答题 / 这一回合已经答错过。
     // 没有"锁着"这一档了 —— 本场解锁删掉之后，知识卡从第一回合起就能打，只是要答题。
     const kind = cardKind(card);
     const isPow = kind === 'power';
     const isJunk = kind === 'junk';
     const isBase = kind === 'basic';
-    const state = isJunk || isPow ? undefined
-      : isBase ? 'basic'
-        : G.failedTurn[card.id] ? 'spent'
-          : 'ask';
+    // 知识卡只有两种状态：还欠答题（ask）、这一场已免答（free）。
+    // `empty` 只在"整章一道题都没有"时出现，正常载入不会发生；
+    // 'free' 不该压暗 —— 它是最强的状态，压暗会读成"用不了"。
+    const askState = isJunk || isPow || isBase ? 'other' : cardAskState(id);
 
     g.save();
     g.globalAlpha = alpha;
     g.translate(px, py);
     g.rotate(rot);
     drawCard(-w / 2, -h / 2, w, h, card, st.atk, st.blk, {
-      up: !!ent.up, glow: hv, hovered: hv, state,
+      up: isUpgraded(id), glow: hv, hovered: hv,
       // 付不起的牌费用数字转红：这一手现在打不出去，得在点之前就看得出来
       afford: isJunk || canPay(card),
+      // 免答的牌在右下角标一个「免」：它是这一场攒出来的状态，不标出来玩家不会知道
+      // 为什么这张牌这次没问问题。
+      note: askState === 'free' ? '免答' : undefined,
     });
     g.restore();
 
@@ -1040,25 +1126,40 @@ function drawHand(t: number, dt: number) {
       return false;
     };
 
+    /**
+     * 点击时重新按 id 找一次手牌下标。
+     *
+     * 热区是**上一帧**注册的，而手牌可能在这一帧里变过（答对抽牌、敌人塞杂念、
+     * 上一张牌刚离手让后面的牌整体左移）。闭包里那个 `s.i` 是当时的下标，
+     * 直接用会点到"现在站在这个位置上的另一张牌" —— 基础斩击打了却没反应，
+     * 就是这么发生的。
+     *
+     * 同名牌本来就可以互换（牌组只存 id，见 `CardId`），所以"找到任意一份这个 id"
+     * 在规则上就等于"点中了这一张"。找不到 = 它已经不在手里了，直接忽略。
+     */
+    const idxOf = () => G.hand.indexOf(id);
+
     // 基础牌点下去直接打，知识卡点下去出题，增益牌点下去立刻生效 ——
     // 三种都是"点这张牌"，只是它问你要的东西不一样
     if (isPow) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
-        if (!payUp()) return;
-        playPower(s.i);
+        const i = idxOf();
+        if (i < 0 || !payUp()) return;
+        playPower(i);
       }, 'card', s.i);
     } else if (isBase) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
-        if (!payUp()) return;
-        playBasic(s.i);
+        const i = idxOf();
+        if (i < 0 || !payUp()) return;
+        playBasic(i);
       }, 'card', s.i);
     } else if (!isJunk) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
-        if (!payUp()) return;
-        if (canAsk(ent)) { askCard(s.i); return; }
-        // 走不到这里才怪：这一回合这个卡种已经答错过。说清楚，而不是抖一下了事。
-        FX.shake(4);
-        FX.floatText(HAND.cx, HAND.cy - 54, '这一回合这个卡种已经答错过了 —— 下回合再试', C.red, 18, { vy: -34 });
+        const i = idxOf();
+        if (i < 0 || !payUp()) return;
+        // 攒满等级直接打，否则抽题。新题用完时 askCard 会从本章复用一道，
+        // 所以这里不需要再为"没题了"单独分支。
+        if (askState === 'free') playFree(i); else askCard(i);
       }, 'card', s.i);
     } else {
       onClick(px - w / 2, py - h / 2, w, h, () => {
@@ -1070,10 +1171,16 @@ function drawHand(t: number, dt: number) {
     }
   }
 
+  // 这一帧画完，它就是"上一帧"了。存的是画出去的坐标（含悬停抬升），
+  // 牌离手时从这里起飞才不会向下跳一下。
+  prevHand = G.hand.slice();
+  prevFx = handFx.slice();
+
   if (!G.hand.length && G.pending === null) {
     text('手里没牌了 —— 结束回合', HAND.cx, HAND.cy - 40, { size: 20, align: 'center', color: C.dim });
   }
 }
+
 
 /**
  * 离手的牌飞向弃牌堆。
@@ -1226,7 +1333,7 @@ function endTurnButton() {
 
 /** 调试/冒烟用：在飞的牌数量。飞行单元如果清不掉，会在屏幕上永远留一张牌。 */
 export function fxCount() {
-  return { hand: handFx.size, discard: discardFx.length };
+  return { hand: handFx.length, discard: discardFx.length };
 }
 
 /**
@@ -1238,10 +1345,11 @@ export function fxCount() {
  */
 export function handSettled() {
   const slots = layoutHand();
-  if (slots.length !== handFx.size) return false;
+  if (slots.length !== handFx.length) return false;
   for (const s of slots) {
-    const fx = handFx.get(G.hand[s.i]);
+    const fx = handFx[s.i];
     if (!fx || fx.age < DRAW_DUR) return false;
+    // 手牌变少时剩下的牌会"滑"到新位置，所以还要等它滑到位，否则测试点到的是半路。
     if (Math.abs(fx.px - s.x) > 1 || Math.abs(fx.py - s.y) > 1) return false;
   }
   return true;
@@ -1249,8 +1357,9 @@ export function handSettled() {
 
 export function resetBattleView() {
   lastEnemyKey = '';
-  prevHand = new Set();
-  handFx.clear();
+  prevHand = [];
+  prevFx = [];
+  handFx = [];
   discardFx.length = 0;
   discardPulse = 0;
   FX.clearFx();

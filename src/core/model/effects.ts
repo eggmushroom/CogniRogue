@@ -13,10 +13,6 @@ export interface EffDef {
   key: Eff;
   /** 卡面徽章上的两字名 */
   name: string;
-  /** 帮助面板里的一句话 */
-  hint: string;
-  /** 六字以内的定位，用在帮助面板的效果表里 */
-  tagline: string;
   /** 攻/挡倍率，乘在卡面 stat 上 */
   atk: number;
   blk: number;
@@ -34,27 +30,21 @@ export interface EffDef {
 export const EFFS: Record<Eff, EffDef> = {
   strike: {
     key: 'strike', name: '猛击', atk: 1, blk: 0.7, times: 1, color: '#e08048',
-    hint: '攻守均衡的基准效果。没有短板，也没有偏科。', tagline: '攻守均衡',
   },
   pierce: {
     key: 'pierce', name: '洞察', atk: 0.95, blk: 0, times: 1, pierce: true, color: '#4fd6cf',
-    hint: '无视敌方格挡。对爱堆防的精英和 Boss，这一条就是全部价值。', tagline: '无视格挡',
   },
   guard: {
     key: 'guard', name: '巩固', atk: 0.6, blk: 2, times: 1, color: '#6f9ee8',
-    hint: '伤害减半，格挡接近翻倍。用来撑过要挨重击的那一回合。', tagline: '格挡翻倍',
   },
   drain: {
     key: 'drain', name: '内化', atk: 0.85, blk: 0, times: 1, heal: 0.5, color: '#d06fa8',
-    hint: '按实际造成的伤害回复生命。血线吃紧时长局里最耐用的一张。', tagline: '按伤害回血',
   },
   chain: {
     key: 'chain', name: '串联', atk: 0.52, blk: 0, times: 2, color: '#e0a84c',
-    hint: '分两段结算。打无格挡的目标总伤更高，打有格挡的目标会被吃两次。', tagline: '两段结算',
   },
   focus: {
     key: 'focus', name: '专注', atk: 0.7, blk: 0, times: 1, draw: 1, color: '#a78bfa',
-    hint: '伤害偏低，但抽一张牌。手牌见底时它能把你这一回合接上。', tagline: '抽一张牌',
   },
 };
 
@@ -95,6 +85,37 @@ export function resolveEff(
 }
 
 /**
+ * 一张牌卡面上要写的数字。卡面（ui.ts）和答题面板（effSummary）都读它，
+ * 免得"最多回复 / 最多抽"这类公式各算一份，改一处漏一处。
+ */
+export interface EffFace {
+  /** 每段伤害 */
+  per: number;
+  /** 段数 */
+  hits: number;
+  blk: number;
+  pierce: boolean;
+  /** 按全额伤害算的回血上限；0 表示不是回血牌 */
+  healMax: number;
+  /** 抽牌上限（X 费按每点算） */
+  drawMax: number;
+}
+
+export function effFace(out: EffOut): EffFace {
+  const per = out.hits[0] ?? 0;
+  return {
+    per,
+    hits: out.hits.length,
+    blk: out.blk,
+    pierce: out.pierce,
+    healMax: out.healRatio > 0 && per > 0
+      ? Math.max(1, Math.round(per * out.hits.length * out.healRatio))
+      : 0,
+    drawMax: out.draw,
+  };
+}
+
+/**
  * 纯文本描述，给题目面板、帮助面板这类只有一行字的地方用。
  *
  * `x` 是给 X 费牌写的：那一行必须说清"这是**每一点**行动力的效果"，
@@ -102,11 +123,12 @@ export function resolveEff(
  */
 export function effSummary(key: Eff, atk: number, blk: number, mods?: EffMods, x = false): string {
   const o = resolveEff(key, atk, blk, 1, mods);
-  const dmg = o.hits.length > 1 ? `${o.hits[0]}×${o.hits.length} 伤害` : `${o.hits[0]} 伤害`;
-  const tail = o.pierce ? '无视格挡'
-    : o.blk > 0 ? `${o.blk} 格挡`
-    : o.healRatio > 0 ? `回血 ${Math.max(1, Math.round(o.hits[0] * o.hits.length * o.healRatio))}`
-    : o.draw > 0 ? `抽 ${o.draw} 张`
+  const f = effFace(o);
+  const dmg = f.hits > 1 ? `${f.per}×${f.hits} 伤害` : `${f.per} 伤害`;
+  const tail = f.pierce ? '无视格挡'
+    : f.blk > 0 ? `${f.blk} 格挡`
+    : f.healMax > 0 ? `最多回血 ${f.healMax}`
+    : f.drawMax > 0 ? `最多抽 ${f.drawMax} 张`
     : '';
   const body = dmg + (tail ? ' · ' + tail : '');
   return x ? `${EFFS[key].name}：每点行动力 ${body}` : `${EFFS[key].name}：${body}`;

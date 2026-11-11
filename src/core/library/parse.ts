@@ -13,8 +13,12 @@ import type { QLevel, Question, QuestionBank } from '../model/types';
  *   ? 同一池的另一道题（? 理解: / ? 迁移: 前缀存成 Question.level）
  *
  * **主题不限，格式要过。** 不写 `##` 的题进 `未分类`；主题名可以是任何字符串，
- * 不必和内置卡牌库对得上。点开牌时 `poolFor()` 优先用同名题池，
- * 没有就从全部题目里抽 —— 所以只写一种主题、甚至不写主题的题库也能玩。
+ * 不必和内置卡牌库对得上。课程表（`model/data.ts` 的 `CURRICULUM`）按主题
+ * 把来源题库切成每一幕的 BANK；某一章的主题不存在时回退到全部题目。
+ * 所以只写一种主题、甚至不写主题的题库也能玩。
+ *
+ * 解析时给每道题生成稳定题号 `qid`（主题 + 规范化题干的 hash）：换题库、
+ * 换阶段之后，答题流水和章节记忆仍然指得回同一道题。
  *
  * 格式规则见 `QUESTION_FORMAT`：题干非空、2–4 个选项、答案字母合法且不越界。
  * 解析层把违规的题收集到 `QuestionBank.issues`，由 `loadQuestionBank` 整体拒绝
@@ -37,7 +41,27 @@ export const MAX_OPTIONS = 4;
 /** 界面上给写题人的一句话格式说明。 */
 export const QUESTION_FORMAT = `每道题要有非空题干、${MIN_OPTIONS}–${MAX_OPTIONS} 个选项、= 答案字母（不能越过选项数）`;
 
-const newQ = (s: string): Question => ({ q: s, options: [], answer: -1, explain: '' });
+/** 题干里的空白不该影响题号：同一个知识点换行/多空格仍然指回同一道题。 */
+const normStem = (s: string) => s.trim().replace(/\s+/g, ' ');
+
+/**
+ * 32 位 FNV-1a。题号只需要「同题同号、异题大概率不同号」，
+ * 不需要加密强度；用 crypto 反而让 Node 和浏览器多一条异步依赖。
+ */
+function hash32(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/** 题号 = 主题 + 规范化题干。主题相同的两道同题干题会被 `push` 去重。 */
+export const questionId = (topic: string, stem: string): string =>
+  `q_${hash32(topic + '\u0000' + normStem(stem))}`;
+
+const newQ = (s: string): Question => ({ qid: '', topic: '', q: s, options: [], answer: -1, explain: '' });
 
 /**
  * 一道题合不合格，返回 null 表示合格。
@@ -62,8 +86,10 @@ function diagnose(q: Question | null, lineNo: number): string | null {
 
 /** 把一道合格的题放进题池；同主题重复题干只保留第一道。 */
 function push(bank: QuestionBank, topic: string, q: Question) {
+  q.topic = topic;
+  q.qid = questionId(topic, q.q);
   const pool = (bank.byTopic[topic] ??= []);
-  if (!pool.some((x) => x.q === q.q)) pool.push(q);
+  if (!pool.some((x) => x.qid === q.qid)) pool.push(q);
 }
 
 export function parseQuestionBank(text: string): QuestionBank {
@@ -150,23 +176,27 @@ export function parseAnyQuestionBank(text: string): QuestionBank {
 
   const bank: QuestionBank = { name: j.name ?? '自定义题库', byTopic: {}, issues: [] };
 
-  const normalize = (list: JsonQ[], where: string): Question[] => {
+  const normalize = (list: JsonQ[], topic: string, where: string): Question[] => {
     const out: Question[] = [];
     (list ?? []).forEach((x, i) => {
       const q: Question = {
+        qid: '', topic,
         q: x.q ?? '', options: x.options ?? [], answer: x.answer ?? -1,
         explain: x.explain ?? '', level: x.level,
       };
       const issue = diagnose(q, 0);
       if (issue) bank.issues!.push(`${where}[${i}]：${issue.slice(issue.indexOf('：') + 1)}`);
-      else if (!out.some((y) => y.q === q.q)) out.push(q);
+      else {
+        q.qid = questionId(topic, q.q);
+        if (!out.some((y) => y.qid === q.qid)) out.push(q);
+      }
     });
     return out;
   };
 
   if (j.byTopic) {
     for (const topic of Object.keys(j.byTopic)) {
-      const pool = normalize(j.byTopic[topic] ?? [], `byTopic.${topic}`);
+      const pool = normalize(j.byTopic[topic] ?? [], topic, `byTopic.${topic}`);
       if (pool.length) bank.byTopic[topic] = pool;
     }
   } else {
@@ -178,7 +208,7 @@ export function parseAnyQuestionBank(text: string): QuestionBank {
       (byTopic[topic] ??= []).push(...raw);
     }
     for (const topic of Object.keys(byTopic)) {
-      const pool = normalize(byTopic[topic], `cards[${topic}]`);
+      const pool = normalize(byTopic[topic], topic, `cards[${topic}]`);
       if (pool.length) bank.byTopic[topic] = pool;
     }
   }

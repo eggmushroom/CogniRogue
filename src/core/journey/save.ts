@@ -1,8 +1,11 @@
-import { G } from '../infra/state';
+import { G, resetTurnState } from '../infra/state';
 import { readStore, writeStore } from '../infra/storage';
-import { BAL, STAGES, STAGE_ROWS } from '../model/data';
+import { BAL, MODE_KEYS, NODE_META, STAGES, STAGE_ROWS } from '../model/data';
 import { floorOf } from '../map';
-import type { CardInst, MapNode, RunMode } from '../model/types';
+import { baseIdOf, isKnownCardId, isPowerId, isUpgraded } from '../cards/registry';
+import { LEGACY_CARD_IDS } from '../cards/legacy';
+import { enterStage } from '../library/stage';
+import type { MapNode, RunMode } from '../model/types';
 
 /**
  * journey/save —— 一局的断点。
@@ -19,19 +22,23 @@ import type { CardInst, MapNode, RunMode } from '../model/types';
  *   3. **版本号不对就当没有**。宁可让玩家重开，也不要用一份结构对不上的存档
  *      把一个好好的界面弄崩。
  */
-const KEY = 'cognirogue.run.v1';
+const KEY = 'cognirogue.run.v3';
 
 interface Snapshot {
-  v: 1;
+  v: 3;
   stage: number;
   mode: RunMode;
   hp: number;
   maxHp: number;
-  deck: CardInst[];
+  /**
+   * 牌组：一串 card id。精炼过的那一张带 `+` 后缀（见 `cards/registry.ts`），
+   * 所以"哪一张被精炼了"就写在 id 里，不需要第二份精炼表 —— 也不会再出现
+   * 两张表对不上、读档后精炼凭空消失这种事。
+   */
+  deck: string[];
   map: MapNode[][];
   pos: { r: number; i: number } | null;
   seen: Record<string, boolean>;
-  topicAtk: Record<string, number>;
   topicWrong: Record<string, number>;
   floors: number;
   runOk: number;
@@ -54,7 +61,7 @@ export type SaveInfo = { stage: number; stageName: string; floor: number; hp: nu
 export function saveRun() {
   if (G.screen !== 'map' || !G.map.length || G.panel.k !== 'none' || G.pending) return;
   const snap: Snapshot = {
-    v: 1,
+    v: 3,
     stage: G.stage,
     mode: G.mode,
     hp: G.hp,
@@ -63,7 +70,6 @@ export function saveRun() {
     map: G.map,
     pos: G.pos,
     seen: G.seen,
-    topicAtk: G.topicAtk,
     topicWrong: G.topicWrong,
     floors: G.floors,
     runOk: G.runOk,
@@ -81,17 +87,24 @@ export function clearRun() {
 
 /** 首页用：有存档就返回一句摘要，没有就 null。 */
 export function runSaveInfo(): SaveInfo | null {
-  if (infoCache === undefined) infoCache = computeInfo();
+  if (infoCache === undefined) {
+    // 存档校验已经尽量严，但首页每帧都读它 —— 这里再兜一层，保证
+    // 任何读不懂的存档最多是"没有继续按钮"，而不是让标题画面停住。
+    try { infoCache = computeInfo(); } catch { infoCache = null; }
+  }
   return infoCache;
 }
 
 function computeInfo(): SaveInfo | null {
   const s = readSnapshot();
   if (!s) return null;
+  const stage = STAGES[s.stage - 1];
+  // 正常不会走到这里；留着是给"以后又忘了校验某个字段"留一条命。
+  if (!stage) return null;
   const r = s.pos ? s.pos.r : 0;
   return {
     stage: s.stage,
-    stageName: STAGES[s.stage - 1].name,
+    stageName: stage.name,
     // 层号算的是"已经走到的这一层"，所以用 map 里那一个 floorOf，
     // 而不是在这里再写一遍 (stage - 1) * STAGE_ROWS + r + 1 ——
     // 两份公式迟早会有一份忘了改。
@@ -105,19 +118,60 @@ export function resumeRun(): boolean {
   const s = readSnapshot();
   if (!s) return false;
   Object.assign(G, {
-    screen: 'map', mode: s.mode, stage: s.stage, panel: { k: 'none' }, log: [],
+    screen: 'map', mode: s.mode, stage: s.stage, stageTopic: '', panel: { k: 'none' }, log: [],
     deck: s.deck, map: s.map, pos: s.pos, seen: s.seen, node: null,
     hp: s.hp, maxHp: s.maxHp, block: 0,
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
     draw: [], discard: [], hand: [], powers: [],
-    topicAtk: s.topicAtk, topicWrong: s.topicWrong, failedTurn: {}, qSeen: {},
-    okThisTurn: 0, topOkTopic: null, cardsPlayed: 0, binderUsed: false,
-    answerDraws: s.answerDraws, answerDrawsThisTurn: 0, missDrawsThisTurn: 0,
+    topicWrong: s.topicWrong, qPicked: {}, qLeft: [], charge: {}, answers: [],
+    answerDraws: s.answerDraws,
     apDown: 0, drawCut: 0,
-    runOk: s.runOk, runBad: s.runBad, floors: s.floors,
-    pending: null, busy: false,
+    runOk: s.runOk, runBad: s.runBad, floors: s.floors, powerFallback: false,
+    pending: null, pendingCost: 0, busy: false,
   });
+  // 断点只存阶段号；题库是按阶段从来源题库切出来的，恢复时重新切一次。
+  enterStage(s.stage);
+  resetTurnState();
   return true;
+}
+
+/** JSON 里的对象：排除 null 和数组。 */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+function isNum(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+function isBoolRecord(v: unknown): v is Record<string, boolean> {
+  return isRecord(v) && Object.values(v).every((x) => typeof x === 'boolean');
+}
+
+function isNonNegRecord(v: unknown): v is Record<string, number> {
+  return isRecord(v) && Object.values(v).every((x) => isNum(x) && x >= 0);
+}
+
+/**
+ * 牌组里的一项：一个非空字符串 id（精炼过的那一张带 `+` 后缀，它也是合法 id）。
+ *
+ * 名字里已经没有 "CardInst" 了 —— 牌组里不再有实例对象，`CardId` 就是全部。
+ * v1/v2 存档里写的是 `{ id, up }`，那种结构在 `readSnapshot` 的版本闸门处
+ * 就整份退回去了，不会走到这里。
+ */
+function isCardId(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0;
+}
+
+function isMapNode(v: unknown): v is MapNode {
+  if (!isRecord(v)) return false;
+  return Number.isInteger(v.r) && Number.isInteger(v.i) && Number.isInteger(v.col)
+    && typeof v.key === 'string'
+    && typeof v.type === 'string' && Object.prototype.hasOwnProperty.call(NODE_META, v.type)
+    // boss 行不参与连线，genStage 从来没给它写过 next —— 旧存档里这个字段
+    // 就是缺的，不能因为"地图最后一行没有下一步"把整份存档判坏。
+    && (v.next === undefined
+      || (Array.isArray(v.next) && v.next.every((n) => Number.isInteger(n))));
 }
 
 function readSnapshot(): Snapshot | null {
@@ -129,12 +183,63 @@ function readSnapshot(): Snapshot | null {
   } catch {
     return null;
   }
-  // 结构对不上就当没有：一份坏存档不该让首页崩掉
-  if (!s || s.v !== 1) return null;
-  if (!(s.stage >= 1 && s.stage <= STAGES.length)) return null;
+  // 结构对不上就当没有：一份坏存档不该让首页崩掉。
+  // 这里逐项校验，而不是只看"看起来像" —— 一个 stage=2.5 就能让
+  // `STAGES[stage-1].name` 抛异常，后果是首页每帧都渲染失败。
+  if (!isRecord(s) || s.v !== 3) return null;
+  if (!Number.isInteger(s.stage) || s.stage < 1 || s.stage > STAGES.length) return null;
+  if (!MODE_KEYS.includes(s.mode)) return null;
+  if (!isNum(s.hp) || !isNum(s.maxHp) || s.hp <= 0 || s.maxHp <= 0 || s.hp > s.maxHp) return null;
   if (!Array.isArray(s.map) || s.map.length !== STAGE_ROWS) return null;
+  // 节点坐标必须和它在数组里的位置对得上：`enterNode` 用 key 里的 r/i 去
+  // `G.map[r][i]` 取节点，`drawMap` 又用 nd.r / nd.col 画位置。一份 key 指向
+  // 别的格子的存档能过形状校验，但点下去取到的是 undefined。
+  if (!s.map.every((row, r) => Array.isArray(row)
+    && row.length > 0 && row.length <= 3
+    && row.every((nd, i) => isMapNode(nd)
+      && nd.r === r && nd.i === i && nd.key === `${r}:${i}`
+      && (nd.col as number) >= 0 && (nd.col as number) <= 2))) return null;
+  // 入口和 Boss 是两张固定卡：genStage 从不在这两行放第二个节点。
+  // 坏存档在这两行塞别的类型，地图上没有可点的下一步。
+  if (s.map[0].length !== 1 || s.map[0][0].type !== 'fight') return null;
+  if (s.map[STAGE_ROWS - 1].length !== 1 || s.map[STAGE_ROWS - 1][0].type !== 'boss') return null;
+  // 连线目标必须落在下一行里：一个 next:[99] 能通过节点形状校验，
+  // 但 drawMap 读 G.map[r+1][99] 时会直接抛异常。
+  for (let r = 0; r < s.map.length - 1; r++) {
+    for (const nd of s.map[r]) {
+      if (!Array.isArray(nd.next)) return null;
+      for (const j of nd.next) {
+        if (!s.map[r + 1][j]) return null;
+      }
+    }
+  }
+  // 牌组现在是一串 card id，精炼过的那一张带 `+` 后缀（见 `CardId`）。
+  // 旧存档里的 `{ id, up }` 对象和 `upgraded` 表在换格式时已经整份作废
+  // （抬了 KEY 的版本号），所以这里不需要兼容那一层 —— 存档本来就不追求向后兼容。
   if (!Array.isArray(s.deck) || !s.deck.length) return null;
-  if (!(s.hp > 0) || !(s.maxHp > 0)) return null;
-  if (s.pos && !(s.map[s.pos.r] && s.map[s.pos.r][s.pos.i])) return null;
+  if (!s.deck.every(isCardId)) return null;
+  // 旧题库时代的题干前缀 id → 稳定短键；迁移表还会被记忆文件用到，所以留着。
+  // 迁移要在**剥后缀之前**做：老 id 是整串，`+` 只可能出现在我们自己的短键上。
+  s.deck = s.deck.map((id) => {
+    const up = id.endsWith('+');
+    const base = up ? id.slice(0, -1) : id;
+    const mapped = LEGACY_CARD_IDS[base] ?? base;
+    return up ? mapped + '+' : mapped;
+  });
+  // 已经删掉的「错题本」：只去掉这一张，不因为一张卡丢掉整局。
+  s.deck = s.deck.filter((id) => baseIdOf(id) !== 'pow:log');
+  if (!s.deck.length || !s.deck.every((id) => isKnownCardId(id))) return null;
+  // 增益牌不可精炼：一个带 `+` 的 `pow:` 只可能来自坏存档。
+  if (s.deck.some((id) => isUpgraded(id) && isPowerId(id))) return null;
+  if (!isBoolRecord(s.seen) || !isNonNegRecord(s.topicWrong)) return null;
+  for (const key of ['floors', 'runOk', 'runBad', 'answerDraws'] as const) {
+    const v = s[key];
+    if (!isNum(v) || v < 0) return null;
+  }
+  if (s.pos !== null) {
+    if (!isRecord(s.pos) || !Number.isInteger(s.pos.r) || !Number.isInteger(s.pos.i)) return null;
+    if (s.pos.r < 0 || s.pos.r >= STAGE_ROWS) return null;
+    if (s.pos.i < 0 || s.pos.i >= s.map[s.pos.r].length) return null;
+  }
   return s;
 }

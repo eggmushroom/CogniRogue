@@ -21,7 +21,7 @@ export function drawReport(d: ReportData) {
   text(d.win ? '你走到了档案馆的尽头' : `这次倒在了第 ${d.floor} 层 · ${st.name}`, x + 48, y + 68, {
     size: 34, weight: 700, family: FONT_TITLE, color: accent,
   });
-  text('知识等级不会掉。下一局开局前重新选模式，按模式抽牌。', x + 48, y + 106, {
+  text('知识等级不会掉。下一局开局前重新选模式；起手固定 10 张，模式只改答错价码。', x + 48, y + 106, {
     size: 14, color: C.dim,
   });
 
@@ -30,9 +30,10 @@ export function drawReport(d: ReportData) {
     [MODES[d.mode].name, '本局模式'],
     [`${d.runOk}/${total}`, '本局答题'],
     [`${total ? Math.round((d.runOk / total) * 100) : 0}%`, '正确率'],
-    [`第 ${d.stage} 幕`, '走到哪里'],
+    [`第 ${d.stage} 幕`, `本章 · ${d.stageTopic}`],
+    [`${d.stageOk}/${d.stageOk + d.stageBad}`, '本章答题'],
     [`${d.deckSize}`, '牌组张数'],
-    [`${Math.round(d.mastery * 100)}%`, '卡牌掌握度'],
+    [`${Math.round(d.mastery * 100)}%`, '章节掌握度'],
   ];
   const sw = (w - 96) / stats.length;
   stats.forEach(([v, k], i) => {
@@ -59,15 +60,16 @@ export function drawReport(d: ReportData) {
     rx += cw + 10;
   }
 
-  // 左：主题掌握
+  // 左：章节掌握。五章全部显示 —— 只取前几章会把弱项藏起来，
+  // 而"错得最多的是哪一章"恰恰是结算页最该回答的问题。
   const ly = y + 282;
-  text('主题掌握', x + 48, ly, { size: 15, weight: 700, color: C.ink2 });
-  d.rows.slice(0, 8).forEach((r, i) => {
-    const ry = ly + 40 + i * 34;
-    text(r.t, x + 48, ry, { size: 14, color: C.ink, maxW: 180 });
-    text(`${r.ok} 对 / ${r.bad} 错`, x + 238, ry, { size: 12, color: C.dim });
-    bar(x + 340, ry - 8, 170, 14, r.mast, C.gold);
-    text(`${Math.round(r.mast * 100)}%`, x + 522, ry, { size: 13, color: C.gold, weight: 700 });
+  text('章节掌握', x + 48, ly, { size: 15, weight: 700, color: C.ink2 });
+  d.rows.forEach((r, i) => {
+    const ry = ly + 30 + i * 18;
+    text(r.t, x + 48, ry, { size: 12, color: C.ink, maxW: 150 });
+    text(`${r.ok} 对 / ${r.bad} 错`, x + 206, ry, { size: 10, color: C.dim });
+    bar(x + 300, ry - 6, 120, 9, r.mast, C.gold);
+    text(`${Math.round(r.mast * 100)}%`, x + 430, ry, { size: 11, color: C.gold, weight: 700 });
   });
 
   // 右：这一局的输出是怎么来的 —— 押注机制拿掉之后，这里换成"答题还是免答"
