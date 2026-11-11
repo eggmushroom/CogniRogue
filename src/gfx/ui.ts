@@ -193,7 +193,7 @@ export interface CardOpts {
   up?: boolean;
   glow?: boolean;
   hovered?: boolean;
-  /** 底部额外说明（奖励/牌组列表用，画在卡外下方） */
+  /** 卡内底部的额外说明（奖励/牌组/精炼/手牌联动用） */
   note?: string;
   /** 卡面内部底部的状态徽条（手牌用）：联动规则 / 免答，不占卡外空间 */
   badge?: string;
@@ -613,8 +613,31 @@ export function drawCard(
     });
   }
 
-  if (opts.note) {
-    text(opts.note, x + w / 2, y + h + 18, { size: 14, align: 'center', color: C.dim });
+  // 说明也画在卡内：以前画在卡外下方，字号和字重都跟牌面不是一套，
+  // 五张牌排开时像一排贴在牌底的 UI 标签。现在它是卡面最底下的一条注脚，
+  // 和效果行共用 FONT_UI；只用一层向下压暗的渐变托底，不再套一个外来的胶囊。
+  if (opts.note && !opts.badge) {
+    g.save();
+    roundRect(x, y, w, h, r);
+    g.clip();
+    const nh = 58 * s;
+    const ng = g.createLinearGradient(0, y + h - nh, 0, y + h);
+    ng.addColorStop(0, 'rgba(7,9,14,0)');
+    ng.addColorStop(0.55, 'rgba(7,9,14,.6)');
+    ng.addColorStop(1, 'rgba(7,9,14,.92)');
+    g.fillStyle = ng;
+    g.fillRect(x, y + h - nh, w, nh);
+    g.font = font(Math.round(12.5 * s), 600, FONT_UI);
+    // 和牌名、效果行共用同一条左栏；居中的注脚在卡面上会像另一套排版。
+    // 长句允许两行：联动说明（「本场每打出一次，下次 +3 伤」）一行放不下，
+    // 截成省略号会把规则本身吃掉。
+    g.textAlign = 'left';
+    g.fillStyle = C.ink2;
+    const noteLines = wrapText(opts.note, w - pad * 2).slice(0, 2);
+    noteLines.forEach((ln, i) => {
+      g.fillText(squeeze(ln, w - pad * 2), x + pad, y + h - (20 + (noteLines.length - 1 - i) * 15) * s);
+    });
+    g.restore();
   }
   g.restore();
 }

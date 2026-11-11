@@ -141,7 +141,7 @@ const SHOTS = [
     cog.save();
     setTimeout(() => location.replace(location.origin + '/'), 30);
   })()`, 2600],
-  // 开局三选一能力卡。文件名沿用 mode.jpg —— README 里那张图的位置没变，内容换了。
+  // 开局三个模式。文件名沿用 mode.jpg —— README 里那张图的位置没变，内容换了。
   ['mode', '?dev=boon', null, 600],
   // 五幕各有自己的色相与物种：同一张地图换一幕，光柱、幕名和节点底色都跟着换。
   // （map3 / map5 两张图删了：README 只用到第一幕那张，多拍的没人看，还会被当成文档签入。）

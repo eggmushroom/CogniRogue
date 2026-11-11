@@ -1013,8 +1013,9 @@ function drawHand(t: number, dt: number) {
       // 付不起的牌费用数字转红：这一手现在打不出去，得在点之前就看得出来
       afford: isJunk || canPay(card),
       // 免答的牌在右下角标一个「免」：它是这一场攒出来的状态，不标出来玩家不会知道
-      // 为什么这张牌这次没问问题。
-      badge: card.link ? card.link.note : askState === 'free' ? '免答' : undefined,
+      // 为什么这张牌这次没问问题。联动说明则走卡内注脚，和牌面共用同一套字。
+      badge: askState === 'free' ? '免答' : undefined,
+      note: card.link?.note,
     });
     g.restore();
 

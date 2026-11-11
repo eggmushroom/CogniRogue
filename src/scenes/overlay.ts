@@ -778,18 +778,16 @@ function drawCardPick(mode: 'up' | 'rm') {
     .sort((a, b) => a.d.topic.localeCompare(b.d.topic) || a.i - b.i);
 
   // 尺寸是按"开局 10 张刚好两排、不用滚"反推的。
-  // gapy 里要留出卡面底下那行「伤 4→7」—— 它画在 y+h+18，行距不够就会压到下一排的卡上。
+  // 「伤 4→7」现在画在卡内底部，和牌面共用一套字体，不再占卡外行距。
   const cols = 5;
   const cw = 196;
   const ch = 248;
   const gapx = 26;
   const gapy = 32;
-  const noteH = 22;
   const totalW = cols * cw + (cols - 1) * gapx;
   const gx0 = x + (w - totalW) / 2;
   const rows = Math.ceil(items.length / cols);
-  // 最后一排底下也要留出 note，否则最后一行会紧贴裁剪边
-  const gridH = rows * (ch + gapy) - gapy + noteH;
+  const gridH = rows * (ch + gapy) - gapy;
   const areaH = h - 180;
   const area = scrollArea(x + 30, y + 130, w - 60, areaH, gridH, `pick:${mode}`);
 
