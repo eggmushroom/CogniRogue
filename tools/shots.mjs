@@ -141,7 +141,8 @@ const SHOTS = [
     cog.save();
     setTimeout(() => location.replace(location.origin + '/'), 30);
   })()`, 2600],
-  ['mode', '?dev=mode', null, 600],
+  // 开局三选一能力卡。文件名沿用 mode.jpg —— README 里那张图的位置没变，内容换了。
+  ['mode', '?dev=boon', null, 600],
   // 五幕各有自己的色相与物种：同一张地图换一幕，光柱、幕名和节点底色都跟着换。
   // （map3 / map5 两张图删了：README 只用到第一幕那张，多拍的没人看，还会被当成文档签入。）
   ['map', '?dev=map', null, 600],
@@ -167,10 +168,12 @@ const SHOTS = [
   ['rest', '?dev=rest', null, 400],
   ['event', '?dev=event', null, 400],
   ['ask', '?dev=question', null, 400],
-  // 答对之后面板要等打击演出演完才出来，所以多等一会
-  ['feedback', '?dev=answer', null, 1400],
+  // 答对之后面板要等打击演出演完才出来，所以多等一会。
+  // prep 里停掉软自动推进：它是「没人动就 4.2s 自己走」，截图脚本正好是"没人动"，
+  // 不等这一下，两张文档图会拍成判定面板已经收掉的空战斗画面。
+  ['feedback', '?dev=answer', 'cog.pauseAuto()', 1400],
   // 答错那一屏：学习模式的价码写在反馈面板里
-  ['wrong', '?dev=wrong', null, 1400],
+  ['wrong', '?dev=wrong', 'cog.pauseAuto()', 1400],
   // 光刃飞出去的那一瞬：0.18s 左右正好在半路
   ['strike', '?dev=battle', 'cog.strike()', 180],
   // 敌人回合：真的走一次 endTurn（?dev=foe:xxx 把招式固定成单招循环），
@@ -181,11 +184,8 @@ const SHOTS = [
     cog.endTurn();
   })()`, 270],
   ['enemyjam', '?dev=foe:jam', 'cog.endTurn()', 260],
-  ['powers', '?dev=powerpick', null, 500],
-  ['powerafter', '?dev=power', `(() => {
-    const i = cog.state.hand.indexOf('pow:hourglass');
-    cog.power(i);
-  })()`, 700],
+  ['powers', '?dev=powerdrop', null, 500],
+  ['powerafter', '?dev=power', null, 700],
   ['report', '?dev=report', null, 700],
 ];
 

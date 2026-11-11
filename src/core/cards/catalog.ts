@@ -9,7 +9,7 @@ import type { CardDef } from '../model/types';
  * 换题库不会动它分毫。
  *
  * 这么做有三个直接后果：
- *   1. 卡池恒定 83 张 / 16 主题，「开局固定卡组」和「奖励随机抽」才有稳定底座；
+ *   1. 卡池恒定 87 张 / 16 主题，「开局固定卡组」和「奖励随机抽」才有稳定底座；
  *   2. card id 与题干解耦：id 是固定短键（`c00`…），换题库不会让复习记忆失效、
  *      也不会把旧牌变成杂念；旧题干 id 的迁移表在 `cards/legacy.ts`，不在这里；
  *   3. 外部 md 里写不出 % 攻挡、@ 卡名，写题人改不了数值平衡。
@@ -111,5 +111,23 @@ export const CATALOG: CardDef[] = [
   { id: "c80", topic: "体系结构与编译", name: "译锋直斩", atk: 6, blk: 5, cost: 1, eff: "strike", kind: 'knowledge' },
   { id: "c81", topic: "体系结构与编译", name: "失真两段", atk: 7, blk: 5, cost: 1, eff: "chain", kind: 'knowledge' },
   { id: "c82", topic: "体系结构与编译", name: "上限贯穿", atk: 26, blk: 20, cost: 3, eff: "pierce", mods: { atkMul: 1.1 }, kind: 'knowledge' },
+
+  /* ── 联动卡 ──────────────────────────────────────────────────
+   * 这四张的攻击底数不是印死的，而是由**前几张牌留下的状态**算出来
+   * （见 combat/link.ts）。卡面与结算共用 liveStatOf，所以抽牌 / 堆甲 /
+   * 打出顺序改变的是真实伤害，不是一行提示文字。
+   *
+   * 都是 B 级（1 费、要答题）—— 联动是给答题环节加一层决策，不是绕过它。
+   * atk / blk 在这里只是「牌组画廊里的静态底数」，实战按 link 现算，
+   * 卡面右下角的 note 会写明数值从哪来。
+   * ──────────────────────────────────────────────────────────── */
+  { id: "c83", topic: "联动", name: "博览强记", atk: 3, blk: 5, cost: 1, eff: "strike", kind: 'knowledge',
+    link: { atkFrom: 'drawn', per: 1, floor: 3, note: '本回合每抽 1 张 +1 伤' } },
+  { id: "c84", topic: "联动", name: "铸甲为刃", atk: 0, blk: 5, cost: 1, eff: "strike", kind: 'knowledge',
+    link: { atkFrom: 'block', per: 1, floor: 0, note: '造成当前护甲等额伤害' } },
+  { id: "c85", topic: "联动", name: "续火", atk: 3, blk: 4, cost: 1, eff: "strike", kind: 'knowledge',
+    link: { nextMul: 2, note: '下一张牌伤害 ×2' } },
+  { id: "c86", topic: "联动", name: "叠章", atk: 4, blk: 4, cost: 1, eff: "strike", kind: 'knowledge',
+    link: { grow: 3, note: '本场每打出一次，下次 +3 伤' } },
 ];
 

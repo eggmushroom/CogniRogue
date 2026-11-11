@@ -1,19 +1,22 @@
-import { BAL, POWERS } from '../model/data';
-import type { EventDef, PowerDef } from '../model/types';
+import { BAL } from '../model/data';
+import type { CardDef, EventDef } from '../model/types';
 import { G, log } from '../infra/state';
+import { healHp, loseHp } from '../infra/write';
 import { emit } from '../infra/events';
 import { pick } from '../infra/util';
 import { PACK } from '../cards/pack';
-import { baseIdOf, defOf, isUpgraded, powerCardId, upgradedId } from '../cards/registry';
-import { cardKind } from '../cards/kinds';
+import { baseIdOf, defOf, isUpgraded, upgradedId } from '../cards/registry';
+import { onceThisStage, rulesOf } from '../cards/powers';
 import { finishNode } from './nodes';
 
 /**
  * journey/events —— 随机事件与复习点。
  *
  * 事件选项的 `run()` 直接改 G，返回一句要写进日志的话；表现层只负责
- * 把这句话和 EVENTS 里的标题、副标题画出来。所有"得到增益"都走
- * grantRandomPower —— 塞一张牌进牌组，不是白给一个永久效果。
+ * 把这句话和 EVENTS 里的标题、副标题画出来。
+ *
+ * **事件不发增益。** 增益整局生效、不进牌组，是精英 / 幕 Boss 的战利品；
+ * 让它从事件里也能拿，就等于给"绕开精英"发奖金，那条风险-回报线会消失。
  *
  * ## 付费的事件选项为什么要"先打开选牌面板、收尾时才扣钱"
  *
@@ -26,40 +29,53 @@ import { finishNode } from './nodes';
  */
 /** 事件里"要付的血"挂在 `G.pendingCost` 上，选完牌才结算（见 `GameState.pendingCost`）。 */
 
-/** 事件里的"得到一个增益"：同样是塞一张牌进牌组，不是白给一个永久效果。 */
-function grantRandomPower(): PowerDef | null {
-  const owned: Record<string, boolean> = {};
-  G.deck.forEach((id) => { owned[baseIdOf(id)] = true; });
-  const pool = POWERS.filter((p) => !owned[powerCardId(p.id)]);
+/** 事件里"得到一张知识卡"：和战后奖励同一条上限（每种 `BAL.maxCopies` 张）。 */
+function grantCard(up: boolean): CardDef | null {
+  // 数的是**牌种**，所以要先剥掉精炼后缀 —— 否则 `c00` 和 `c00+`
+  // 会被算成两种不同的牌，上限就形同虚设。
+  const copies: Record<string, number> = {};
+  G.deck.forEach((id) => { copies[baseIdOf(id)] = (copies[baseIdOf(id)] || 0) + 1; });
+  // 上限从规则表来：「书挡」把它 +1，所以事件和战后奖励必须读同一个数，
+  // 否则那张牌只在一半的入口生效。
+  const pool = PACK.cards.filter((c) => (copies[c.id] || 0) < rulesOf().maxCopies);
   if (!pool.length) return null;
-  const p = pick(pool);
-  G.deck.push(powerCardId(p.id));
-  return p;
+  const c = pick(pool);
+  // 精炼过的那一张直接带 `+` 后缀进牌组：它和同名卡是**两张不同的牌**，
+  // 和"精炼只作用于单张卡"这条规则一致。
+  G.deck.push(up ? upgradedId(c.id) : c.id);
+  return c;
 }
 
 /** 返回实际回复量：满血时是 0，演出不该凭空飘一个 +N。 */
 function healBy(n: number) {
-  const before = G.hp;
-  G.hp = Math.min(G.maxHp, G.hp + n);
-  const got = G.hp - before;
+  const got = healHp(n);
   if (got > 0) emit({ t: 'heal', n: got });
   return got;
 }
 
-/** 返回实际扣血量：1 血时事件不能致死，也因此没有 "+12" 的假演出。 */
+/**
+ * 返回实际扣血量。**下限 1** —— 随机事件不该成为一局的终点。
+ * 这条规则以前是这里一个孤零零的 `Math.max(1, ...)`，现在它是 `loseHp` 的
+ * 第二个参数，语义写在函数名旁边。
+ */
 function hurtBy(n: number) {
-  const before = G.hp;
-  G.hp = Math.max(1, G.hp - n);
-  const lost = before - G.hp;
+  const lost = loseHp(n, 1);
   if (lost > 0) emit({ t: 'hurt', n: lost });
   return lost;
 }
 
 export function restHeal() {
-  const wanted = Math.round(G.maxHp * BAL.restPct);
+  // 修书胶：复习点的回复比例被 `rulesOf` 折算进 `restPct`。它不改血量上限、
+  // 也不改单场战斗，改的是"这一路的损耗补不补得回来" —— 唯一一张在节点之间
+  // 生效的增益，所以它读的规则表和平时的战斗是同一张。
+  const pct = rulesOf().restPct;
+  // 地图册：这一幕**第一次**复习多回固定的一段。按幕算而不是按次算 ——
+  // 一幕里通常有两三个复习点，每次都加等于把整幕的血量水龙头拧大。
+  const extra = onceThisStage('atlas') ? BAL.atlasHeal : 0;
+  const wanted = Math.round(G.maxHp * pct) + extra;
   const got = healBy(wanted);
   log(got === wanted
-    ? `休息，回复 ${got} 点生命`
+    ? `休息，回复 ${got} 点生命${extra ? `（地图册额外 +${extra}）` : ''}`
     : `休息，回复 ${got} 点生命（已达到上限 ${G.maxHp}）`, 'hi');
   finishNode();
 }
@@ -79,8 +95,7 @@ export function restHeal() {
  */
 export function openCardPick(mode: 'up' | 'rm'): boolean {
   if (mode === 'rm' && G.deck.length <= 4) { log('牌组太薄，不能再删了', ''); return false; }
-  if (mode === 'up'
-    && !G.deck.some((id) => cardKind(defOf(id)) !== 'power' && !isUpgraded(id))) {
+  if (mode === 'up' && !G.deck.some((id) => !isUpgraded(id))) {
     log('没有能精炼的牌', '');
     return false;
   }
@@ -91,10 +106,8 @@ export function openCardPick(mode: 'up' | 'rm'): boolean {
 export function upgradeCard(i: number) {
   const id = G.deck[i];
   if (!id) return;
-  // 增益牌没有攻/挡可加，所以它不在精炼列表里 —— 这条仍然成立。
   // 基础牌可以精炼：它是"弱但永远在"的地板，精炼之后变成"还行且永远在"，
   // 代价是这次精炼机会没花在知识卡上。
-  if (cardKind(defOf(id)) === 'power') return;
   if (isUpgraded(id)) return;
   // 换 id 就是精炼：`base:strike` → `base:strike+`。牌组里其余同名副本不受影响，
   // 这也让"哪一张变强了"在存档里是确定的，不依赖数组下标或对象身份。
@@ -128,19 +141,10 @@ export const EVENTS: EventDef[] = [
       {
         t: '拾起来，收进自己的牌组', sub: '获得一张随机知识卡（已精炼），失去 8 点生命',
         run: () => {
-          // 和战后奖励同一条上限：同一种卡最多 BAL.maxCopies 张。
-          // 数的是**牌种**，所以要先剥掉精炼后缀 —— 否则 `c00` 和 `c00+`
-          // 会被算成两种不同的牌，上限就形同虚设。
-          const copies: Record<string, number> = {};
-          G.deck.forEach((id) => { copies[baseIdOf(id)] = (copies[baseIdOf(id)] || 0) + 1; });
-          const pool = PACK.cards.filter((c) => (copies[c.id] || 0) < BAL.maxCopies);
-          if (!pool.length) return '每种卡你都收齐了上限 —— 这一次你只是把它们理了一遍。';
+          // 先确认还有卡可给，再扣血 —— 池空时不能让人白掉 8 点。
+          const c = grantCard(true);
+          if (!c) return '每种卡你都收齐了上限 —— 这一次你只是把它们理了一遍。';
           const lost = hurtBy(8);
-          const c = pick(pool);
-          // 这张卡一进牌组就是精炼状态：它的 id 直接带 `+` 后缀。
-          // 这样它和牌组里可能已有的同名卡是**两张不同的牌**（一张强化过、一张没有），
-          // 和"精炼只作用于单张卡"这条规则一致。
-          G.deck.push(upgradedId(c.id));
           return `你把「${c.topic}」那张卡收进了牌组（已精炼），代价是 ${lost} 点生命。`;
         },
       },
@@ -193,13 +197,12 @@ export const EVENTS: EventDef[] = [
         },
       },
       {
-        t: '给他 12 点生命', sub: '一张增益牌进牌组（要抽到、要打出才生效）',
+        t: '给他 12 点生命', sub: '他替你精炼一张你选择的牌',
         run: () => {
-          // 先确认还有牌可给，再扣血：池空时不能让人白付 12 点。
-          const r = grantRandomPower();
-          if (!r) return '他已经没有东西可以给你了。';
-          const lost = hurtBy(12);
-          return `你付了 ${lost} 点生命。「${r.name}」进了你的牌组：${r.card}。抽到它，付它的费用打出去（增益牌不答题，这笔钱不退）。`;
+          // 和「旧笔记本」同一个顺序：先确认有牌可精炼，再挂上待付款项，挑完才扣。
+          if (!openCardPick('up')) return null;
+          G.pendingCost = 12;
+          return '你把手按在钱袋上；选一张要精炼的牌（选完才付 12 点生命）。';
         },
       },
       { t: '什么也不留，转身离开', sub: '什么也不发生', run: () => '他没有拦你。' },
@@ -216,13 +219,13 @@ export const EVENTS: EventDef[] = [
         },
       },
       {
-        t: '去点那盏灭的灯', sub: '一张增益牌进牌组，但会掉 10 点生命',
+        t: '去点那盏灭的灯', sub: '获得一张随机知识卡，但会掉 10 点生命',
         run: () => {
-          // 先确认还有牌可给，再扣血：池空时不能让人白付 10 点。
-          const r = grantRandomPower();
-          if (!r) return '灯已经全亮着，没有新的增益可拿 —— 你没有付出什么。';
+          // 先确认还有卡可给，再扣血：池空时不能让人白付 10 点。
+          const c = grantCard(false);
+          if (!c) return '灯亮起来，照见的还是同一批卡 —— 没有新的可抄。';
           const lost = hurtBy(10);
-          return `灯亮了，你付出 ${lost} 点生命；牌组里多了一张「${r.name}」：${r.card}。`;
+          return `灯亮了，你借着光抄下「${c.topic}」那张卡，代价是 ${lost} 点生命。`;
         },
       },
       { t: '转身离开', sub: '什么也不发生', run: () => '你沿着廊道走过去了。' },

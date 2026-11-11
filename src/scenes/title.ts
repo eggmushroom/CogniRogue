@@ -59,11 +59,11 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
       size: 13, align: 'center', color: C.dim,
     });
     by = 526;
-    action(bx, by, bw, 50, '开始新的一局', () => { G.panel = { k: 'mode' }; }); by += 62;
+    action(bx, by, bw, 50, '开始新的一局', () => { G.panel = { k: 'boon' }; }); by += 62;
     action(bx, by, bw, 50, '这游戏怎么玩', openHelp); by += 62;
     action(bx, by, bw, 50, '载入自己的题库', openPack);
   } else {
-    action(bx, by, bw, 60, '开始新的一局', () => { G.panel = { k: 'mode' }; }, 'primary', { size: 22 });
+    action(bx, by, bw, 60, '开始新的一局', () => { G.panel = { k: 'boon' }; }, 'primary', { size: 22 });
     by += 76;
     action(bx, by, bw, 56, '这游戏怎么玩', openHelp);
     by += 70;

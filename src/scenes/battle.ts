@@ -5,24 +5,49 @@ import { bar, drawCard, icon, panel, squeeze, text } from '../gfx/ui';
 import { onClick, hover } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import * as FX from '../gfx/fx';
-import { BAL, MODES, POWER_BY_ID, stageOf } from '../core/model';
+import { BAL, EFFS, POWER_BY_ID, stageOf } from '../core/model';
 import { G } from '../core/infra';
+import { linkStatus, liveStatOf } from '../core/combat/link';
 import { curFloor } from '../core/map';
-import { canPay, cardKind, costOf, defOf, isUpgraded, isXCost, powerOf, statOf } from '../core/cards';
+import { canPay, cardKind, costOf, defOf, isUpgraded, isXCost, statOf } from '../core/cards';
 import {
-  askCard, cardAskState, endTurn, intentText, playBasic, playFree, playPower,
+  askCard, cardAskState, endTurn, intentText, playBasic, playFree,
 } from '../core/combat';
 import type { CardDef, Foe, Mech } from '../core/model';
-
-/** 增益牌飞向的位置：右上角第一个增益槽。和 topBar 里的排布常量对齐。 */
-export const POWER_SLOT = { x: VW - 82, y: 32 };
 
 export const ENEMY = { x: 1150, y: 330 };
 export const HERO = { x: 290, y: 462 };
 const HAND = { cx: 765, cy: 726, w: 200, h: 238, spread: 194 };
+/**
+ * 玩家和敌人现在用同一类素材：纯黑底 + 发光的厚涂立绘，screen 混合叠上来。
+ * 以前玩家是手写矢量剪影，补再多光晕也和 430px 的怪物不是一层空气 ——
+ * 不是"画得不够细"，是素材语言不同。换成同款立绘后，两边共享背光、地光、
+ * 位移、受击闪的同一套画法，风格才真正咬合。
+ *
+ * 尺寸略小于小怪（410 / 430），中心压低：玩家站在前景、靠画面下方，
+ * 同时头顶要躲开左上角那块战斗记录面板。
+ */
+const HERO_ART = { size: 410, cx: HERO.x - 16, cy: HERO.y - 14 };
+/** 提灯焰心在素材里的相对坐标。光刃必须从这里甩出去。 */
+const LAMP = { u: 0.715, v: 0.555 };
+const lampAt = () => ({
+  x: HERO_ART.cx + (LAMP.u - 0.5) * HERO_ART.size,
+  y: HERO_ART.cy + (LAMP.v - 0.5) * HERO_ART.size,
+});
 
-/** 提灯的位置。攻击是从这里甩出去的，不是从卡片飞出去。 */
-export const heroHand = () => ({ x: HERO.x + 62, y: HERO.y + 6 });
+/** drawHero 每帧记下时间，让 heroHand() 能跟着呼吸和冲刺一起动。 */
+let heroT = 0;
+
+/** 提灯的位置。攻击是从这里甩出去的，不是从卡片飞出去的。 */
+export const heroHand = () => {
+  const lunge = FX.heroLunge();
+  const recoil = FX.heroRecoil();
+  const p = lampAt();
+  return {
+    x: p.x + lunge * 96 - recoil * 30,
+    y: p.y - lunge * 10 + Math.sin(heroT * 1.25) * 5,
+  };
+};
 
 let lastEnemyKey = '';
 
@@ -44,6 +69,14 @@ export function drawBattle(t: number, dt: number) {
   drawBackdrop(t, 0.58);
   drawMotes(t);
   topBar(t);
+  // 只报「此刻会影响卡面数值」的状态，不是连击计数，也不是装饰：
+  // 玩家要能回答"为什么这张牌现在是 14 点"。
+  const ls = linkStatus();
+  if (ls.length) {
+    text(`联动 · ${ls.join('　·　')}`, 706, 40, {
+      size: 13, color: C.gold, weight: 700, maxW: 430,
+    });
+  }
 
   if (G.enemy) drawEnemy(G.enemy, t);
   drawHero(t);
@@ -111,18 +144,24 @@ function topBar(t: number) {
   text(`第 ${curFloor()} 层`, 438, 31, { size: 17, color: C.ink2, weight: 600 });
   text(`${st.name} · ${G.stageTopic}`, 438, 52, { size: 11, color: st.color, weight: 600 });
 
-  // 模式胶囊：整局不变，所以只说一次。它原来印在每张手牌的下沿 ——
-  // 一句话重复五遍，等于没说。敌人等级不放在这里：名字下面已经标了，两处重复。
-  const md = MODES[G.mode];
-  {
-    const tw = md.name.length * 16 + 34;
+  // 开局能力：整局不变，所以只说一次。
+  // 这里原来是"模式胶囊"，写着一个选完就再也想不起来的档位名；现在写的是
+  // 这一局真正带进来的那张能力卡 —— 玩家会在战斗里反复撞见它的效果。
+  const boon = G.boon ? POWER_BY_ID[G.boon] : null;
+  /** 能力卡胶囊占多宽；没有能力卡时题数胶囊直接从 524 排起 */
+  let boonW = 0;
+  if (boon) {
+    const label = `◆ ${boon.name}`;
+    g.font = font(13, 600, FONT_UI);
+    const tw = g.measureText(label).width + 30;
+    boonW = tw + 10;
     roundRect(524, 18, tw, 26, 13);
-    g.fillStyle = withAlpha(md.color, 0.12);
+    g.fillStyle = withAlpha(boon.color, 0.12);
     g.fill();
-    g.strokeStyle = withAlpha(md.color, 0.5);
+    g.strokeStyle = withAlpha(boon.color, 0.5);
     g.lineWidth = 1.2;
     g.stroke();
-    text(`${md.name}模式`, 524 + tw / 2, 31, { size: 14, color: md.color, weight: 700, align: 'center' });
+    text(label, 524 + tw / 2, 31, { size: 13, color: boon.color, weight: 600, align: 'center' });
   }
 
   // 本场还剩几道**新题**（不是"还能不能答"）。答错不扣行动力，代价落在
@@ -132,7 +171,7 @@ function topBar(t: number) {
     const left = G.qLeft.length;
     const reusing = left === 0;
     const col = reusing ? C.dim : left <= 2 ? C.red : left <= 4 ? C.gold : C.cyan;
-    const bx = 524 + md.name.length * 16 + 44;
+    const bx = 524 + boonW;
     g.font = font(13, 700, FONT_UI);
     const label = reusing ? '题 复用' : `题 ${left}`;
     const bw = g.measureText(label).width + 30;
@@ -145,8 +184,8 @@ function topBar(t: number) {
     text(label, bx + bw / 2, 31, { size: 13, color: col, weight: 700, align: 'center' });
   }
 
-  // 本场已打出的增益牌。它不再是"装备栏"：每场开头清空、每场重新打，
-  // 所以这一排实际上是这一场你已经花掉的行动力账本。
+  // 这一局已经拿到的增益。它是整局的东西（掉一个就有一个，跨战斗保留），
+  // 所以这一排读的是"我现在会什么"，不是"这一场花了多少"。
   let rx = VW - 40;
   for (let i = G.powers.length - 1; i >= 0; i--) {
     const p = POWER_BY_ID[G.powers[i]];
@@ -173,7 +212,7 @@ function topBar(t: number) {
     }
   }
   if (G.powers.length) {
-    text('本场增益', rx - 24, 33, { size: 11, color: C.dim, align: 'right' });
+    text('增益', rx - 24, 33, { size: 11, color: C.dim, align: 'right' });
   }
 }
 
@@ -386,288 +425,129 @@ function intentChip(
 /* ── 玩家 ─────────────────────────────────────────────────── */
 
 function drawHero(t: number) {
-  const { x, y } = HERO;
+  heroT = t;
   const bob = Math.sin(t * 1.25) * 5;
   const hurt = FX.heroFlash();
   const lunge = FX.heroLunge();
   const recoil = FX.heroRecoil();
-  // 冲刺时整个身体前压、抬头；被击退时后仰。位移和倾斜要一起动，才像有重量
   const dx = lunge * 96 - recoil * 30;
   const dy = -lunge * 10 + bob;
-  // 答错时灯焰会暗下去再回来：这一手没亮起来，比任何文字都快
   const dim = FX.lampDim();
+  const { cx, cy, size } = HERO_ART;
+  const art = ART.hero;
 
-  // 光晕
-  const glow = g.createRadialGradient(x + dx * 0.6, y - 20, 8, x + dx * 0.6, y - 20, 190);
-  glow.addColorStop(0, hurt > 0 ? withAlpha(C.red, 0.4) : withAlpha(C.gold, 0.2 + lunge * 0.18));
-  glow.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = glow;
-  g.beginPath();
-  g.arc(x + dx * 0.6, y - 20, 190, 0, Math.PI * 2);
-  g.fill();
-
-  // 地面投影
-  g.beginPath();
-  g.ellipse(x + dx * 0.4, y + 74, 74, 20, 0, 0, Math.PI * 2);
-  g.fillStyle = 'rgba(0,0,0,.55)';
-  g.fill();
-
+  // 地面光 + 身后冷光：和 drawEnemy 是同一套画法，两边才像站在同一个地面上
   g.save();
-  g.translate(dx, dy);
-  g.rotate(lunge * 0.09 - recoil * 0.1);
-
-  // 布料有惯性：下摆摆动比呼吸慢半拍，像被风吹着
-  const sw = Math.sin(t * 1.6);
-  const sw2 = Math.sin(t * 1.6 - 0.9);
-
-  // 披风剪影（下摆随时间摆动）
-  const cloak = () => {
-    g.beginPath();
-    g.moveTo(x, y - 104);
-    g.bezierCurveTo(x - 34, y - 96, x - 52 - sw * 3, y - 26, x - 72 - sw * 6, y + 70);
-    g.quadraticCurveTo(x + sw2 * 5, y + 88, x + 72 + sw * 5, y + 70);
-    g.bezierCurveTo(x + 52 + sw * 3, y - 26, x + 34, y - 96, x, y - 104);
-    g.closePath();
-  };
-  cloak();
-  const cg = g.createLinearGradient(x, y - 100, x, y + 80);
-  cg.addColorStop(0, hurt > 0 ? '#5a1f22' : '#232b40');
-  cg.addColorStop(0.55, hurt > 0 ? '#3a1518' : '#141a28');
-  cg.addColorStop(1, '#080a10');
-  g.fillStyle = cg;
-  g.fill();
-  g.strokeStyle = hurt > 0 ? withAlpha(C.red, 0.8) : withAlpha(C.blue, 0.35);
-  g.lineWidth = 1.6;
-  g.stroke();
-
-  // 提灯一侧的轮廓光：灯在人右手边，光会把右边那道边照亮
+  const groundCol = hurt > 0 ? C.red : C.blue;
+  const gy = cy + 188;
+  // 渐变跟着椭圆一起压扁，边缘才会自然淡出；往椭圆里直接填圆形渐变会留一道硬边
   g.save();
+  g.translate(cx + dx * 0.4, gy);
+  g.scale(1, 0.28);
+  const base = g.createRadialGradient(0, 0, 8, 0, 0, 190);
+  base.addColorStop(0, withAlpha(groundCol, 0.2 + hurt * 0.2));
+  base.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = base;
   g.beginPath();
-  g.rect(x + 24, y - 112, 80, 205);
-  g.clip();
-  cloak();
-  const rim = g.createLinearGradient(x + 30, y, x + 78, y);
-  rim.addColorStop(0, 'rgba(0,0,0,0)');
-  rim.addColorStop(1, withAlpha(C.gold, 0.35 * (1 - 0.6 * dim)));
-  g.strokeStyle = rim;
-  g.lineWidth = 4.5;
-  g.stroke();
+  g.arc(0, 0, 190, 0, Math.PI * 2);
+  g.fill();
+  g.restore();
+  const halo = g.createRadialGradient(cx, cy, 12, cx, cy, 215);
+  halo.addColorStop(0, withAlpha(C.gold, 0.075));
+  halo.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = halo;
+  g.beginPath();
+  g.arc(cx, cy, 215, 0, Math.PI * 2);
+  g.fill();
   g.restore();
 
-  // 围巾：从领口向身后飘，与提灯反方向，让剪影不对称
-  const f1 = Math.sin(t * 2.1) * 6;
-  const f2 = Math.sin(t * 2.1 - 1.2) * 9;
-  g.beginPath();
-  g.moveTo(x - 10, y - 64);
-  g.quadraticCurveTo(x - 42 + f1, y - 68 + f2, x - 80 + f2, y - 46 + f1);
-  g.lineTo(x - 76 + f2, y - 30 + f1);
-  g.quadraticCurveTo(x - 42 + f1 * 0.6, y - 38, x - 10, y - 50);
-  g.closePath();
-  const sg = g.createLinearGradient(x - 10, y - 60, x - 78, y - 40);
-  sg.addColorStop(0, hurt > 0 ? '#a33a34' : '#8c3a3a');
-  sg.addColorStop(1, hurt > 0 ? '#5a1f1e' : '#4c2024');
-  g.fillStyle = sg;
-  g.fill();
-  g.strokeStyle = 'rgba(0,0,0,.4)';
-  g.lineWidth = 1;
-  g.stroke();
-  // 围巾尾梢再垂下一条小布带，破一破「一根棍」的感觉
-  g.beginPath();
-  g.moveTo(x - 62 + f2 * 0.8, y - 42 + f1 * 0.6);
-  g.quadraticCurveTo(x - 76 + f2, y - 30 + f1, x - 66 + f2, y - 16 + f1 * 0.5);
-  g.quadraticCurveTo(x - 60 + f2 * 0.7, y - 26, x - 52 + f1, y - 34);
-  g.closePath();
-  g.fillStyle = hurt > 0 ? '#5a1f1e' : '#54262a';
-  g.fill();
+  if (art.complete && art.naturalWidth) {
+    g.save();
+    g.globalCompositeOperation = 'screen';
+    g.globalAlpha = 0.95;
+    // 与敌人完全一致的对比度规则：底色压成纯黑，screen 后没有方框边。
+    // 常态比敌人亮一档（人形立绘的暗部更多），受击提亮；答错时整张稍暗，
+    // 配合下面变矮的灯焰 = 这一手没亮起来。
+    const bright = Math.max(0.4, 1.08 + hurt * 2.6 - dim * 0.2);
+    g.filter = `contrast(1.5) brightness(${bright.toFixed(3)})${hurt > 0 ? ' saturate(1.5)' : ''}`;
+    g.translate(cx + dx, cy + dy);
+    g.rotate(lunge * 0.055 - recoil * 0.055);
+    const s = 1 + lunge * 0.02 + Math.sin(t * 1.5 + 1) * 0.006;
+    g.drawImage(art, -size * s / 2, -size * s / 2, size * s, size * s);
+    g.filter = 'none';
+    g.restore();
+  } else {
+    g.fillStyle = withAlpha(C.blue, 0.22);
+    g.beginPath();
+    g.ellipse(cx, cy, 100, 170, 0, 0, Math.PI * 2);
+    g.fill();
+  }
 
-  // 兜帽（外层 + 帽口阴影）
-  g.beginPath();
-  g.ellipse(x, y - 84, 25, 29, 0, 0, Math.PI * 2);
-  g.fillStyle = hurt > 0 ? '#4a1a1e' : '#1b2233';
-  g.fill();
-  g.strokeStyle = withAlpha(C.blue, 0.3);
-  g.lineWidth = 1.2;
-  g.stroke();
-  // 帽口压暗：脸藏在阴影里，只露两点眼
-  g.beginPath();
-  g.ellipse(x + 2, y - 80, 13, 15, 0, 0, Math.PI * 2);
-  g.fillStyle = '#05060a';
-  g.fill();
-
-  // 眼：偶尔眨一下
-  const blink = Math.sin(t * 1.05) > 0.965 ? 0.12 : 1;
-  const eg = (0.55 + 0.45 * Math.sin(t * 2.4) + lunge * 0.4) * blink;
-  g.fillStyle = withAlpha(C.gold, Math.min(1, eg));
-  g.beginPath();
-  g.arc(x - 6, y - 82, 2.4, 0, Math.PI * 2);
-  g.arc(x + 9, y - 82, 2.4, 0, Math.PI * 2);
-  g.fill();
-
-  // 领口搭扣
-  g.beginPath();
-  g.moveTo(x, y - 55);
-  g.lineTo(x + 6, y - 49);
-  g.lineTo(x, y - 43);
-  g.lineTo(x - 6, y - 49);
-  g.closePath();
-  g.fillStyle = '#6e5524';
-  g.fill();
-  g.strokeStyle = withAlpha(C.gold, 0.75);
-  g.lineWidth = 1.2;
-  g.stroke();
-
-  // 腰带
-  roundRect(x - 33, y - 2, 66, 9, 4);
-  g.fillStyle = '#0c0f16';
-  g.fill();
-  g.strokeStyle = '#2c3346';
-  g.lineWidth = 1;
-  g.stroke();
-  roundRect(x - 6, y - 1, 11, 7, 2);
-  g.fillStyle = '#6e5524';
-  g.fill();
-  g.strokeStyle = withAlpha(C.gold, 0.6);
-  g.stroke();
-
-  // 腰间书袋：旅人的随身物，和「答题解锁卡牌」的世界观呼应
-  // 挂带先把袋子和腰带连起来，否则像一块漂在披风上的补丁
-  roundRect(x - 46, y - 3, 16, 9, 3);
-  g.fillStyle = '#0c0f16';
-  g.fill();
-  g.strokeStyle = '#2c3346';
-  g.lineWidth = 1;
-  g.stroke();
-  roundRect(x - 54, y + 4, 19, 24, 5);
-  const pg = g.createLinearGradient(x - 54, y, x - 35, y + 28);
-  pg.addColorStop(0, '#232c44');
-  pg.addColorStop(1, '#121724');
-  g.fillStyle = pg;
-  g.fill();
-  g.strokeStyle = '#2c3346';
-  g.lineWidth = 1.2;
-  g.stroke();
-  g.beginPath();
-  g.moveTo(x - 47, y + 7);
-  g.lineTo(x - 47, y + 25);
-  g.strokeStyle = withAlpha(C.gold, 0.45);
-  g.lineWidth = 1.6;
-  g.stroke();
-
-  // 持灯的手臂：从披风里伸出来，把灯送到身前
-  g.lineCap = 'round';
-  g.beginPath();
-  g.moveTo(x + 12, y - 52);
-  g.quadraticCurveTo(x + 38, y - 30, x + 56, y + 2);
-  g.strokeStyle = '#242e48';
-  g.lineWidth = 10;
-  g.stroke();
-  g.beginPath();
-  g.moveTo(x + 12, y - 53);
-  g.quadraticCurveTo(x + 38, y - 31, x + 56, y + 1);
-  g.strokeStyle = '#3a4767';
-  g.lineWidth = 5;
-  g.stroke();
-  g.beginPath();
-  g.arc(x + 57, y + 2, 5, 0, Math.PI * 2);
-  g.fillStyle = '#3a4767';
-  g.fill();
-  g.strokeStyle = withAlpha(C.gold, 0.35);
-  g.lineWidth = 1.2;
-  g.stroke();
-
-  // 提灯：出招的瞬间它是最亮的东西，光刃就是从这里甩出去的
-  const lx = x + 62;
-  const ly = y + 6 + Math.sin(t * 2 + 1) * 3;
+  // 灯壳已经在立绘里了，这里只补一层会呼吸的光晕：静态贴图才不像贴纸。
+  // dim 让焰暗下去、lunge 让出招时腾起，和原来矢量提灯的节奏一致。
+  const lp = lampAt();
+  const lx = lp.x + dx;
+  const ly = lp.y + dy;
   const flare = Math.max(0, lunge);
-  // 答错时焰会暗下去再回来：这一手没亮起来，比任何文字都快
-  const lr = (42 + flare * 34) * (1 - 0.45 * dim);
-  const lg = g.createRadialGradient(lx, ly, 2, lx, ly, lr);
-  lg.addColorStop(0, withAlpha(C.gold, 0.85 * (1 - 0.82 * dim)));
-  lg.addColorStop(0.35, withAlpha(C.gold, (0.3 + flare * 0.35) * (1 - 0.86 * dim)));
+  g.save();
+  g.globalCompositeOperation = 'screen';
+  const lr = (34 + flare * 32) * (1 - 0.4 * dim);
+  const lg = g.createRadialGradient(lx, ly, 1, lx, ly, lr);
+  lg.addColorStop(0, withAlpha(C.gold, 0.42 * (1 - 0.85 * dim)));
+  lg.addColorStop(0.4, withAlpha(C.gold, (0.16 + flare * 0.2) * (1 - 0.9 * dim)));
   lg.addColorStop(1, 'rgba(0,0,0,0)');
   g.fillStyle = lg;
   g.beginPath();
   g.arc(lx, ly, lr, 0, Math.PI * 2);
   g.fill();
   g.beginPath();
-  g.arc(lx, ly, (5 + flare * 3) * (1 - 0.5 * dim), 0, Math.PI * 2);
-  g.fillStyle = withAlpha('#fff0c0', 1 - 0.7 * dim);
-  g.fill();
-
-  // 灯壳：挂绳、提手、顶盖、玻璃腔、底座
-  g.strokeStyle = '#4a5674';
-  g.lineWidth = 2;
-  g.beginPath();
-  g.moveTo(x + 58, y + 3);
-  g.lineTo(lx - 3, ly - 20);
-  g.stroke();
-  g.beginPath();
-  g.arc(lx, ly - 21, 4, Math.PI * 0.9, Math.PI * 2.1);
-  g.stroke();
-
-  roundRect(lx - 12, ly - 19, 24, 6, 2);
-  g.fillStyle = '#39435c';
-  g.fill();
-  g.strokeStyle = '#5a688a';
-  g.lineWidth = 1;
-  g.stroke();
-
-  roundRect(lx - 9, ly - 12, 18, 23, 3);
-  g.fillStyle = 'rgba(232,182,76,.10)';
-  g.fill();
-  g.strokeStyle = '#4a5674';
-  g.lineWidth = 1.2;
-  g.stroke();
-  g.beginPath();
-  g.moveTo(lx - 3.5, ly - 12);
-  g.lineTo(lx - 3.5, ly + 11);
-  g.moveTo(lx + 3.5, ly - 12);
-  g.lineTo(lx + 3.5, ly + 11);
-  g.strokeStyle = '#4a5674';
-  g.lineWidth = 1.4;
-  g.stroke();
-
-  roundRect(lx - 12, ly + 12, 24, 6, 2);
-  g.fillStyle = '#39435c';
-  g.fill();
-  g.strokeStyle = '#5a688a';
-  g.lineWidth = 1;
-  g.stroke();
-
-  // 焰：答错时暗下去（dim），出招时腾起（flare）
-  const fl = (1 - 0.75 * dim) * (1 + flare * 0.6);
-  const fy = ly - 1 - flare * 3;
-  g.beginPath();
-  g.moveTo(lx, fy - 8 - flare * 2);
-  g.quadraticCurveTo(lx + 4.5, fy - 2, lx, fy + 5);
-  g.quadraticCurveTo(lx - 4.5, fy - 2, lx, fy - 8 - flare * 2);
-  g.closePath();
-  const fg = g.createLinearGradient(lx, fy - 10, lx, fy + 5);
-  fg.addColorStop(0, withAlpha('#fff3cd', Math.min(1, fl)));
-  fg.addColorStop(1, withAlpha(C.gold, 0.75 * fl));
-  g.fillStyle = fg;
+  g.arc(lx, ly, (2.6 + flare * 2) * (1 - 0.55 * dim), 0, Math.PI * 2);
+  g.fillStyle = withAlpha('#fff0c0', 0.85 * (1 - 0.85 * dim));
   g.fill();
   g.restore();
 
-  // 格挡环
+  // 绕身打转的书页：静态立绘之外留一点活气，和背景里飞散的纸片是同一种东西
+  g.save();
+  g.translate(dx, dy);
+  for (let i = 0; i < 3; i++) {
+    const a = t * (0.2 + i * 0.05) + i * 2.1;
+    const px = cx + Math.cos(a) * (132 + i * 14);
+    const py = cy - 24 + Math.sin(a) * (88 + i * 18);
+    g.save();
+    g.translate(px, py);
+    g.rotate(a * 0.6);
+    g.globalAlpha = 0.1 + 0.06 * Math.sin(t * 1.3 + i);
+    g.fillStyle = i % 2 ? C.gold : C.ink2;
+    g.beginPath();
+    g.moveTo(-4, -7);
+    g.lineTo(4, -6);
+    g.lineTo(4, 7);
+    g.lineTo(-4, 6);
+    g.closePath();
+    g.fill();
+    g.restore();
+  }
+  g.restore();
+
+  // 格挡环贴着人物，不套在旧剪影的尺寸上：太大就变成一个空荡荡的 UI 圈
   if (G.block > 0) {
     g.save();
     g.translate(dx, dy);
-    g.strokeStyle = withAlpha(C.blue, 0.55);
+    g.strokeStyle = withAlpha(C.blue, 0.48);
     g.lineWidth = 3;
     g.setLineDash([10, 8]);
     g.lineDashOffset = -t * 22;
     g.beginPath();
-    g.ellipse(x, y + 10, 96, 108, 0, 0, Math.PI * 2);
+    g.ellipse(cx, cy + 24, 112, 158, 0, 0, Math.PI * 2);
     g.stroke();
     g.restore();
-    text(String(G.block), x + 96 + dx, y - 40 + dy, { size: 22, weight: 800, color: C.blue });
+    text(String(G.block), cx + 112 + dx, cy - 96 + dy, { size: 22, weight: 800, color: C.blue });
   }
 
-  // 状态文字
-  text('你', x, y + 104, { size: 15, color: C.dim, align: 'center', weight: 600 });
+  // 状态贴在角色左腰外侧：立绘下摆一直垂到手牌区，放在头顶或脚下都会漂着
+  text('你', 118, cy - 6, { size: 15, color: C.dim, align: 'left', weight: 600 });
   const weak = Object.entries(G.topicWrong).filter(([, n]) => n > 0).length;
-  if (weak) text(`错题 ${weak} 主题`, x + 62, y + 104, { size: 11, color: C.redDim });
+  if (weak) text(`错题 ${weak} 主题`, 118, cy + 16, { size: 11, color: C.redDim, align: 'left' });
 }
 
 /* ── 光球 / 牌堆 / 日志 ───────────────────────────────────── */
@@ -894,10 +774,8 @@ interface DiscardFx {
    *  - return：学习模式答错的牌 **退回抽牌堆** —— 它没离开循环，下一回合就回来，
    *    所以不能飞进弃牌堆（那个动作读出来是"被收走了"）
    *  - junk：杂念原地化掉（它根本不进取牌堆）
-   *  - power：增益牌飞向右上角的增益槽 —— 它已经从牌组循环里出去了，不能飞进弃牌堆，
-   *    否则玩家会以为它下场还能再打一次
    */
-  mode: 'discard' | 'return' | 'junk' | 'power';
+  mode: 'discard' | 'return' | 'junk';
 }
 
 /**
@@ -913,6 +791,14 @@ const discardFx: DiscardFx[] = [];
 let prevHand: string[] = [];
 /** 上一帧的手牌记录，用来给"飞走的那张"提供出发点。 */
 let prevFx: DrawFx[] = [];
+/**
+ * 刚被点开的那一张：`{ id, at }`（`at` 是它当时在手牌里的下标）。
+ *
+ * 手牌只存 id，所以同名的几份副本在规则上完全等价、可以互换；但**画面上**必须让
+ * 玩家点中的那一格飞出去。记到"手牌真的少了一张这个 id"的那一帧才用掉它 ——
+ * 知识卡点下去只是出题，牌要到答完才离手，中间会隔好几帧。
+ */
+let eject: { id: string; at: number } | null = null;
 /** 弃牌堆收到牌时冒一下：0..1 衰减，用来让计数跳起来 */
 let discardPulse = 0;
 
@@ -945,15 +831,23 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
  * 全都错位飞了一次。LCS 选出的是**最大化保留**的那种对齐，画面上最稳。
  *
  * 返回 `keep[j] = 上一帧的下标`（-1 = 这一帧新抽到的）。
+ *
+ * `skip` 是"这一帧确定已经离开手牌"的那一格（点它打出去的那一张）。
+ * 它必须**不参与**对齐：同名的四张基础斩击在 id 上完全一样，LCS 一律保留最左边那份，
+ * 于是点右边那张时飞出去的是左边那张 —— 玩家读作"用的不是我点的这张"。
+ * 把被点的那一格从头到尾剔掉，剩下的副本仍然按 id 对齐，飞出去的才正是它。
  */
-function alignHand(prev: string[], hand: string[]): number[] {
-  const n = prev.length;
+function alignHand(prev: string[], hand: string[], skip = -1): number[] {
+  // 剔掉 skip 之后的"上一帧"，连同它每一项在原数组里的下标
+  const src: number[] = [];
+  for (let i = 0; i < prev.length; i++) if (i !== skip) src.push(i);
+  const n = src.length;
   const m = hand.length;
-  // dp[i][j] = prev[i..] 与 hand[j..] 的 LCS 长度
+  // dp[i][j] = prev[src[i]..] 与 hand[j..] 的 LCS 长度
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = prev[i] === hand[j]
+      dp[i][j] = prev[src[i]] === hand[j]
         ? dp[i + 1][j + 1] + 1
         : Math.max(dp[i + 1][j], dp[i][j + 1]);
     }
@@ -962,7 +856,7 @@ function alignHand(prev: string[], hand: string[]): number[] {
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (prev[i] === hand[j]) { keep[j] = i; i += 1; j += 1; }
+    if (prev[src[i]] === hand[j]) { keep[j] = src[i]; i += 1; j += 1; }
     else if (dp[i + 1][j] >= dp[i][j + 1]) i += 1;
     else j += 1;
   }
@@ -974,13 +868,30 @@ function drawHand(t: number, dt: number) {
   const foeActing = FX.enemyBusy();
 
   // 先对齐，再决定"谁飞进来、谁飞出去"。这一帧的手牌和上一帧的差集就是全部答案。
-  const keep = alignHand(prevHand, G.hand);
+  // 被点中的那一格从对齐里剔掉 —— 同名副本只能靠这一条认出"走的是哪一份"。
+  let skip = -1;
+  const ej = eject;
+  if (ej) {
+    const was = prevHand.filter((v) => v === ej.id).length;
+    const now = G.hand.filter((v) => v === ej.id).length;
+    if (now < was && prevHand[ej.at] === ej.id) { skip = ej.at; eject = null; }
+    // 面板关掉之后牌还在手里：这一下没打出去（取消答题 / 付不起），别留到下一手去
+    else if (G.panel.k !== 'question') eject = null;
+  }
+  const keep = alignHand(prevHand, G.hand, skip);
   const kept = new Set(keep.filter((i) => i >= 0));
   const nextFx: DrawFx[] = new Array(G.hand.length);
   keep.forEach((pi, j) => { if (pi >= 0) nextFx[j] = prevFx[pi]; });
 
   // 离手的牌：上一帧在、这一帧没被保留下来的那些。拿它最后画到的位置当起点 ——
   // 玩家看到的就是那张牌自己飞走的，不是一张新的。
+  //
+  // 去处只在一种情况下不是弃牌堆：学习模式答错，那一张被放回抽牌堆。逻辑层把这件事
+  // 记在 `G.returned` 上，这里一次性读走 —— 以前是拿 `G.draw.includes(id)` 猜，
+  // 而 id 是牌种不是副本：四张基础斩击里只要还有一张躺在抽牌堆，刚进弃牌堆的那张
+  // 也会被画成飞回牌堆，读起来就是"这一轮没打出的牌没有回到弃牌堆"。
+  const backToDraw = G.returned;
+  G.returned = null;
   let laneOut = 0;
   for (let pi = 0; pi < prevHand.length; pi++) {
     if (kept.has(pi)) continue;
@@ -988,17 +899,16 @@ function drawHand(t: number, dt: number) {
     const id = prevHand[pi];
     if (!fx || !id) continue;
     const card = defOf(id);
-    // 判断去处的唯一依据是"逻辑层把它放哪了"：学习模式答错的牌在 draw 里，
-    // 其余不是弃掉就是离开循环。表现层不重复算一遍规则。
+    // 依据是"逻辑层把这一张放哪了"，表现层不重复算一遍规则。
     const kind = cardKind(card);
-    const mode: DiscardFx['mode'] = kind === 'power' ? 'power'
-      : G.draw.includes(id) ? 'return'
-        : kind === 'junk' ? 'junk' : 'discard';
+    const mode: DiscardFx['mode'] = kind === 'junk' ? 'junk'
+      : backToDraw === id ? 'return' : 'discard';
     const st = statOf(id);
     discardFx.push({
       card, atk: st.atk, blk: st.blk, up: isUpgraded(id),
       x: fx.dx, y: fx.dy, rot: fx.rot,
-      age: mode === 'power' || mode === 'junk' ? 0 : -laneOut * DISCARD_GAP,
+      // 杂念原地化掉，不排队；其余一张接一张，读得出"这是一把牌在离开手牌"
+      age: mode === 'junk' ? 0 : -laneOut * DISCARD_GAP,
       mode,
     });
     if (mode === 'discard' || mode === 'return') laneOut += 1;
@@ -1034,7 +944,8 @@ function drawHand(t: number, dt: number) {
     if (!foeActing) fx.age += dt;
     if (fx.age < 0) continue; // 还在队列里，这张牌此刻不存在
     const card = defOf(id);
-    const st = statOf(id);
+    // 手牌上的数字必须是**这一刻打出去**会打多少，不是卡面印死的底数。
+    const st = liveStatOf(id);
 
     // 排队结束、真正起飞的那一帧：牌堆抖一下，牌是从这里出去的
     if (before < 0) {
@@ -1088,13 +999,12 @@ function drawHand(t: number, dt: number) {
     // 三种状态：基础牌（不答题，随时可打）/ 要答题 / 这一回合已经答错过。
     // 没有"锁着"这一档了 —— 本场解锁删掉之后，知识卡从第一回合起就能打，只是要答题。
     const kind = cardKind(card);
-    const isPow = kind === 'power';
     const isJunk = kind === 'junk';
     const isBase = kind === 'basic';
     // 知识卡只有两种状态：还欠答题（ask）、这一场已免答（free）。
     // `empty` 只在"整章一道题都没有"时出现，正常载入不会发生；
     // 'free' 不该压暗 —— 它是最强的状态，压暗会读成"用不了"。
-    const askState = isJunk || isPow || isBase ? 'other' : cardAskState(id);
+    const askState = isJunk || isBase ? 'other' : cardAskState(id);
 
     g.save();
     g.globalAlpha = alpha;
@@ -1106,7 +1016,7 @@ function drawHand(t: number, dt: number) {
       afford: isJunk || canPay(card),
       // 免答的牌在右下角标一个「免」：它是这一场攒出来的状态，不标出来玩家不会知道
       // 为什么这张牌这次没问问题。
-      note: askState === 'free' ? '免答' : undefined,
+      badge: card.link ? card.link.note : askState === 'free' ? '免答' : undefined,
     });
     g.restore();
 
@@ -1127,36 +1037,42 @@ function drawHand(t: number, dt: number) {
     };
 
     /**
-     * 点击时重新按 id 找一次手牌下标。
+     * 这一下点的是哪一张。
      *
      * 热区是**上一帧**注册的，而手牌可能在这一帧里变过（答对抽牌、敌人塞杂念、
      * 上一张牌刚离手让后面的牌整体左移）。闭包里那个 `s.i` 是当时的下标，
      * 直接用会点到"现在站在这个位置上的另一张牌" —— 基础斩击打了却没反应，
      * 就是这么发生的。
      *
-     * 同名牌本来就可以互换（牌组只存 id，见 `CardId`），所以"找到任意一份这个 id"
-     * 在规则上就等于"点中了这一张"。找不到 = 它已经不在手里了，直接忽略。
+     * 但也不能一律退回 `G.hand.indexOf(id)`：起手就有四张基础斩击，它们是同一个 id
+     * 的四份副本，indexOf 永远返回最左边那份 —— 点右边那张，被拿走的却是左边那张。
+     * 所以先认"这一格还是不是这张牌"，只有它已经不在原位时才去找一份别的。
      */
-    const idxOf = () => G.hand.indexOf(id);
+    const idxOf = () => (G.hand[s.i] === id ? s.i : G.hand.indexOf(id));
+    /** 点下去的当帧就有一圈光从这张牌上起来 —— 别让玩家猜这一下点没点中。 */
+    const cardPulse = (c: string) => {
+      FX.ring(px, py - h / 2, withAlpha(c, 0.5), 46, 0.32);
+      FX.burst(px, py - h / 2 + 10, c, 8, {
+        speed: 140, size: 3, grav: -90, life: 0.42,
+      });
+    };
 
-    // 基础牌点下去直接打，知识卡点下去出题，增益牌点下去立刻生效 ——
-    // 三种都是"点这张牌"，只是它问你要的东西不一样
-    if (isPow) {
+    // 基础牌点下去直接打，知识卡点下去出题 —— 两种都是"点这张牌"，
+    // 只是它问你要的东西不一样
+    if (isBase) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
         const i = idxOf();
         if (i < 0 || !payUp()) return;
-        playPower(i);
-      }, 'card', s.i);
-    } else if (isBase) {
-      onClick(px - w / 2, py - h / 2, w, h, () => {
-        const i = idxOf();
-        if (i < 0 || !payUp()) return;
+        cardPulse(C.gold);
+        eject = { id, at: i };
         playBasic(i);
       }, 'card', s.i);
     } else if (!isJunk) {
       onClick(px - w / 2, py - h / 2, w, h, () => {
         const i = idxOf();
         if (i < 0 || !payUp()) return;
+        cardPulse(EFFS[card.eff]?.color ?? C.gold);
+        eject = { id, at: i };
         // 攒满等级直接打，否则抽题。新题用完时 askCard 会从本章复用一道，
         // 所以这里不需要再为"没题了"单独分支。
         if (askState === 'free') playFree(i); else askCard(i);
@@ -1170,6 +1086,7 @@ function drawHand(t: number, dt: number) {
       }, 'junk', s.i);
     }
   }
+
 
   // 这一帧画完，它就是"上一帧"了。存的是画出去的坐标（含悬停抬升），
   // 牌离手时从这里起飞才不会向下跳一下。
@@ -1210,19 +1127,6 @@ function drawDiscards(dt: number) {
       scale = 1 - 0.3 * e;
       alpha = 1 - e;
       rot = f.rot + e * 0.2;
-    } else if (f.mode === 'power') {
-      // 增益牌不是"被弃掉"，是"被点亮"：往右上角抛一道弧，缩成一个小点钻进槽里。
-      // 一路缩小而不是淡出，是为了让"这张牌离开了循环"这件事看起来是升格，不是丢弃。
-      const e = p * p;
-      const cx = (f.x + POWER_SLOT.x) / 2;
-      const cy = Math.min(f.y, POWER_SLOT.y) - 150;
-      const iu = 1 - e;
-      px = iu * iu * f.x + 2 * iu * e * cx + e * e * POWER_SLOT.x;
-      py = iu * iu * f.y + 2 * iu * e * cy + e * e * POWER_SLOT.y;
-      rot = f.rot * (1 - e);
-      scale = 1 - 0.88 * e;
-      alpha = 1 - Math.max(0, (p - 0.72) / 0.28) * 0.95;
-      landing = p >= 1;
     } else if (f.mode === 'return') {
       // 退回牌堆：同一段距离，但往上走、走蓝色 —— 这张牌没有离开循环，
       // 它是"下一次还会再来"，不是"被收走了"。颜色是这里唯一的语义。
@@ -1259,12 +1163,6 @@ function drawDiscards(dt: number) {
         const at = back ? DRAW_FROM : DISCARD_TO;
         FX.burst(at.x, at.y - 6, back ? C.blue : C.orange, back ? 5 : 3, {
           speed: back ? 110 : 90, size: 3, grav: back ? -120 : 320, life: 0.3,
-        });
-      } else if (f.mode === 'power') {
-        // 落进增益槽的那一下冒一圈光：这是"它开始工作了"的唯一提示
-        const col = powerOf(f.card)?.color ?? C.gold;
-        FX.burst(POWER_SLOT.x, POWER_SLOT.y, col, 7, {
-          speed: 120, size: 3, grav: 60, life: 0.42,
         });
       }
       continue;
@@ -1333,7 +1231,17 @@ function endTurnButton() {
 
 /** 调试/冒烟用：在飞的牌数量。飞行单元如果清不掉，会在屏幕上永远留一张牌。 */
 export function fxCount() {
-  return { hand: handFx.length, discard: discardFx.length };
+  return {
+    hand: handFx.length,
+    discard: discardFx.length,
+    /**
+     * 正在飞出去的每一张牌"去了哪"。
+     *
+     * 冒烟测试用它盯"回合结束时上一轮没打出的牌会不会被画成飞回抽牌堆"：
+     * 这件事看 `G.discard` 是看不出来的 —— 牌堆内容一直是对的，错的是它飞的方向。
+     */
+    discardModes: discardFx.map((f) => f.mode),
+  };
 }
 
 /**
@@ -1360,6 +1268,8 @@ export function resetBattleView() {
   prevHand = [];
   prevFx = [];
   handFx = [];
+  // 换一场 / 退出这一局：上一场"被点走的那一格"不能再带过来 —— 下标和 id 都是旧的
+  eject = null;
   discardFx.length = 0;
   discardPulse = 0;
   FX.clearFx();

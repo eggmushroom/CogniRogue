@@ -11,6 +11,7 @@ import devourerUrl from '../../assets/devourer.jpg';
 import imprinterUrl from '../../assets/imprinter.jpg';
 import boundUrl from '../../assets/bound.jpg';
 import arenaUrl from '../../assets/arena.jpg';
+import heroUrl from '../../assets/hero.jpg';
 
 /**
  * 立绘都是"纯黑底 + 发光主体"。直接画会有方形色差，
@@ -30,6 +31,7 @@ export interface Art {
   imprinter: HTMLImageElement;
   bound: HTMLImageElement;
   arena: HTMLImageElement;
+  hero: HTMLImageElement;
 }
 
 const mk = (src: string) => {
@@ -52,6 +54,7 @@ export const ART: Art = {
   imprinter: mk(imprinterUrl),
   bound: mk(boundUrl),
   arena: mk(arenaUrl),
+  hero: mk(heroUrl),
 };
 
 export const ready = () =>

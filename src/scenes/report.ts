@@ -1,7 +1,7 @@
 import { g, roundRect, VH, VW } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { action, bar, panel, text, wrap } from '../gfx/ui';
-import { MODES, POWER_BY_ID, stageOf } from '../core/model';
+import { POWER_BY_ID, stageOf } from '../core/model';
 import { backToTitle, restart } from '../core/journey';
 import type { ReportData } from '../core/model';
 
@@ -21,13 +21,13 @@ export function drawReport(d: ReportData) {
   text(d.win ? '你走到了档案馆的尽头' : `这次倒在了第 ${d.floor} 层 · ${st.name}`, x + 48, y + 68, {
     size: 34, weight: 700, family: FONT_TITLE, color: accent,
   });
-  text('知识等级不会掉。下一局开局前重新选模式；起手固定 10 张，模式只改答错价码。', x + 48, y + 106, {
+  text('知识等级不会掉。下一局开局前挑一张能力卡带走；起手固定 10 张。', x + 48, y + 106, {
     size: 14, color: C.dim,
   });
 
   const total = d.runOk + d.runBad;
   const stats: Array<[string, string]> = [
-    [MODES[d.mode].name, '本局模式'],
+    [d.boon, '开局能力'],
     [`${d.runOk}/${total}`, '本局答题'],
     [`${total ? Math.round((d.runOk / total) * 100) : 0}%`, '正确率'],
     [`第 ${d.stage} 幕`, `本章 · ${d.stageTopic}`],
@@ -81,7 +81,7 @@ export function drawReport(d: ReportData) {
     ['答题出牌', `${total2} 次`, `正确 ${acc}%`],
     ['答对抽牌', `${d.answerDraws} 张`, '想起来的越多，看到的牌越多'],
     // 答错的价码现在由本局模式决定，不再是"学习期 / 复习期"两档
-    ['答错的牌', `${d.runBad} 次`, MODES[d.mode].cardLabel],
+    ['答错的牌', `${d.runBad} 次`, '这一手作废，牌进弃牌堆'],
     ['牌组', `${d.deckSize} 张`, `${d.kinds} 种卡`],
   ];
   tail.forEach(([k, v, s], i) => {

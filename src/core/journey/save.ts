@@ -1,11 +1,11 @@
 import { G, resetTurnState } from '../infra/state';
 import { readStore, writeStore } from '../infra/storage';
-import { BAL, MODE_KEYS, NODE_META, STAGES, STAGE_ROWS } from '../model/data';
+import { BAL, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS } from '../model/data';
 import { floorOf } from '../map';
-import { baseIdOf, isKnownCardId, isPowerId, isUpgraded } from '../cards/registry';
+import { baseIdOf, isKnownCardId } from '../cards/registry';
 import { LEGACY_CARD_IDS } from '../cards/legacy';
 import { enterStage } from '../library/stage';
-import type { MapNode, RunMode } from '../model/types';
+import type { MapNode, PowerId } from '../model/types';
 
 /**
  * journey/save —— 一局的断点。
@@ -22,20 +22,28 @@ import type { MapNode, RunMode } from '../model/types';
  *   3. **版本号不对就当没有**。宁可让玩家重开，也不要用一份结构对不上的存档
  *      把一个好好的界面弄崩。
  */
-const KEY = 'cognirogue.run.v3';
+const KEY = 'cognirogue.run.v6';
 
 interface Snapshot {
-  v: 3;
+  v: 6;
   stage: number;
-  mode: RunMode;
+  /** 开局选的那张能力卡；它同时也记在 `powers` 里，这里单独留一份给结算页 */
+  boon: PowerId | null;
   hp: number;
   maxHp: number;
   /**
    * 牌组：一串 card id。精炼过的那一张带 `+` 后缀（见 `cards/registry.ts`），
    * 所以"哪一张被精炼了"就写在 id 里，不需要第二份精炼表 —— 也不会再出现
    * 两张表对不上、读档后精炼凭空消失这种事。
+   *
+   * v4 起**不再可能包含增益**：增益不是牌，它在下面的 `powers` 里。
    */
   deck: string[];
+  /**
+   * 这一局已经拿到的增益（`PowerId`）。整局生效，所以它必须跟着断点走 ——
+   * 丢掉它等于读档之后把这一局挣到的东西全忘了。
+   */
+  powers: string[];
   map: MapNode[][];
   pos: { r: number; i: number } | null;
   seen: Record<string, boolean>;
@@ -44,6 +52,23 @@ interface Snapshot {
   runOk: number;
   runBad: number;
   answerDraws: number;
+  /**
+   * 已经用掉的「每幕一次」/「整局一次」的牌（`PowerId` 列表）。
+   *
+   * 必须存 —— 否则读档之后「许愿条」会重新变成一张满的免死，
+   * 「账本」也会在这一幕里再用一次。存数组而不是整张 `onceUsed` 表：
+   * 这里只需要"哪些用过了"，形状越小越好校验。
+   *
+   * 「每场一次」那张表不存：战斗中途本来就不存档，进新场也必然要清。
+   */
+  onceStage: string[];
+  onceRun: string[];
+  /**
+   * 抛光布写进 G 的精炼加成。它是**拾取即结算**的一张牌，不存的话
+   * 读档之后精炼会从 +5 掉回 +3，而玩家手里那几张已经精炼过的牌不会变回去 ——
+   * 一个只在"读档之后"出现的差额，最难查。
+   */
+  upGrade: number;
 }
 
 /**
@@ -57,16 +82,28 @@ let infoCache: SaveInfo | null | undefined;
 
 export type SaveInfo = { stage: number; stageName: string; floor: number; hp: number; maxHp: number };
 
+/** 把"哪些用过了"的记账表压成一串 id。写档时用。 */
+function usedIds(table: Partial<Record<PowerId, boolean>>): PowerId[] {
+  return (Object.keys(table) as PowerId[]).filter((id) => table[id]);
+}
+
+/** 把一串 id 还原成记账表。读档时用 —— 顺手把不认识的 id 剔掉。 */
+function usedTable(ids: string[]): Partial<Record<PowerId, boolean>> {
+  const out: Partial<Record<PowerId, boolean>> = {};
+  ids.forEach((id) => { if (POWER_BY_ID[id]) out[id as PowerId] = true; });
+  return out;
+}
+
 /** 每走完一个节点存一次。战斗中途、面板打开时不存。 */
-export function saveRun() {
-  if (G.screen !== 'map' || !G.map.length || G.panel.k !== 'none' || G.pending) return;
+export function saveRun() {  if (G.screen !== 'map' || !G.map.length || G.panel.k !== 'none' || G.pending) return;
   const snap: Snapshot = {
-    v: 3,
+    v: 6,
     stage: G.stage,
-    mode: G.mode,
+    boon: G.boon,
     hp: G.hp,
     maxHp: G.maxHp,
     deck: G.deck,
+    powers: G.powers,
     map: G.map,
     pos: G.pos,
     seen: G.seen,
@@ -75,6 +112,9 @@ export function saveRun() {
     runOk: G.runOk,
     runBad: G.runBad,
     answerDraws: G.answerDraws,
+    onceStage: usedIds(G.onceStage),
+    onceRun: usedIds(G.onceRun),
+    upGrade: G.upGrade,
   };
   writeStore(KEY, JSON.stringify(snap));
   infoCache = undefined;
@@ -118,15 +158,18 @@ export function resumeRun(): boolean {
   const s = readSnapshot();
   if (!s) return false;
   Object.assign(G, {
-    screen: 'map', mode: s.mode, stage: s.stage, stageTopic: '', panel: { k: 'none' }, log: [],
+    screen: 'map', boon: s.boon, stage: s.stage, stageTopic: '', panel: { k: 'none' }, log: [],
     deck: s.deck, map: s.map, pos: s.pos, seen: s.seen, node: null,
     hp: s.hp, maxHp: s.maxHp, block: 0,
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
-    draw: [], discard: [], hand: [], powers: [],
+    draw: [], discard: [], hand: [], powers: s.powers,
     topicWrong: s.topicWrong, qPicked: {}, qLeft: [], charge: {}, answers: [],
-    answerDraws: s.answerDraws,
+    answerDraws: s.answerDraws, qFresh: false, syllabusBlocks: 0, onceUsed: {},
+    onceStage: usedTable(s.onceStage),
+    onceRun: usedTable(s.onceRun),
+    carryBlock: 0, upGrade: s.upGrade,
     apDown: 0, drawCut: 0,
-    runOk: s.runOk, runBad: s.runBad, floors: s.floors, powerFallback: false,
+    runOk: s.runOk, runBad: s.runBad, floors: s.floors,
     pending: null, pendingCost: 0, busy: false,
   });
   // 断点只存阶段号；题库是按阶段从来源题库切出来的，恢复时重新切一次。
@@ -186,9 +229,9 @@ function readSnapshot(): Snapshot | null {
   // 结构对不上就当没有：一份坏存档不该让首页崩掉。
   // 这里逐项校验，而不是只看"看起来像" —— 一个 stage=2.5 就能让
   // `STAGES[stage-1].name` 抛异常，后果是首页每帧都渲染失败。
-  if (!isRecord(s) || s.v !== 3) return null;
+  if (!isRecord(s) || s.v !== 6) return null;
   if (!Number.isInteger(s.stage) || s.stage < 1 || s.stage > STAGES.length) return null;
-  if (!MODE_KEYS.includes(s.mode)) return null;
+  if (s.boon !== null && !(typeof s.boon === 'string' && !!POWER_BY_ID[s.boon])) return null;
   if (!isNum(s.hp) || !isNum(s.maxHp) || s.hp <= 0 || s.maxHp <= 0 || s.hp > s.maxHp) return null;
   if (!Array.isArray(s.map) || s.map.length !== STAGE_ROWS) return null;
   // 节点坐标必须和它在数组里的位置对得上：`enterNode` 用 key 里的 r/i 去
@@ -229,9 +272,19 @@ function readSnapshot(): Snapshot | null {
   // 已经删掉的「错题本」：只去掉这一张，不因为一张卡丢掉整局。
   s.deck = s.deck.filter((id) => baseIdOf(id) !== 'pow:log');
   if (!s.deck.length || !s.deck.every((id) => isKnownCardId(id))) return null;
-  // 增益牌不可精炼：一个带 `+` 的 `pow:` 只可能来自坏存档。
-  if (s.deck.some((id) => isUpgraded(id) && isPowerId(id))) return null;
+  // 增益：只能是认识的 id，而且不能重复（池子里每种一个）。
+  if (!Array.isArray(s.powers)) return null;
+  if (!s.powers.every((id) => typeof id === 'string' && !!POWER_BY_ID[id])) return null;
+  if (new Set(s.powers).size !== s.powers.length) return null;
   if (!isBoolRecord(s.seen) || !isNonNegRecord(s.topicWrong)) return null;
+  // 「每幕一次」/「整局一次」的账：只认认识的 PowerId。
+  // 不认识的直接判坏档比静默忽略安全 —— 静默忽略会让那张牌在读档后重新可用。
+  for (const key of ['onceStage', 'onceRun'] as const) {
+    const v = s[key];
+    if (!Array.isArray(v)) return null;
+    if (!v.every((id) => typeof id === 'string' && !!POWER_BY_ID[id])) return null;
+  }
+  if (!isNum(s.upGrade) || s.upGrade < 0 || s.upGrade > 10) return null;
   for (const key of ['floors', 'runOk', 'runBad', 'answerDraws'] as const) {
     const v = s[key];
     if (!isNum(v) || v < 0) return null;

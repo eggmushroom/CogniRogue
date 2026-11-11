@@ -1,16 +1,19 @@
-import { POWERS, POWER_BY_ID } from '../model/data';
+import { POWER_BY_ID } from '../model/data';
 import type { CardDef, CardId, PowerDef, PowerId } from '../model/types';
 import { G } from '../infra/state';
 import { PACK } from './pack';
 import { basicDef, isBasicId } from './basics';
-import { isPowerCard } from './kinds';
 
 /**
  * cards/registry —— 卡牌定义的查找表。
  *
  * 牌组里只是一串 id（见 `CardId`），卡面全部由这里按 id 还原。
- * 知识卡来自内置卡牌库 catalog（PACK），增益牌与杂念由本文件造出来 —— 它们和知识卡走
- * **完全相同**的通道，所以「增益是牌而不是遗物」在数据层就成立。
+ * 知识卡来自内置卡牌库 catalog（PACK），杂念由本文件造出来。
+ *
+ * **增益不在这张表里**：它不是牌，没有卡面，也永远不会出现在牌组 / 手牌 / 牌堆里。
+ * 上一版曾把增益做成 `pow:` 前缀的牌并塞进这张表，于是 `defOf` 要认它、
+ * 存档校验要认它、牌组画廊要排除它 —— 一条并不存在的东西被三处特判。
+ * 现在它只剩 `G.powers` 里的一串 id，查表由 `powerById` 负责。
  *
  * ## 精炼为什么是一个 id 后缀
  *
@@ -34,15 +37,6 @@ const JUNK: CardDef = {
 
 export const JUNK_ID = JUNK.id;
 
-export const powerCardId = (id: PowerId) => 'pow:' + id;
-
-const POWER_CARD: Record<string, CardDef> = Object.fromEntries(
-  POWERS.map((p): [string, CardDef] => [powerCardId(p.id), {
-    id: powerCardId(p.id), topic: '增益', name: p.name,
-    atk: 0, blk: 0, cost: p.cost, eff: 'strike', power: p.id, kind: 'power',
-  }]),
-);
-
 /** 精炼标记：被精炼的那一张牌的 id 以它结尾。 */
 export const UP_MARK = '+';
 
@@ -64,7 +58,7 @@ export const defOf = (id: CardId | null | undefined): CardDef => {
   const base = baseIdOf(id);
   if (base === JUNK_ID) return JUNK;
   // 基础牌固定在内置表里，不进 PACK（PACK 是"可获取的知识卡池"）
-  return PACK.cards.find((c) => c.id === base) ?? POWER_CARD[base] ?? basicDef(base) ?? JUNK;
+  return PACK.cards.find((c) => c.id === base) ?? basicDef(base) ?? JUNK;
 };
 
 /**
@@ -73,33 +67,29 @@ export const defOf = (id: CardId | null | undefined): CardDef => {
  *
  * 存档校验用。杂念不算 —— 它只在一场战斗的弃牌堆里临时出现，
  * 牌组里出现 `__junk` 一定是存档坏了。
+ * 旧档里的 `pow:` 同样落在"不认识"这一边，由 `save.ts` 在读取时剔掉。
  */
 export const isKnownCardId = (id: string): boolean => {
   const base = baseIdOf(id);
   return base !== JUNK_ID
-    && (PACK.cards.some((c) => c.id === base) || !!POWER_CARD[base] || isBasicId(base));
+    && (PACK.cards.some((c) => c.id === base) || isBasicId(base));
 };
 
-export const powerCardOf = (id: PowerId): CardDef => POWER_CARD[powerCardId(id)];
-export const powerOf = (c: CardDef | null | undefined): PowerDef | null =>
-  isPowerCard(c) && c?.power ? POWER_BY_ID[c.power] : null;
-
-/** 本场是否已经打出过这种增益牌。 */
+/** 这一局是不是已经拿到了这种增益。 */
 export const hasPower = (id: PowerId) => G.powers.includes(id);
 export const powerById = (id: string): PowerDef | null => POWER_BY_ID[id] ?? null;
 
-/** 牌组里有哪些增益牌（去重）。地图页和结算页要显示"这一局带了什么进场"。 */
-export function deckPowers(): PowerDef[] {
-  const seen: Record<string, boolean> = {};
-  G.deck.forEach((id) => { seen[baseIdOf(id)] = true; });
-  return Object.keys(seen)
-    .map((id) => POWER_CARD[id]?.power)
-    .filter((p): p is PowerId => !!p)
-    .map((p) => POWER_BY_ID[p]);
-}
-
-/** 精炼一次的加成：攻/挡底数各 +3（再按效果折算）。 */
+/**
+ * 精炼一次的加成：攻/挡底数各 +3（再按效果折算）。
+ *
+ * 「抛光布」把这一档再抬 2 点 —— 但它是从 `G.upGrade` 读的，不是从这里改常量：
+ * 本文件在最底层，反向 import `cards/powers.ts` 会成环（那边要 `hasPower`）。
+ * 拾取时把数字写进 G，这里只读一个数，依赖方向不倒。
+ */
 export const UP_GAIN = 3;
+
+/** 这一张牌的精炼加成：基础 3 点 + 抛光布那一档。 */
+export const upGain = (): number => UP_GAIN + G.upGrade;
 
 /**
  * 卡面数值。精炼读的是**这一张牌自己的 id**，所以牌组里两张基础斩击
@@ -107,12 +97,9 @@ export const UP_GAIN = 3;
  */
 export function statOf(id: CardId) {
   const d = defOf(id);
-  const up = isUpgraded(id) ? UP_GAIN : 0;
+  const up = isUpgraded(id) ? upGain() : 0;
   return {
     atk: (d.atk || 0) + up,
     blk: (d.blk || 0) + up,
   };
 }
-
-/** 这个 id 是不是一张增益牌。奖励池、结算页都要排除它。 */
-export const isPowerId = (id: string) => !!POWER_CARD[baseIdOf(id)];

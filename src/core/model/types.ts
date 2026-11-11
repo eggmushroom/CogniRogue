@@ -8,38 +8,27 @@
 export type QLevel = 'recall' | 'understand' | 'transfer';
 
 /**
- * 一局的模式。**每局开始前由玩家选**，不随卡片进度自动切换。
+ * 唯一的一套「答错价码」。
  *
- * 三种模式只改「答错这一手要付多少钱」，不改卡面数值、不改题库、不改已经攒下的记忆。
- * 学习 = 允许犯错；复习 = 要求稳；测试 = 错了要付全价。
+ * 原来这里是三种模式（学习 / 复习 / 测试），各改一遍答错补多少格挡、补不补抽、
+ * 牌去哪、稳固度怎么变。规则本身没问题，问题是**它挡在每一局前面**：
+ * 玩家得先回答"我今天是来学还是来测"才能开始玩，而"这一局偏严还是偏松"
+ * 本该是构筑（能力卡）造成的结果，不是开局菜单选出来的。
+ *
+ * 现在只有一套规则。差异交给开局选的那张能力卡 —— 它是牌组的一部分，
+ * 会在战斗里被看见、被记住，而不是一个选完就再也想不起来的开关。
  */
-export type RunMode = 'learn' | 'review' | 'test';
-
-export interface ModeDef {
-  key: RunMode;
-  name: string;
-  tag: string;
-  color: string;
-  /**
-   * 答错时补偿多少格挡，按**这张牌自己会产生的格挡**算（不是它身上那个 blk 档位）：
-   * 1 = 全额，0.5 = 半额，0 = 不补。卡面没有格挡那一行的牌，任何模式都不补。
-   */
-  missBlock: number;
+export interface MissRule {
+  /** 答错时按这张牌自己的格挡补多少比例（0 = 不补） */
+  block: number;
+  /** 答错后是否补抽 */
+  draw: boolean;
+  /** 答错的牌去哪 */
+  dest: 'draw' | 'discard';
   /** 答错时稳固度乘数 */
   stabDrop: number;
-  /** 答对时稳固度增益系数：1 = 原来的 ×1.8/+1 */
+  /** 答对时稳固度系数 */
   stabGain: number;
-  /** 答错后这张牌去哪 */
-  missDest: 'draw' | 'discard';
-  /**
-   * 答错后是否补抽。学习模式**不补**：它是练习场，手牌会真的少一张；
-   * 复习 / 测试补抽，保证"错的是这一手，不是整回合"。
-   */
-  missDraw: boolean;
-  /** 答错价码的一句话，结算页用；卡面不再印它 */
-  cardLabel: string;
-  /** 答题面板底部那句提醒 */
-  hint: string;
 }
 
 
@@ -125,25 +114,27 @@ export interface StageDigest {
 
 /**
  * 卡牌身份 —— 管的是规则，不是数值：要不要答题、进不进记忆调度、
- * 打出之后飞向弃牌堆还是增益槽。与 `Eff`（数值怎么花）、`topic`（知识归属）
+ * 打出之后飞向弃牌堆还是飞回抽牌堆。与 `Eff`（数值怎么花）、`topic`（知识归属）
  * 是三条互相独立的轴，不要混用。
  *
- * 以前这一层没有字段，靠 `card.junk` / `card.power` 两个可选标记在十来处
- * 各自推导；现在统一由 `cards/kinds.ts` 的 `cardKind()` 判定。
+ * 增益**不是牌**了（见 `PowerId`），所以这一层只剩三种：要答题的知识卡、
+ * 永远打得出但很弱的基础牌、以及敌人塞进来、不出题的杂念。
+ * 以前这里还有一个 `'power'`：那是"增益是牌"那一版的产物，连同它的卡面、
+ * 飞行槽和"每场重新打一遍"一起删掉了。
  */
-export type CardKind = 'knowledge' | 'power' | 'junk' | 'basic';
+export type CardKind = 'knowledge' | 'junk' | 'basic';
 
 /**
- * 卡牌的**类别**：攻击 / 防御 / 技能 / 能力。
+ * 卡牌的**类别**：攻击 / 防御 / 技能。
  *
  * 这是和 `CardKind`（身份）不同的一条轴：
- *   - 身份回答"这张牌要不要答题、能不能被获取"（基础牌 / 知识卡 / 增益 / 杂念）；
- *   - 类别回答"它在这一局里干什么"（打伤害 / 堆格挡 / 改节奏 / 本场持续）。
+ *   - 身份回答"这张牌要不要答题、能不能被获取"（基础牌 / 知识卡 / 杂念）；
+ *   - 类别回答"它在这一局里干什么"（打伤害 / 堆格挡 / 换节奏）。
  *
  * 知识卡按效果自动归类（见 `cards/kinds.ts` 的 `cardType()`）：
- * 猛击·洞察·串联·内化 = 攻击，巩固 = 防御，专注 = 技能，增益牌 = 能力。
+ * 猛击·洞察·串联·内化 = 攻击，巩固 = 防御，专注 = 技能。
  */
-export type CardType = 'attack' | 'defense' | 'skill' | 'power';
+export type CardType = 'attack' | 'defense' | 'skill';
 
 /**
  * 卡牌等级：这张牌愿意为它的数值付几次答题。
@@ -183,33 +174,110 @@ export interface EffMods {
  * 出牌费用。0–3 点，或者 `'x'` —— 花光这一回合剩下的**全部**行动力，
  * 效果按花掉的点数结算（花 3 点就打 3 次）。写法跟杀戮尖塔一样。
  *
- * 不写 = 1 点：这一版之前 83 张牌清一色 1 点，省略字段就等于原价，
+ * 不写 = 1 点：这一版之前 87 张牌清一色 1 点，省略字段就等于原价，
  * 旧卡表和旧存档都不必改。
  */
 export type CardCost = 0 | 1 | 2 | 3 | 'x';
 
 /**
- * 增益（power）。它曾经是"遗物"——挂在界面右上角的一排小圆点，永远生效、不可交互。
+ * 增益（power）。**它是整局生效的"印记"，不是牌。**
  *
- * 现在它是一张牌：进牌组、抽到手、花行动力打出去，本场战斗剩下的时间里一直亮着。
- * 这么改的理由不是换皮：遗物是白给的，牌是要抽、要花行动力、要占牌位的 ——
- * 于是"这一回合我是继续答题，还是先把灯点上"变成了一个真实的取舍，
- * 而牌组里塞多少张增益牌（= 稀释多少知识卡）也成了构筑决定。
+ * 上一版把它做成了牌：进牌组、抽到手、花行动力打出去、本场结束就清空。
+ * 于是它每场都要被重新抽到、重新付一遍费用，还占着一张知识卡的位置 ——
+ * 玩家读出来的是"我拿了个增益，但我从来没见过它生效"。
+ *
+ * 现在反过来：只有精英和幕 Boss 掉，**拾取即生效、整局亮着**。
+ * 它不抽、不付钱、不占牌位，所以也没有"要不要拿"这一步 —— 掉落不是成本，
+ * 牌组厚度才是，而这条路现在完全不碰牌组。
+ *
+ * 池子有四十个（`POWERS`）：一局大约会走过十几个精英 / Boss，池子必须够掉，
+ * 否则后半程的精英会变成"打完什么也没有"。四十个里大部分是小份加数，
+ * 拿齐一整轮确实变强 —— 所以每一条的强度都按"总量除回来"重定过，
+ * 而且它们按 `PowerScope` 分档：常驻的只有 1–2 点，一次性的才敢给 3–4 点。
  */
-export type PowerId = 'hourglass' | 'index' | 'binder' | 'mirrorcard' | 'lamp' | 'marker';
+export type PowerId =
+  | 'hourglass' | 'index' | 'binder' | 'mirrorcard' | 'lamp' | 'marker'
+  | 'paperweight' | 'dogear' | 'bookmark' | 'sticky' | 'syllabus' | 'eraser'
+  // ── 第二批：答错的四张「代价」牌 + 两张学习向 ──
+  // 前十二张里只有装订线 / 橡皮两张在管"答错"，而答错正是这游戏唯一会被惩罚的动作。
+  // 这四张把那条线拆成四个不同的松紧：不掉稳固度（书套）、补抽一张（草稿纸）、
+  // 少一个干扰项（放大镜）、以及把复习点的回血拉高（修书胶）。
+  | 'slipcase' | 'scratch' | 'loupe' | 'margin' | 'corner' | 'mend'
+  // ── 第三批：从"每场第一次"里分流出去的二十二张 ──
+  // 十八张的时候有一半牌都挂在"每场战斗第一次答对 / 答错"，一局捡到八九张，
+  // 同一个瞬间会有两三张抢着响，玩家听不出是哪一张在起作用。
+  // 这一批按**作用域**补齐四个方向，见 `PowerScope`：
+  //   · 战场常驻（assault/rule/nightlight/board/tab/inscribe/tea/shelf/polish）
+  //   · 每场一次（gluepot/seal/clip/whistle/felt/brush）
+  //   · 每幕一次（ledger/atlas）
+  //   · 整局一次（wish）
+  //   · 拾取即结算（spine/exlibris/slim/resin）
+  | 'press' | 'code' | 'nightlight' | 'board' | 'tab' | 'stamp' | 'tea'
+  | 'shelf' | 'polish' | 'gluepot' | 'seal' | 'clip' | 'whistle' | 'felt'
+  | 'brush' | 'ledger' | 'atlas' | 'wish' | 'spine' | 'exlibris' | 'slim' | 'resin';
+
+/**
+ * 一张能力牌的**作用域** —— 它多久兑现一次。
+ *
+ * 这不是分类学，是加牌时唯一要回答的问题：**"这张牌什么时候该响"**。
+ * 四种作用域各自对应 `cards/powers.ts` 里的一条通道：
+ *
+ *   · `always`  常驻数值：`rulesOf()` 把它折成一个数字，结算层只读数字
+ *   · `fight`   每场一次：`onceThisFight(id)`，调用即消耗
+ *   · `stage`   每幕一次：`onceThisStage(id)`，过幕时清账
+ *   · `run`     整局一次：`onceThisRun(id)`，开局时清账
+ *   · `instant` 拾取即结算：`applyInstant(id)`，不需要记账
+ *
+ * 它同时是 `tools/stagecheck.ts` 的守门依据：一张牌如果声明了 `always`
+ * 却没出现在 `rulesOf` 的任何一项里，构建就会失败 —— 这正好挡住
+ * "加了一张牌，但忘了真的让它生效"这类静默 bug。
+ */
+export type PowerScope = 'always' | 'fight' | 'stage' | 'run' | 'instant';
 
 export interface PowerDef {
   id: PowerId;
-  /** 卡面左上角的一个字 */
+  /** 徽记里的一个字 */
   icon: string;
   name: string;
   /** 完整描述：日志、悬停提示、结算页用 */
   desc: string;
-  /** 卡面上的效果句，两行以内 */
+  /** 徽记面上的效果句，两行以内 */
   card: string;
-  /** 打出它要付几点行动力。增益牌不答题，所以这笔钱不退。 */
-  cost: CardCost;
   color: string;
+  /** 多久兑现一次。见 `PowerScope` */
+  scope: PowerScope;
+}
+
+/**
+ * 一张卡的**联动规格**：它的数值不是印死的，而是由前几张牌留下的战场状态算出来；
+ * 它自己也可能会给下一张牌留一笔账。
+ *
+ * 这是规则，不是演出：改动的是 `resolveEff` 拿到的攻击底数，所以伤害、回血、
+ * 分段、反馈数字、卡面数字会一起变。四种形状各自对应一个可被验证的因果：
+ *
+ *   atkFrom:'drawn'  本回合每抽 1 张牌 → 攻击底数 +per  （抽牌卡喂它）
+ *   atkFrom:'block'  当前每 1 点格挡 → 攻击底数 +per   （格挡卡喂它）
+ *   grow             本场每打出过一次**这张牌** → 下次 +grow（自己喂自己）
+ *   nextMul/nextAdd  打出后给**下一张真正生效的牌**留倍率/加数（它喂别人）
+ *
+ * 一律读 `combat/link.ts` 的 `liveStatOf`，展示与结算共用同一份结果，
+ * 不会出现「卡面写 8、实际打 16」这种两张皮。
+ */
+export interface CardLink {
+  /** 攻击底数从哪个战场状态换算；不写就用卡面 atk */
+  atkFrom?: 'drawn' | 'block';
+  /** 每单位状态换算多少攻击底数，默认 1 */
+  per?: number;
+  /** 状态为 0 时的保底攻击底数，默认 0 */
+  floor?: number;
+  /** 本场每打出过一次这张牌，它自己下次多多少攻击底数 */
+  grow?: number;
+  /** 打出后给下一张牌留下的伤害倍率，默认 1 */
+  nextMul?: number;
+  /** 打出后给下一张牌留下的固定攻击底数加数 */
+  nextAdd?: number;
+  /** 卡面右下角的一句短说明：数值从哪来 */
+  note: string;
 }
 
 /**
@@ -248,11 +316,8 @@ export interface CardDef {
   eff: Eff;
   /** 这张卡相对效果原型的签名改动；不写就是原型默认 */
   mods?: EffMods;
-  /**
-   * 有值就是一张增益牌：它不出题，打出后本场持续生效。
-   * 增益牌不进解锁统计、不参与记忆调度，也不吃"答对退款"。
-   */
-  power?: PowerId;
+  /** 会不会和别的手牌发生**机制**联动；不写就是一张数值恒定的牌 */
+  link?: CardLink;
   junk?: boolean;
   /** 身份。工厂与解析层写入；旧 JSON 包没写时由 cardKind() 回落推导。 */
   kind?: CardKind;
@@ -460,6 +525,8 @@ export interface Feedback {
   /** 专注抽的牌 */
   draw: number;
   apNote: string;
+  /** 这一手的伤害里有多少来自前序出牌（把因果写进结算，而不是只报一个总数） */
+  linkNote: string;
   explain: string;
   question: string;
   options: string[];
@@ -480,8 +547,8 @@ export interface ReportData {
   /** 最后一章本局的答题数（来自答题流水，不是卡牌记忆） */
   stageOk: number;
   stageBad: number;
-  /** 这一局玩的模式 —— 结算页要写清楚"刚才那局是按哪档结算的" */
-  mode: RunMode;
+  /** 这一局开局选的能力卡名字 —— 结算页要写清楚"这局是怎么搭起来的" */
+  boon: string;
   runOk: number;
   runBad: number;
   floors: number;
@@ -499,13 +566,26 @@ export interface ReportData {
 
 export type Panel =
   | { k: 'none' }
-  /** 开局前选模式：学习 / 复习 / 测试 */
-  | { k: 'mode' }
-  /** `q` 是点开那一刻从题池抽出的题目快照：答题期间题库换不掉这一手 */
-  | { k: 'question'; idx: number; qid: string; topic: string; q: Question; view: QView }
+  /**
+   * 开局：从三张能力卡里选一张带走。
+   *
+   * 它替代了原来的"选模式"。同样是每局开始前的一次选择，但选的东西从
+   * "我今天是来学还是来测"变成了"这一局我想带什么上手" —— 后者会在
+   * 战斗里持续起作用，前者只是一个改四行数字的开关。
+   */
+  | { k: 'boon' }
+  /**
+   * `q` 是点开那一刻从题池抽出的题目快照：答题期间题库换不掉这一手。
+   * `fresh` 记的是"这道题来自本场新题池，还是复用" —— 课表只对前者兑现。
+   */
+  | { k: 'question'; idx: number; qid: string; topic: string; q: Question; view: QView; fresh: boolean }
   | { k: 'feedback'; fb: Feedback }
   | { k: 'reward'; cards: CardDef[] }
-  | { k: 'power'; pool: CardDef[] }
+  /**
+   * 精英 / Boss 战后掉落的增益。**只有一个**（`id`），没有"要不要"的分支：
+   * 掉落不是成本，玩家没有理由拒绝它。
+   */
+  | { k: 'powerdrop'; id: PowerId }
   | { k: 'rest' }
   | { k: 'cardpick'; mode: 'up' | 'rm' }
   | { k: 'event'; ev: EventDef }
@@ -519,8 +599,8 @@ export interface LogLine { msg: string; kind: '' | 'hi' | 'bad' | 'turn' }
 
 export interface GameState {
   screen: 'title' | 'map' | 'battle' | 'report' | 'atlas';
-  /** 这一局开始前选定的模式；整局不变，换模式必须重开一局 */
-  mode: RunMode;
+  /** 开局选的那张能力卡；整局不变，但它进的是 `powers`，会一直生效 */
+  boon: PowerId | null;
   /**
    * 当前第几幕（1..5）。地图只装当前这一幕的 20 行 —— 100 层不画成一张图，
    * 否则一屏 100 个点，等于没有地图。层号用 `floorOf()` 换算成 1..100。
@@ -540,8 +620,10 @@ export interface GameState {
    */
   deck: CardId[];
   /**
-   * 本场战斗已经打出去的增益牌。跨场清空 —— 增益牌每场都要重新抽、重新付费用，
-   * 这正是它和旧"遗物"（整局白给）最本质的区别。
+   * 这一局已经拿到的增益，**跨战斗保留**（新开一局才清空）。
+   *
+   * 拾取即生效，所以它读起来是"我这局多会了什么"，不是"这一场我打了什么"。
+   * 战斗开始不再清空它 —— 那是"增益是牌"那一版的规则，和掉落即生效互斥。
    */
   powers: PowerId[];
   hp: number;
@@ -559,6 +641,17 @@ export interface GameState {
   draw: CardId[];
   discard: CardId[];
   hand: CardId[];
+  /**
+   * 刚刚离开手牌、被放回**抽牌堆**的那一张（只有学习模式答错会这样）。
+   *
+   * 表现层要靠它决定这张牌飞向哪边：进弃牌堆的牌是"被收走了"，回抽牌堆的是
+   * "下一次还会再来"。以前表现层拿 `G.draw.includes(id)` 猜，而 id 是**牌种**不是**副本** ——
+   * 四张基础斩击里只要还有一张躺在抽牌堆，刚被丢进弃牌堆的那张也会被画成飞回牌堆，
+   * 玩家看到的就是"这一轮没打出的牌没有回到弃牌堆"。
+   *
+   * 只描述"刚刚那一张"，表现层读完就清（见 `scenes/battle.ts` 的 `drawHand`）。
+   */
+  returned: CardId | null;
   map: MapNode[][];
   pos: { r: number; i: number } | null;
   node: MapNode | null;
@@ -601,19 +694,87 @@ export interface GameState {
    * 是因为 topTopic() 可能在同一回合里被新的错误改写，结算时要重新对一次。
    */
   topOkTopic: string | null;
-  /** 装订线：本回合的那一次半额结算已经用掉了没有。`startTurn` 清零 */
-  binderUsed: boolean;
+  /**
+   * 「一场一次」的能力牌，哪些这一场已经用掉了。
+   *
+   * 装订线 / 书签 / 橡皮 / 书套 / 批注 / 草稿纸 / 放大镜 / 荧光笔 —— 八张牌
+   * 八条完全不同的分支，但形态是同一个：**这一场只兑现一次**。旧版给每张
+   * 开一个 `xxxUsed` 布尔，于是加第九张要同时改三处（类型 / 初值 / 清零），
+   * 漏一处就是"这张牌只在第一场响"的静默 bug。
+   *
+   * 现在只有一张表，键是 `PowerId`。读写只能走 `cards/powers.ts` 的
+   * `onceThisFight(id)` —— 它把"有没有这张牌 + 用过没有 + 记账"合成一步，
+   * 调用点不会漏记账。按 id 分槽，所以先触发的牌不会吃掉别的牌的机会。
+   *
+   * **按场清，不按回合清**：这些牌整局常驻，一局七十来场，按回合给
+   * 每一条都会变成一整条额外的血条。由 `startBattle` 调 `clearOnceUsed()`。
+   */
+  onceUsed: Partial<Record<PowerId, boolean>>;
+  /**
+   * 「一幕一次」的能力牌：账本 / 地图册。过幕时清（`clearStageOnce`）。
+   *
+   * 和 `onceUsed` 同一形状、同一套读写（`onceThisStage`），只是清的时机不同。
+   * 分开两张表而不是在键上加前缀：前缀会渗进存档格式，而"这一场用没用过"
+   * 和"这一幕用没用过"本来就是两个不同生命周期的东西。
+   */
+  onceStage: Partial<Record<PowerId, boolean>>;
+  /** 「整局一次」的能力牌：许愿条。开局时清（`startRun`） */
+  onceRun: Partial<Record<PowerId, boolean>>;
+  /**
+   * 索引贴留下的格挡：回合结束时保留几点到下一回合。
+   *
+   * 必须是 G 上的字段而不是就地读 `G.block` —— `startTurn` 会先 `setBlock`
+   * 把格挡清掉，那时上一回合的账早就没了。`endTurn` 记，`startTurn` 兑现。
+   */
+  carryBlock: number;
+  /**
+   * 抛光布让精炼多给几点。`cards/registry.ts` 的 `statOf` 读它。
+   *
+   * 之所以是一个状态字段而不是 `rulesOf()` 的一项：`statOf` 在 cards 层最底层，
+   * 而 `rulesOf` 依赖 `G.powers` 与 `BAL`，反过来 import 会成环。
+   * 能力牌在拾取时把这一档写进 G，`statOf` 只读一个数 —— 依赖方向不倒。
+   */
+  upGrade: number;
   /**
    * 荧光笔留给这一手的额外退款点数。答对时由 `answer()` 记账、当场兑现，
    * 所以它只活一手；放在 G 上是因为退款结算在函数末尾，中间隔着一整段分支。
    */
   markerRefund: number;
+  /**
+   * 刚取到的这道题是不是**本场新题池**里的（false = 复用）。
+   *
+   * `takeQuestion` 写、`askCard` 在弹面板那一刻快照进 `Panel.fresh`。
+   * 只活一手，不存档：存档发生在节点之间，那时没有题在手上。
+   */
+  qFresh: boolean;
+  /**
+   * 课表这一场已经补过多少点格挡。`startBattle` 清零；
+   * 上限是 `BAL.syllabusBlockCap` —— 一局五十多场，不封顶就是一条额外血条。
+   */
+  syllabusBlocks: number;
   /** 本局靠"答对"额外抽到的张数。只给结算页用，不参与任何结算 */
   answerDraws: number;
   /** 本回合靠答对抽了几张，受 `BAL.answerDrawCap` 限制，`startTurn` 清零 */
   answerDrawsThisTurn: number;
   /** 本回合靠答错补抽了几张，受 `BAL.missDrawCap` 限制，`startTurn` 清零 */
   missDrawsThisTurn: number;
+  /**
+   * 本回合**实际抽到手**的牌数：起手抽、专注抽、答对抽、补抽都算。
+   * `atkFrom:'drawn'` 的卡读它，`startTurn` 清零。不是「还剩几张」，
+   * 是「这一回合已经看过多少张」—— 抽得越多，那张卡越重。
+   */
+  drawnThisTurn: number;
+  /**
+   * 本场每张卡打出过几次（card id → 次数）。`grow` 的卡读它，`startBattle` 清零。
+   * 按**牌种**（剥掉精炼后缀）记：同名两张副本共用"这张牌被打了几次"。
+   */
+  cardPlays: Record<string, number>;
+  /**
+   * 上一张牌留给**下一张真正生效的牌**的加成。
+   * 只有 `strikeWith` 真的执行才消耗：答错这一手作废，加成继续留着，
+   * 不会白白蒸发。跨回合保留（玩家能在 HUD 上看见它），`startBattle` 清。
+   */
+  nextBoost: { mul: number; add: number; from: string } | null;
   /**
    * 下回合行动力要扣掉几点（siphon 的账）。敌人命中时记账，`startTurn` 结算并清零。
    * 它记在"下回合"而不是"这回合"，因为玩家挨打时这回合的行动力早就花完了 ——
@@ -625,13 +786,6 @@ export interface GameState {
   runOk: number;
   runBad: number;
   floors: number;
-  /**
-   * 精英 / 幕 Boss 的增益牌池已经空了（6 种全拥有）。
-   *
-   * 这时 `openBossReward` 会改为开一次知识卡三选一；`afterReward` 读到这个标记
-   * 就直接收尾，不能再走一遍"精英必给增益牌"，否则会循环。
-   */
-  powerFallback: boolean;
   pending: null | 'clear' | 'win' | 'dead';
   /**
    * 事件里"选完牌才付的血"。>0 表示有一笔待付款项挂着。

@@ -24,7 +24,9 @@ async function resolveUrl() {
   if (process.env.SMOKE_URL) return process.env.SMOKE_URL;
   for (const u of ['http://127.0.0.1:5178/', 'http://[::1]:5178/']) {
     try {
-      const r = await fetch(u, { signal: AbortSignal.timeout(1200) });
+      // 5 秒不是随便给的：vite 第一次请求要现转译 main.ts，冷启动常超过 1 秒，
+      // 窗口太窄会把"服务器其实在跑"判成连不上。
+      const r = await fetch(u, { signal: AbortSignal.timeout(5000) });
       if (r.ok) return u;
     } catch { /* 换下一个 */ }
   }
@@ -387,6 +389,23 @@ async function waitFor(label, ms = 20000) {
   return false;
 }
 
+/**
+ * 等开局三张能力卡里出现任意一张，返回它的完整 label（`boon:<id>`）。
+ *
+ * `waitFor` 是精确匹配，而这里事先不知道玩家会看到哪三张 —— 按前缀找。
+ */
+async function waitBoon(ms = 20000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const l = await evalJs(
+      `(cog.hots().find((h) => h.label.startsWith('boon:')) || {}).label || ''`,
+    );
+    if (l) return l;
+    await sleep(60);
+  }
+  return '';
+}
+
 const S = (path) => evalJs(`(${path})`);
 
 /**
@@ -403,11 +422,17 @@ if (CPU_RATE > 0) {
 
 await boot();
 
-await step('标题 → 选模式 → 开局', async () => {
+await step('标题 → 选一张能力卡 → 开局', async () => {
   await clickLabel('开始新的一局');
-  if (!await waitFor('mode:review')) throw new Error('模式选择没有出现');
-  await clickLabel('mode:review');
-}, async () => (await S('cog.state.screen')) === 'map' && (await S('cog.state.mode')) === 'review');
+  const label = await waitBoon();
+  if (!label) throw new Error('开局选卡没有出现');
+  await clickLabel(label);
+  globalThis.__boon = label.slice('boon:'.length);
+}, async () => {
+  const st = await evalJs(`({ screen: cog.state.screen, boon: cog.state.boon, powers: cog.state.powers })`);
+  // 选中的那张必须真的进了 powers —— 否则它只是个记在 state 里的名字
+  return st.screen === 'map' && st.boon === globalThis.__boon && st.powers.includes(st.boon);
+});
 await step('地图 → 进节点', () => clickLabel('node'), async () => (await S('cog.state.screen')) === 'battle');
 // 点牌就是出题：中间不该再有任何浮层。这一步挂了就说明又退回了"先选档再看题"
 // 手牌里现在混着初始牌组（base:*），要挑一张知识卡点 —— 基础牌点下去不出题。
@@ -471,7 +496,9 @@ await step('敌人演完 → 输入解锁、演出单元清空、新回合手牌
   // 演出时长受机器负载影响（后台节流时能拖到好几秒），固定 sleep 一定会不够。
   // 用状态轮询：演出单元清零 + 输入解锁 + 手牌真的全部停稳，三件事同时成立才算演完。
   const t0 = Date.now();
-  while (Date.now() - t0 < 8000) {
+  // 8 秒在正常机器上绰绰有余，CPU ×6 时敌人演出 + 五张牌依次飞回来会拖到
+  // 十几秒。上限给宽不拖慢正常情况：状态一成立就立刻返回。
+  while (Date.now() - t0 < 30000) {
     const st = await S('({ enemy: cog.fx().enemy, locked: cog.locked(), ready: cog.handReady() })');
     if (st.enemy === 0 && !st.locked && st.ready) return;
     await sleep(60);
@@ -495,41 +522,45 @@ await step('五种敌人意图各演一次 → 每种都产生演出单元', asy
   return c.length === 5 && c.every((n) => n > 0);
 });
 
-// 增益牌是唯一一种"点了不出题"的牌。它必须满足三件事：
-// 不进弃牌堆（它已经离开牌组循环了）、不出题、本场生效状态 +1。
-// 这条挂了就意味着它又退化成"一张打了没反应的普通牌"，或者更糟 —— 洗回去无限刷。
-await boot(URL_ + '?dev=power');
-await step('打出增益牌 → 不出题、不进弃牌堆、进入本场增益', async () => {
-  // 把沙漏挪到手牌第 0 位。不靠"第几个热区"去猜 —— 下面按手牌下标点。
-  await evalJs(`(() => {
-    const i = cog.state.hand.indexOf('pow:hourglass');
-    const [e] = cog.state.hand.splice(i, 1);
-    cog.state.hand.unshift(e);
-  })()`);
-  // 挪没挪成要当场确认：失败的话这一条会变成"点了隔壁的知识卡"，报错却是增益没生效
-  if (await S('cog.state.hand[0]') !== 'pow:hourglass') throw new Error('沙漏没挪到手牌第 0 位');
-  if (!await waitHand()) throw new Error('手牌一直没落位');
-  globalThis.__dcBeforePow = await S('cog.state.discard.length');
-  await clickCard(0);
+// 增益是**掉落**，不是牌。它必须满足三件事：面板只有一张、没有"不要"、
+// 面板出现时它已经在生效列表里（掉落即生效，这一屏只是收据）。
+// 这条挂了说明它又退化成"拿进牌组、要自己打出"，或者面板把玩家卡住
+// （掉落没有"拒绝"的语义，所以连 × 都不该有）。
+await boot(URL_ + '?dev=powerdrop');
+await step('掉落面板 → 一张、只有"知道了"、掉落即已生效', async () => {
+  const st = await S('({ k: cog.state.panel.k, id: cog.state.panel.id, pw: cog.state.powers.slice() })');
+  if (st.k !== 'powerdrop') throw new Error('没有打开掉落面板：' + JSON.stringify(st));
+  if (st.id !== 'lamp') throw new Error('掉落的不是长明灯：' + st.id);
+  // 关键：面板还开着的时候，它就已经在工作了 —— 不是"确认之后才开始生效"
+  if (!st.pw.includes('lamp')) throw new Error('面板还开着，长明灯却不在生效列表里：' + st.pw.join(','));
+  // 面板上只有"知道了"一个按钮 —— 多出来的那个会是"不要/跳过"这类不该存在的出口
+  const labels = await evalJs('cog.hots().filter((h) => h.label && h.label !== "card").map((h) => h.label)');
+  if (!labels.includes('知道了')) throw new Error('掉落面板上没有「知道了」：' + labels.join(','));
+  if (labels.some((l) => /跳过|不要/.test(l))) throw new Error('掉落面板上出现了拒绝的出口：' + labels.join(','));
+  globalThis.__pwBefore = st.pw.length;
+  await clickLabel('知道了');
+  await nextFrames(3);
 }, async () => {
-  const st = await S('({ pw: cog.state.powers, panel: cog.state.panel.k, dc: cog.state.discard.length, ap: cog.state.ap, hand: cog.state.hand.slice() })');
-  // 沙漏的即时效果是把这一手赚回来，所以行动力应该回到打出前的 3
-  const ok = st.pw.length === 1 && st.pw[0] === 'hourglass'
-    && st.panel === 'none' && st.dc === globalThis.__dcBeforePow && st.ap === 3;
-  if (!ok) throw new Error('实际状态：' + JSON.stringify(st));
+  const st = await S('({ k: cog.state.panel.k, pw: cog.state.powers.slice(), n: cog.state.powers.length })');
+  if (st.k !== 'none') throw new Error('面板没关掉：' + st.k);
+  // 关面板不该改变任何数值：它只是收据
+  if (st.n !== globalThis.__pwBefore) throw new Error('关面板把增益数量改了：' + JSON.stringify(st));
+  if (!st.pw.includes('lamp')) throw new Error('长明灯没了：' + st.pw.join(','));
   return true;
 });
 
-// 答错的规则（v0.5）：这一手作废、不扣行动力、不锁这张牌；代价落在"本场新题少一道"上。
-// 复习 / 测试会补抽 1 张（学习模式不补，见下面的学习用例），这里用复习模式验补抽。
-await boot(URL_ + '?dev=battle&mode=review');
-await step('复习模式答错 → 不扣行动力、补抽 1 张、本场新题少一道', async () => {
+// 答错的规则：这一手作废、不扣行动力；不补格挡、不补抽，牌进弃牌堆。
+// 代价落在"本场少一道新题"上。三档模式合并之后，只剩这一套。
+await boot(URL_ + '?dev=battle');
+await step('答错 → 不扣行动力、不补格挡、不补抽、本场新题少一道', async () => {
   if (!await waitHand()) throw new Error('手牌一直没落位');
   // 起手只带 2 张随机知识卡，抽 5 张时可能一张都没摸到；这条测的是答错规则，不是抽牌。
   const pick = await ensureKnowledge();
   globalThis.__missHand = await evalJs('cog.state.hand.length');
   globalThis.__missAp = await S('cog.state.ap');
   globalThis.__missQ = await S('cog.state.qLeft.length');
+  globalThis.__missBlk = await S('cog.state.block');
+  globalThis.__missDc = await S('cog.state.discard.length');
   await clickCard(pick);
   if (!await waitFor('opt')) throw new Error('点牌之后没有出题');
   const wrong = await evalJs(`(() => {
@@ -545,13 +576,17 @@ await step('复习模式答错 → 不扣行动力、补抽 1 张、本场新题
     ap: cog.state.ap,
     bad: cog.state.runBad,
     q: cog.state.qLeft.length,
+    blk: cog.state.block,
+    dc: cog.state.discard.length,
   })`);
-  // 手牌数不变 = 打出去一张（那一手作废了）+ 补抽一张进来（复习模式）。
-  // 不断言弃牌堆：补抽也可能抽到同一种，堆的计数会飘。
-  const ok = st.hand === globalThis.__missHand
+  // 手牌少一张 = 打出去那手作废了，而且**没有补位** —— 这是这版规则的核心取舍。
+  // 弃牌堆 +1 可以断言了：不补抽，就不会出现"抽到同一种把计数冲掉"的飘移。
+  const ok = st.hand === globalThis.__missHand - 1
     && st.ap === globalThis.__missAp
     && st.bad === globalThis.__badBefore + 1
-    && st.q === globalThis.__missQ - 1;
+    && st.q === globalThis.__missQ - 1
+    && st.blk === globalThis.__missBlk
+    && st.dc === globalThis.__missDc + 1;
   if (!ok) throw new Error('实际状态：' + JSON.stringify(st));
   return true;
 });
@@ -660,6 +695,17 @@ await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一
     const v = cog.state.panel.view;
     return { wrong: (v.answer + 1) % v.options.length };
   })()`);
+  // 逐帧收集"这一帧有哪些牌正在飞、各去哪"。弃牌动画只有 0.3 秒，
+  // 答完再读一定读不到；而"飞向哪边"是这一步真正要验的东西之一。
+  await evalJs(`(() => {
+    window.__modes = [];
+    window.__stop = false;
+    const tick = () => {
+      for (const m of cog.fx().discardModes) if (!window.__modes.includes(m)) window.__modes.push(m);
+      if (!window.__stop) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })()`);
   await clickLabel('opt', pick.wrong);
 }, async () => {
   // 面板此刻还没画出来（在等演出），但必须在两秒半之内出现
@@ -673,9 +719,9 @@ await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一
 // 弃牌动画：牌离手后要飞向牌堆，然后自己清掉。清不掉的话画面左下角会永远
 // 停着一张牌，而且每出一张牌就多留一张 —— 是那种"看起来没事、玩十分钟才花屏"的漏。
 //
-// 这一步同时钉住学习模式的分档规则：刚开的新浏览器默认是学习模式，
-// 答错之后牌应该**回到抽牌堆**（下一回合就抽回来），而不是进弃牌堆。
-await step('学习模式答错 → 牌回抽牌堆、不补抽', async () => {
+// 顺带钉住去处：答错的牌进**弃牌堆**，不回抽牌堆。三档合并之后没有
+// "回牌堆"那条分支了 —— 谁把它加回来，这里的动画方向断言会立刻红。
+await step('答错的牌飞进弃牌堆，不回抽牌堆', async () => {
   await sleep(900); // 飞行 0.3s + 落地淡出，留一倍余量
 }, async () => {
   const st = await evalJs(`({
@@ -684,74 +730,12 @@ await step('学习模式答错 → 牌回抽牌堆、不补抽', async () => {
     back: cog.state.draw.includes(${JSON.stringify(globalThis.__missId)}),
     hand: cog.state.hand.length,
   })`);
-  // 学习模式不补抽：打出去的牌从手牌消失后不会补一张回来。
-  return st.fx === 0 && st.dc === 0 && st.back
+  const modes = await evalJs('(window.__stop = true, window.__modes)');
+  if (modes.includes('return')) {
+    throw new Error('答错的牌被画成了飞回牌堆：' + modes.join(','));
+  }
+  return st.fx === 0 && st.dc >= 1 && st.back === false
     && st.hand === globalThis.__learnMissHand - 1;
-});
-
-// 复习模式那一档：把这一局切到复习模式，再答错一次。
-// 它必须**进弃牌堆**（这一场不再自动回来），而且要能被数出来。
-await boot(URL_ + '?dev=battle');
-await step('复习模式答错 → 牌进弃牌堆，不再自动回来', async () => {
-  if (!await waitHand()) throw new Error('手牌一直没落位');
-  const idx = await ensureKnowledge();
-  globalThis.__revIdx = idx;
-  globalThis.__revId = await S(`cog.state.hand[${idx}]`);
-  globalThis.__revHand = await evalJs('cog.state.hand.length');
-  await evalJs("cog.state.mode = 'review'");
-  globalThis.__dcBeforeRev = await S('cog.state.discard.length');
-  await clickCard(idx);
-  // 先确认题目真的出来了，再去读选项 —— 否则读到的是上一屏的 undefined
-  if (!await waitFor('opt')) throw new Error('点牌之后没有出题');
-  // 挑一个「本次视图里」的错误选项：题库里的原始答案位置已经被打乱了
-  const pick = await evalJs(`(() => {
-    const v = cog.state.panel.view;
-    return { wrong: (v.answer + 1) % v.options.length };
-  })()`);
-  globalThis.__missAtAsk = await evalJs('cog.state.runBad');
-  await clickLabel('opt', pick.wrong);
-  await expectFeedback('复习模式答错后');
-}, async () => {
-  const st = await evalJs(`({
-    dc: cog.state.discard.length,
-    miss: cog.state.runBad,
-    back: cog.state.draw.includes(${JSON.stringify(globalThis.__revId)}),
-    hand: cog.state.hand.length,
-  })`);
-  // 复习模式只进弃牌堆，不回牌堆；答错补抽 1 张，所以手牌数不变。
-  const ok = st.dc === globalThis.__dcBeforeRev + 1 && st.miss === globalThis.__missAtAsk + 1
-    && st.back === false && st.hand === globalThis.__revHand;
-  if (!ok) throw new Error('实际状态：' + JSON.stringify(st));
-  return true;
-});
-
-// 测试模式那一档：不给垫子、牌进弃牌堆，但答错仍然补抽 1 张。
-// （学习模式也不给垫子，但牌回牌堆、且不补抽；测试是"错不起"的那档。）
-await boot(URL_ + '?dev=battle');
-await step('测试模式答错 → 不补任何格挡', async () => {
-  if (!await waitHand()) throw new Error('手牌一直没落位');
-  const idx = await ensureKnowledge();
-  globalThis.__testIdx = idx;
-  globalThis.__testId = await S(`cog.state.hand[${idx}]`);
-  await evalJs("cog.state.mode = 'test'");
-  globalThis.__blkBeforeTest = await S('cog.state.block');
-  await clickCard(idx);
-  if (!await waitFor('opt')) throw new Error('点牌之后没有出题');
-  const pick = await evalJs(`(() => {
-    const v = cog.state.panel.view;
-    return { wrong: (v.answer + 1) % v.options.length };
-  })()`);
-  globalThis.__missBeforeTest = await evalJs('cog.state.runBad');
-  await clickLabel('opt', pick.wrong);
-  await expectFeedback('测试模式答错后');
-}, async () => {
-  const st = await evalJs(`({
-    blk: cog.state.block,
-    miss: cog.state.runBad,
-    dc: cog.state.discard.length,
-  })`);
-  return st.blk === globalThis.__blkBeforeTest
-    && st.miss === globalThis.__missBeforeTest + 1 && st.dc >= 1;
 });
 
 // ── 第二阶段：三个弹层各自点一次，确认按钮真的能按 ──
@@ -766,11 +750,23 @@ await step('复习点 → 休息回血', async () => {
   return (await S('cog.state.panel.k')) === 'none' && hp > globalThis.__hpBefore;
 });
 
-await boot(URL_ + '?dev=reward');
-await step('战后选卡 → 牌组 +1', async () => {
+// 带「便签」的四选一：张数最多的那一屏。曾经四张 280px 卡算出来 1222px，
+// 比 1220px 的面板还宽，卡片左右各压出边框 1px。这里既测点击，也钉住留白。
+await boot(URL_ + '?dev=reward&sticky=1');
+await step('战后选卡（便签四选一不贴边）→ 牌组 +1', async () => {
   globalThis.__deckBefore = await S('cog.state.deck.length');
+  globalThis.__rewardBoxes = await S(
+    "cog.hots().filter(h => h.label === 'rewardcard').map(h => ({ x: h.x, w: h.w }))",
+  );
   await clickLabel('rewardcard', 0);
-}, async () => (await S('cog.state.deck.length')) === globalThis.__deckBefore + 1);
+}, async () => {
+  const bs = globalThis.__rewardBoxes;
+  // 奖励面板固定 x=190..1410；四张时左右各至少留 40px，不许再压到框上
+  const left = Math.min(...bs.map((b) => b.x));
+  const right = Math.max(...bs.map((b) => b.x + b.w));
+  const inFrame = bs.length === 4 && left - 190 >= 40 && 1410 - right >= 40;
+  return inFrame && (await S('cog.state.deck.length')) === globalThis.__deckBefore + 1;
+});
 
 // ── 地图要能上下拖 ─────────────────────────────────────────
 // 玩家报的原文："关卡选择不能上下拖动，所有的图标挤到一起"。
@@ -907,6 +903,102 @@ await step('复习点 → 精炼面板：每份副本各一格，且只改挑中
   return true;
 });
 
+await boot(URL_ + '?dev=refine');
+await step('精炼面板：滚轮能滚动列表', async () => {
+  if (!await waitFor('pick')) throw new Error('精炼面板没有打开');
+  // 开局 10 张刚好两排、不用滚；补到 14 张，列表才会真的溢出（max > 0）
+  await evalJs(`(() => {
+    const d = cog.state.deck;
+    while (d.length < 14) d.push('base:guard');
+  })()`);
+  await nextFrames(3);
+  const cells = () => evalJs(
+    `JSON.stringify(cog.hots().filter((h) => h.label === 'pick').map((h) => Math.round(h.y)))`,
+  );
+  globalThis.__pick0 = await cells();
+  const p = JSON.parse(await evalJs('JSON.stringify(cog.toScreen(800, 450))'));
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseWheel', x: p.x, y: p.y, deltaX: 0, deltaY: 420, pointerType: 'mouse',
+  });
+  await nextFrames(4);
+  globalThis.__pick1 = await cells();
+}, async () => {
+  // 玩家报过"精炼 / 遗忘的时候滚轮卡住"：面板画在地图之上，而地图每帧先把滚轮
+  // 增量取走再判断有没有面板挡着 —— 取走之后 overlay 永远拿到 0，列表就死了。
+  if (globalThis.__pick0 === globalThis.__pick1) {
+    throw new Error('滚了一格，列表一动没动：' + globalThis.__pick0);
+  }
+  return true;
+});
+
+// ── 同名副本：点哪一份，动的是哪一份 ────────────────────────
+await boot(URL_ + '?dev=battle');
+await step('三张同名卡：点第 3 张，被拿走的就是第 3 张', async () => {
+  await evalJs(`(() => {
+    cog.state.hand = ['base:strike', 'base:strike', 'base:strike', 'base:guard'];
+    cog.state.ap = 3;
+    window.__splices = [];
+  })()`);
+  if (!await waitHand()) throw new Error('手牌没有落位');
+  // 手牌只存 id，三张基础斩击在规则上完全等价 ——「拿走的是第几份」从手牌内容
+  // 上看不出来。给 G.hand 套一层 Proxy，记下核心真正 splice 掉的下标。
+  await evalJs(`(() => {
+    const real = cog.state.hand;
+    cog.state.hand = new Proxy(real, {
+      get(t, p) {
+        if (p === 'splice') {
+          return (...a) => { window.__splices.push(a[0]); return Array.prototype.splice.apply(t, a); };
+        }
+        const v = Reflect.get(t, p);
+        return typeof v === 'function' ? v.bind(t) : v;
+      },
+    });
+  })()`);
+  await clickCard(2);
+  globalThis.__playIdx = await evalJs('window.__splices.slice()');
+}, async () => {
+  const s = globalThis.__playIdx;
+  if (!s.length) throw new Error('点了之后手牌一张都没少');
+  // 以前一律走 `indexOf(id)`，点哪张都 splice 0：被拿走、飞出去的永远是
+  // 最左边那张，玩家读作"用的不是我点的这张"。
+  if (s[0] !== 2) throw new Error(`点的是第 3 张，被拿走的却是第 ${s[0] + 1} 张`);
+  return true;
+});
+
+// ── 回合结束：没打出的牌飞进弃牌堆 ──────────────────────────
+await boot(URL_ + '?dev=battle');
+await step('结束回合 → 上一轮没打出的牌飞进弃牌堆（同名牌还躺在牌堆里也一样）', async () => {
+  await evalJs(`(() => {
+    const G = cog.state;
+    G.hand = ['base:strike'];
+    // 关键：抽牌堆里留着**同种牌的另一份**，而且抽完 5 张之后它还在堆里 ——
+    // 牌是从尾部 pop 的，所以把它放在第 0 位。表现层早先拿 G.draw.includes(id) 判去处，
+    // id 是牌种不是副本，于是这张进弃牌堆的斩击会被画成飞回抽牌堆 ——
+    // 玩家看到的就是"这一轮没打出的牌没有回到弃牌堆"。
+    // 注意别让抽牌堆见底：见底会把弃牌堆整个洗回来，那张牌就真的回牌堆了。
+    G.draw = ['base:strike', 'base:guard', 'base:guard', 'base:guard', 'base:guard', 'base:guard'];
+  })()`);
+  if (!await waitHand()) throw new Error('手牌没有落位');
+  // 逐帧收集"正在飞的牌各去哪"。弃牌动画只有 0.3 秒，点完再读会正好错过。
+  await evalJs(`(() => {
+    window.__modes = [];
+    window.__stop = false;
+    const tick = () => {
+      for (const m of cog.fx().discardModes) if (!window.__modes.includes(m)) window.__modes.push(m);
+      if (!window.__stop) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    cog.endTurn();
+  })()`);
+  await nextFrames(8);
+  globalThis.__turnModes = await evalJs('(window.__stop = true, window.__modes)');
+}, async () => {
+  const m = globalThis.__turnModes ?? [];
+  if (!m.includes('discard')) throw new Error('结束回合后一张牌都没飞进弃牌堆：' + m.join(','));
+  if (m.includes('return')) throw new Error('有牌被画成飞回抽牌堆：' + m.join(','));
+  return true;
+});
+
 await boot(URL_ + '?dev=event');
 await step('事件 → 选一个选项', () => clickLabel('eventopt', 0), async () =>
   (await S('cog.state.panel.k')) !== 'event');
@@ -925,7 +1017,7 @@ globalThis.__snap = await evalJs(`(() => {
   s.floors = 6;
   s.hp = 41;
   cog.save();
-  const raw = localStorage.getItem('cognirogue.run.v3');
+  const raw = localStorage.getItem('cognirogue.run.v6');
   return { len: raw ? raw.length : 0, deck: s.deck.length, hp: s.hp };
 })()`);
 await boot(URL_);
@@ -954,8 +1046,9 @@ await boot(URL_);
 await step('开新的一局 → 断点清掉，再刷新首页不再提「继续」', async () => {
   if (!await waitFor('开始新的一局')) throw new Error('首页没有「开始新的一局」');
   await clickLabel('开始新的一局');
-  if (!await waitFor('mode:review')) throw new Error('模式选择没有出现');
-  await clickLabel('mode:review');
+  const bl = await waitBoon();
+  if (!bl) throw new Error('开局选卡没有出现');
+  await clickLabel(bl);
   if ((await S('cog.state.screen')) !== 'map') throw new Error('没有进入地图');
   // 再刷一次：首页应该退回"没有存档"的那套版式
   await boot(URL_);
@@ -964,17 +1057,179 @@ await step('开新的一局 → 断点清掉，再刷新首页不再提「继续
   return n === 0 && (await S('cog.state.screen')) === 'title';
 });
 
+/* ── 机制联动回归：前一张牌真的改变后一张牌的数值 ──────────────
+ * 这里验的是规则，不是演出：伤害数字必须随抽牌数 / 护甲 / 上一张牌 /
+ * 同名卡累计次数真实变化，卡面、答题面板、结算读的是同一份 liveStatOf。
+ * ─────────────────────────────────────────────────────────────── */
+
+/**
+ * 真实打出一张联动牌并返回敌人掉了多少血。
+ * 同名卡第一次答对就攒满 B 级、这一场剩下的免答（既有规则），
+ * 所以第二次点它走的是 playFree：不 panel、不判对错，但照样结算、照样记账。
+ * 两条路都要能走，grow 才验得到"第二次"。
+ */
+async function playRight(idx) {
+  const hp = await S('cog.state.enemy.hp');
+  await clickCard(idx);
+  if ((await S('cog.state.panel.k')) === 'question') {
+    if (!await waitFor('opt')) throw new Error('联动牌没有出题');
+    const right = await S('cog.state.panel.view.answer');
+    await clickLabel('opt', right);
+    await expectFeedback('联动牌');
+    await clickLabel('继续');
+  } else if (!await waitReady()) {
+    throw new Error('免答的联动牌一直没结算完');
+  }
+  return hp - (await S('cog.state.enemy.hp'));
+}
+
+/** 出牌会让整排左移、抽牌还会往末尾塞新牌，所以按牌种找下标，不写死位置。 */
+async function playRightId(id) {
+  const idx = await evalJs(`cog.state.hand.indexOf(${JSON.stringify(id)})`);
+  if (idx < 0) throw new Error(`手牌里没有 ${id}`);
+  return playRight(idx);
+}
+
+await boot(URL_ + '?dev=links');
+// 自动化要稳定地读判定面板，别让 4.2s 软自动推进把它先收掉。
+await evalJs('cog.pauseAuto()');
+await step('联动：四张牌的数值由战场状态现算，不是印死的', async () => {
+  await waitHand();
+}, async () => {
+  const L = await S('cog.links()');
+  return L.live.c83 === 3 + L.drawn   // 本回合每抽 1 张 +1
+    && L.live.c84 === L.block        // 当前护甲等额
+    && L.live.c85 === 3
+    && L.live.c86 === 4;
+});
+
+await step('联动：真的抽一张牌，「博览强记」的伤害当场 +1', async () => {
+  globalThis.__linkBefore = await S('cog.links()');
+  // c04「扩容远见」：0 费免答的专注牌，点它真的抽 1 张。
+  await clickCard(await evalJs(`cog.state.hand.indexOf('c04')`));
+}, async () => {
+  const L = await S('cog.links()');
+  return L.drawn === globalThis.__linkBefore.drawn + 1
+    && L.live.c83 === globalThis.__linkBefore.live.c83 + 1;
+});
+
+await step('联动：打出「续火」后，下一张牌的伤害真的翻倍', async () => {
+  globalThis.__dmg85 = await playRightId('c85');   // 自身 3 伤，留 ×2
+}, async () => {
+  const L = await S('cog.links()');
+  return globalThis.__dmg85 === 3
+    && L.next && L.next.mul === 2 && L.next.from === '续火'
+    && L.live.c86 === 8;                     // 4 × 2
+});
+
+await step('联动：下一张吃到 ×2 打 8 点，同名卡开始按本场次数累加', async () => {
+  globalThis.__dmg86a = await playRightId('c86');  // 第一张 c86，吃到 ×2
+}, async () => {
+  const L = await S('cog.links()');
+  return globalThis.__dmg86a === 8
+    && L.next === null                       // 倍率已被这一手消耗
+    && L.plays.c86 === 1
+    && L.live.c86 === 7;                     // 4 + 1×3
+});
+
+await step('联动：同一张「叠章」再打一次，7 点落地、下次底数涨到 10', async () => {
+  globalThis.__dmg86b = await playRightId('c86');  // 第二张 c86
+}, async () => {
+  const L = await S('cog.links()');
+  return globalThis.__dmg86b === 7
+    && L.plays.c86 === 2
+    && L.live.c86 === 10;                    // 4 + 2×3
+});
+
+await step('联动：护甲与抽牌数变化立刻改写攻击底数', async () => {
+  const b = await S('cog.links()');
+  globalThis.__linkB = b;
+  await evalJs('(() => { cog.state.block += 6; cog.state.drawnThisTurn += 4; })()');
+}, async () => {
+  const L = await S('cog.links()');
+  return L.live.c84 === globalThis.__linkB.live.c84 + 6
+    && L.live.c83 === globalThis.__linkB.live.c83 + 4;
+});
+
+await boot(URL_ + '?dev=battle');
+// 这三步要盯着同一块面板慢慢验，先停掉软自动推进；后面 ?dev=answer
+// 会重新导航，那边的自动推进照常要验。
+await evalJs('cog.pauseAuto()');
+await step('答题 → 判定：同一块面板，几何不跳、没有闪断', async () => {
+  await waitHand();
+  const idx = await ensureKnowledge();
+  await clickCard(idx);
+  if (!await waitFor('opt')) throw new Error('没有出题');
+  globalThis.__quizGeom = await S('cog.quiz().geom');
+  const right = await S('cog.state.panel.view.answer');
+  // 把判定演出拉长，好稳定地验"面板没消失、结果还没展开"这一帧
+  await evalJs('cog.holdQuiz(2.2)');
+  await clickLabel('opt', right);
+}, async () => {
+  const q = await S('cog.quiz()');
+  if (JSON.stringify(q.geom) !== JSON.stringify(globalThis.__quizGeom)) {
+    throw new Error('判定面板几何变了：' + JSON.stringify(q));
+  }
+  const cont = await evalJs(`cog.hots().filter((h) => h.label === '继续').length`);
+  const opts = await evalJs(`cog.hots().filter((h) => h.label === 'opt').length`);
+  return q.phase === 'settle' && cont === 0 && opts === 0;
+});
+
+await step('判定演出结束 → 结果区展开，盒子还是那一块', async () => {
+  if (!await waitFor('继续', 45000)) throw new Error('结果区没有展开');
+}, async () => {
+  const q = await S('cog.quiz()');
+  return q.phase === 'result'
+    && JSON.stringify(q.geom) === JSON.stringify(globalThis.__quizGeom);
+});
+
+await step('点击面板任意处 → 立刻继续，不必瞄准按钮', async () => {
+  if (!await waitUnlocked()) throw new Error('输入还锁着');
+  const p = await evalJs(`(() => {
+    const g = cog.quiz().geom;
+    return cog.toScreen(g.x + 60, g.y + 130);
+  })()`);
+  await clickPoint(p);
+}, async () => (await S('cog.state.panel.k')) === 'none');
+
+await boot(URL_ + '?dev=answer');
+await step('结算不停顿：指针不在面板上时软自动推进已就绪', async () => {
+  // 判定演出按 dt 推进：CPU 节流 ×6 又连跑几十步之后，光是「结果区展开」
+  // 就可能要十几秒。按状态轮询，别拿固定 20 秒当上限，也别死等「继续」热区。
+  const t0 = Date.now();
+  let ready = null;
+  while (Date.now() - t0 < 45000) {
+    const q = await S('cog.quiz()');
+    if (q.phase === 'result' && !q.autoPaused) { ready = q; break; }
+    await sleep(80);
+  }
+  if (!ready) throw new Error('软自动推进没就绪：' + JSON.stringify(await S('cog.quiz()')));
+  globalThis.__auto = ready;
+}, async () => globalThis.__auto.autoIn > 0
+  // 倒计时绝不能超过设定值：暂停段被误算成「页面启动至今」时这里会是 ~10 秒。
+  && globalThis.__auto.autoIn <= 4.21
+  && globalThis.__auto.autoPaused === false);
+
+await step('软自动推进真的把判定面板收掉', async () => {}, async () => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000) {
+    if ((await S('cog.state.panel.k')) !== 'feedback') return true;
+    await sleep(80);
+  }
+  return false;
+});
+
 await boot(URL_ + '?dev=report');
-await step('结算 → 再来一局 → 重新选模式', async () => {
+await step('结算 → 再来一局 → 重新选能力卡', async () => {
   globalThis.__floorBefore = await S('cog.state.floors');
   await clickLabel('再来一局');
-  if (!await waitFor('mode:review')) throw new Error('再来一局没有回到模式选择');
-  await clickLabel('mode:review');
+  const label = await waitBoon();
+  if (!label) throw new Error('再来一局没有回到开局选卡');
+  await clickLabel(label);
+  globalThis.__boon2 = label.slice('boon:'.length);
 }, async () => {
-  const p = await S('cog.state.panel.k');
-  const floor = await S('cog.state.floors');
-  const mode = await S('cog.state.mode');
-  return p === 'none' && floor === 0 && mode === 'review';
+  const st = await evalJs(`({ p: cog.state.panel.k, floor: cog.state.floors, boon: cog.state.boon })`);
+  return st.p === 'none' && st.floor === 0 && st.boon === globalThis.__boon2;
 });
 
 ws.close();

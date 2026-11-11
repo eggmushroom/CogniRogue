@@ -26,7 +26,7 @@ export function drawAtlas(_t: number) {
     { name: 'drain', label: '内化', color: EFFS.drain.color, note: '伤害转回血' },
     { name: 'chain', label: '串联', color: EFFS.chain.color, note: '多段伤害' },
     { name: 'focus', label: '专注', color: EFFS.focus.color, note: '抽牌' },
-    { name: 'power', label: '增益', color: C.gold, note: '打出后常驻' },
+    { name: 'power', label: '增益', color: C.gold, note: '掉落即生效' },
     { name: 'junk', label: '杂念', color: C.faint, note: '无法打出' },
   ];
 

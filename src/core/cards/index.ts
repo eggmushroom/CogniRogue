@@ -1,7 +1,7 @@
 /**
  * cards —— 卡牌工具包。
  *
- * catalog 是**内置且不可替换**的知识卡面表（83 张），pack 是它的卡池常量
+ * catalog 是**内置且不可替换**的知识卡面表（87 张），pack 是它的卡池常量
  * （`PACK`），basics 是**开局基础牌**（4 斩击 + 4 格挡，不可获取），starter 是
  * 开局另外那 **2 张随机知识卡**（从 catalog 里抽，不与基础牌混在一起），
  * grade 是**卡牌等级**（C/B/A/S = 这一段要答对几次才免答）。
@@ -18,5 +18,6 @@ export * from './grade';
 export * from './kinds';
 export * from './legacy';
 export * from './pack';
+export * from './powers';
 export * from './registry';
 export * from './starter';

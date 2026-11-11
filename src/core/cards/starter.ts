@@ -29,5 +29,11 @@ const STARTER_GRADES: CardGrade[] = ['C', 'B'];
 export const starterPool = () => CATALOG.filter((c) => STARTER_GRADES.includes(cardGrade(c)));
 
 export function startDeck(): CardId[] {
-  return shuffle(starterPool()).slice(0, STARTER_KNOWLEDGE).map((c) => c.id);
+  // 两张里**保底一张联动卡**。不然这四张要等十几层之后的战后奖励随机掉，
+  // 大多数人第一局根本摸不到「前一张牌改变后一张牌」这件事，等于没做。
+  // 保底只保证"有一种"，具体是哪一种仍然随机，构筑的偶然性没被拿走。
+  const pool = starterPool();
+  const linked = shuffle(pool.filter((c) => c.link)).slice(0, 1);
+  const rest = shuffle(pool.filter((c) => !c.link)).slice(0, STARTER_KNOWLEDGE - linked.length);
+  return [...linked, ...rest].map((c) => c.id);
 }

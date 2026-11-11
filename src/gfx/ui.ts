@@ -1,8 +1,9 @@
 import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
 import { C, font, FONT_UI, FONT_TITLE, withAlpha } from './theme';
-import { EFFS, POWER_BY_ID, effFace, resolveEff } from '../core/model';
+import { EFFS, effFace, resolveEff } from '../core/model';
 import { cardGrade, cardKind, cardType, costGlyph, GRADE_META, isXCost, CARD_TYPE_META } from '../core/cards';
+import { applyCardBonus } from '../core/cards/powers';
 import type { CardDef, PowerDef } from '../core/model';
 import { drawArtIcon } from './art/icons';
 
@@ -192,8 +193,10 @@ export interface CardOpts {
   up?: boolean;
   glow?: boolean;
   hovered?: boolean;
-  /** 底部额外说明（奖励/牌组列表用） */
+  /** 底部额外说明（奖励/牌组列表用，画在卡外下方） */
   note?: string;
+  /** 卡面内部底部的状态徽条（手牌用）：联动规则 / 免答，不占卡外空间 */
+  badge?: string;
   /**
    * 现在付不付得起这张牌的费用。只有手牌会传 false —— 牌组、奖励、牌堆列表里
    * 不存在"此刻能不能打"这个问题，传了反而是噪音。
@@ -259,21 +262,19 @@ export function drawCard(
   x: number, y: number, w: number, h: number,
   card: CardDef, atk: number, blk: number, opts: CardOpts = {},
 ) {
-  // 身份只问一次：知识卡 / 增益牌 / 杂念 / 基础牌。下面所有分支都读这个 kind，
-  // 不再各自去翻 card.junk、card.power —— 加第五种牌时只改 cards/kinds.ts。
+  // 身份只问一次：知识卡 / 杂念 / 基础牌。下面所有分支都读这个 kind，
+  // 不再各自去翻 card.junk —— 加第四种牌时只改 cards/kinds.ts。
   const kind = cardKind(card);
-
-  // 增益牌是另一个物种：没有题、没有伤害，打出去就一直在。卡面必须一眼分得开，
-  // 否则手牌里混着一张能力牌，玩家会以为它也要答题。
-  const pc = kind === 'power' && card.power ? POWER_BY_ID[card.power] : null;
-  if (pc) { drawPowerCard(x, y, w, h, pc, opts); return; }
 
   // 牌面色 = 类别色，不是主题色。主题色会泄露"这张牌对应哪个知识点"，
   // 而且同一主题的牌看起来像一套 —— 颜色改用四类之后，扫一眼读的是"它干什么"。
   const typeMeta = CARD_TYPE_META[cardType(card)];
   const tc = kind === 'junk' ? C.faint : typeMeta.color;
   const eff = EFFS[card.eff] ?? EFFS.strike;
-  const out = resolveEff(card.eff, atk, blk, 1, card.mods);
+  // `applyCardBonus` 把「压书石 / 校规」那一档贴到结果上。卡面与结算**必须**
+  // 走同一个函数（`combat/play.ts` 的 `strikeWith` 也调它），否则会出现
+  // "牌面写 5、打出去 6" —— 这正是这一版最想避免的两张皮。
+  const out = applyCardBonus(resolveEff(card.eff, atk, blk, 1, card.mods));
   const face = effFace(out);
   const per = face.per;
   const r = 12;
@@ -340,6 +341,38 @@ export function drawCard(
   low.addColorStop(1, withAlpha(tc, kind === 'junk' ? 0.03 : 0.08));
   g.fillStyle = low;
   g.fillRect(x, y + h - lowH, w, lowH);
+  g.restore();
+
+  // 雕版底纹：83 张卡除了名字和数字，下半部原本都是同一块近黑。
+  // 按 id 定相位铺一层放射刻线 + 纸纹，每张卡有自己的底纹，
+  // 卡面也从「玻璃面板」拉回「档案馆里的一张卡片」。alpha 压到不抢字。
+  g.save();
+  roundRect(x, y, w, h, r);
+  g.clip();
+  let hsh = 0;
+  for (let i = 0; i < card.id.length; i++) hsh = (hsh * 31 + card.id.charCodeAt(i)) >>> 0;
+  const cx = x + w * 0.5;
+  const cy = y + h * 0.7;
+  const rays = 14 + (hsh % 9);
+  const phase = (hsh % 628) / 100;
+  g.strokeStyle = withAlpha(tc, 0.075);
+  g.lineWidth = 1;
+  for (let i = 0; i < rays; i++) {
+    const a = (i / rays) * Math.PI * 2 + phase;
+    g.beginPath();
+    g.moveTo(cx + Math.cos(a) * 30 * s, cy + Math.sin(a) * 30 * s);
+    g.lineTo(cx + Math.cos(a) * 132 * s, cy + Math.sin(a) * 132 * s);
+    g.stroke();
+  }
+  g.strokeStyle = withAlpha(tc, 0.11);
+  g.beginPath();
+  g.arc(cx, cy, (30 + (hsh % 5) * 4) * s, 0, Math.PI * 2);
+  g.stroke();
+  // 纸纹只铺下半部：牌名和效果行那边保持干净
+  for (let yy = y + h * 0.52; yy < y + h; yy += 9 * s) {
+    g.fillStyle = 'rgba(255,255,255,.014)';
+    g.fillRect(x, yy, w, 1);
+  }
   g.restore();
 
   // ── 费用：左上角，一个数字，没有圈 ──────────────────────────
@@ -563,6 +596,23 @@ export function drawCard(
     g.fillRect(x + pad, fy, w - pad * 2, Math.max(1, 0.8 * s));
   }
 
+  // 手牌上的联动/免答说明画在**卡面里**。以前借 note 画在卡外下方，
+  // 五张牌排开时那一排小字会贴到屏幕底边，还和邻居的注脚连成一片。
+  if (opts.badge) {
+    const by = y + h - 36 * s;
+    const bh = 20 * s;
+    roundRect(x + 10 * s, by, w - 20 * s, bh, 6 * s);
+    g.fillStyle = 'rgba(9,12,19,.86)';
+    g.fill();
+    g.strokeStyle = withAlpha(C.gold, 0.42);
+    g.lineWidth = 1;
+    g.stroke();
+    text(opts.badge, x + w / 2, by + bh / 2 + 4 * s, {
+      size: Math.round(11 * s), align: 'center', color: C.gold, weight: 700,
+      maxW: w - 26 * s,
+    });
+  }
+
   if (opts.note) {
     text(opts.note, x + w / 2, y + h + 18, { size: 14, align: 'center', color: C.dim });
   }
@@ -570,13 +620,18 @@ export function drawCard(
 }
 
 /**
- * 增益牌的卡面。
+ * 增益的"徽记"。
  *
- * 它和知识卡共用尺寸、共用消耗圆，但整套配色和排版都不一样：
- * 斜向金纹、没有"造成 X 点伤害"那种数字行、底部写的是"打出后本场生效"。
- * 手牌里混着两种牌，玩家必须在一瞥之间分出"这张要答题"和"这张要占行动力"。
+ * 它和知识卡共用尺寸，但整套配色和排版都不一样：斜向纹、没有"造成 X 点伤害"那种
+ * 数字行、底部写的是"拾取即生效"。
+ *
+ * 上一版这是一张**牌**的卡面（左上角有费用、右上角写着"能力"、底部写"打出后本场生效"），
+ * 摆在手牌里和知识卡一起等玩家打出。现在它只出现在掉落面板上，是"你拿到了什么"的
+ * 一张收据 —— 所以费用圆换成了「整局」，右上角写「增益」，底部的字也改了。
  */
-function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, opts: CardOpts) {
+export function drawPowerEmblem(
+  x: number, y: number, w: number, h: number, p: PowerDef, opts: CardOpts,
+) {
   const tc = p.color;
   const r = 12;
   const pad = w * 0.09;
@@ -624,16 +679,16 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   g.lineWidth = opts.hovered ? 2 : 1.6;
   g.stroke();
 
-  // 费用和知识卡同一个位置、同一套读法 —— 手牌里两种牌混着，
-  // "要先答题的"和"不用答题的"可以长得不一样，但"要花几点"必须读得一样。
-  drawCostMark(x + pad, y + 30 * s, s, String(p.cost).toUpperCase(), {
-    x: p.cost === 'x', afford: opts.afford !== false,
+  // 左上角原来是费用。增益不要行动力了，这个位置改成它的生效范围 ——
+  // 位置不变，玩家的视线落点也不变：左上角永远回答"这个东西要花我什么"。
+  text('整局', x + pad, y + 30 * s, {
+    size: Math.round(13 * s), weight: 700, color: withAlpha(tc, 0.95),
   });
 
-  // 右上：类别标签（能力 + 一个字的图标）。位置和知识卡的「类别·效果」对齐 ——
+  // 右上：类别标签（增益 + 一个字的图标）。位置和知识卡的「类别·效果」对齐 ——
   // 于是"左上读价、右上读类别"这条视线在任何一张牌上都成立，不用分两种读法。
   g.font = font(Math.round(11 * s), 700, FONT_UI);
-  const lw = g.measureText('能力').width + 38 * s;
+  const lw = g.measureText('增益').width + 38 * s;
   const bh = 18 * s;
   const bx = x + w - pad - lw;
   const by = y + 21 * s;
@@ -646,7 +701,7 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   text(p.icon, bx + 9 * s, by + bh / 2 + 0.5, {
     size: Math.round(11 * s), weight: 800, align: 'center', color: tc,
   });
-  text('能力', bx + 18 * s, by + bh / 2 + 0.5, {
+  text('增益', bx + 18 * s, by + bh / 2 + 0.5, {
     size: Math.round(11 * s), align: 'left', color: tc, weight: 700,
   });
 
@@ -660,13 +715,7 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   g.textAlign = 'left';
   nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
 
-  // 精炼标记。和知识卡一样用名字后的「+」，不用另立一行字
-  if (opts.up) {
-    const nw = g.measureText(nameLines[0] ?? '').width;
-    text('+', x + pad + nw + 1.5 * s, by0, {
-      size: Math.round(22 * s), weight: 800, color: C.gold,
-    });
-  }
+  // 精炼标记：增益不能精炼（它没有攻/挡），所以这一段不再需要。
 
   // 名字下的短线：和知识卡同一处。两种牌混在手牌里，"名字"这一层要对得齐，
   // 否则摊开一排会看出两种版式在打架。
@@ -705,7 +754,7 @@ function drawPowerCard(x: number, y: number, w: number, h: number, p: PowerDef, 
   g.strokeStyle = withAlpha(tc, 0.22);
   g.lineWidth = 1;
   g.stroke();
-  text('打出后本场生效', x + w / 2, py, {
+  text('拾取即生效 · 整局', x + w / 2, py, {
     size: Math.round(11 * s), align: 'center', color: withAlpha(tc, 0.9), weight: 600,
   });
 

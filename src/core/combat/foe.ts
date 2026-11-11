@@ -2,7 +2,9 @@ import { BAL } from '../model/data';
 import type { Foe, FoeTpl } from '../model/types';
 import { G, checkPending, log, topTopic } from '../infra/state';
 import { emit } from '../infra/events';
+import { loseHp } from '../infra/write';
 import { JUNK_ID } from '../cards/registry';
+import { onceThisFight, rulesOf } from '../cards/powers';
 import { FLOOR_MAX } from '../map/gen';
 import { requestSettle } from './pending';
 import { startTurn } from './deck';
@@ -149,14 +151,25 @@ export function endTurn() {
   e.block = 0;
   const m = moveOf(e);
 
-  if (m.k === 'atk' && G.turn === 1 && BAL.calmFirstTurn) {
+  if (m.k === 'atk' && G.turn === 1 && (BAL.calmFirstTurn || onceThisFight('whistle'))) {
     // 第一回合手里全是没答过的卡，玩家几乎叠不出格挡。给它留一个观察期，
     // 不然"答错"从第一回合起就是在拿血换。
+    // 口哨买的就是这一段：一整回合的准备时间，一场一次。
     log(`${e.name} 还在观察你，这一回合没有出手`, 'hi');
     emit({ t: 'enemyAct', k: 'calm', n: 0 });
   } else if (m.k === 'atk') {
     const f = attackOf(e);
     let dmg = f.total;
+    // 封蜡：这一场第一次挨打，伤害减半。它落在**格挡之前** —— 落在之后的话，
+    // 那半份伤害会被格挡吃掉，玩家读到的就变成"挡得更多"，而不是"这一下本来更疼"。
+    if (onceThisFight('seal')) {
+      dmg = Math.round(dmg * BAL.sealCut);
+      log(`封蜡：这一击被削去一半（${f.total} → ${dmg}）`, 'hi');
+    }
+    // 夜灯：每次挨打少受一点。同样落在格挡之前，且可以把它削到 0 ——
+    // 一条"这次攻击完全没打穿"的线，比"每段 -1"读起来更清楚。
+    const cut = rulesOf().dmgCut;
+    if (cut > 0 && dmg > 0) dmg = Math.max(0, dmg - cut);
     if (f.reviewer) {
       log(`${e.name}：你这回合没有认真答对任何一张卡，+${f.reviewer}`, 'bad');
     }
@@ -169,7 +182,8 @@ export function endTurn() {
     if (e.mech === 'pierce') { guard = Math.ceil(guard / 2); log(`${e.name}：穿透了一半格挡`, 'bad'); }
     const absorbed = Math.min(guard, dmg);
     const taken = dmg - absorbed;
-    G.hp -= taken;
+    // 默认下限 0：这一下可以打死你（死亡由 `checkPending` 判）。
+    loseHp(taken);
     // 吸水：挡住了就不算命中，没挡住才抽走你下回合的行动力。
     // 「挡得住」因此变成一件有复利的事 —— 一次没挡住，下一回合更挡不住。
     if (e.mech === 'siphon' && taken > 0) {
@@ -199,6 +213,11 @@ export function endTurn() {
   }
 
   e.mv = (e.mv || 0) + 1;
+  // 索引贴：这一回合没花完的格挡，带 `carryBlock` 点到下一回合。
+  // 必须在这里记（`startTurn` 会先 `setBlock` 把格挡清掉），而且是**重设** ——
+  // 不清的话上一回合那一笔会在 `startTurn` 里再加一次。
+  const carry = rulesOf().carryBlock;
+  G.carryBlock = carry > 0 ? Math.min(G.block, carry) : 0;
   // 加速：每回合自己变强一点。它不逼你这一回合做什么，它只让"再拖一回合"变贵。
   if (e.mech === 'haste') {
     const n = e.mechV ?? BAL.mech.haste;

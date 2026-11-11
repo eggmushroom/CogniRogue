@@ -3,9 +3,8 @@ import { C, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { bar, panel, text } from '../gfx/ui';
 import { consumeDragY, consumeWheel, hover, onClick } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
-import { CURRICULUM, NODE_META, STAGES, STAGE_ROWS, stageOf } from '../core/model';
+import { CURRICULUM, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS, stageOf } from '../core/model';
 import { G } from '../core/infra';
-import { deckPowers } from '../core/cards';
 import { FLOOR_MAX, availableNodes, curFloor, floorOf } from '../core/map';
 import { enterNode } from '../core/journey';
 import type { MapNode } from '../core/model';
@@ -73,12 +72,18 @@ function updateCam(dt: number) {
     camManual = false;
   }
 
-  // 有面板盖在地图上时不吃滚轮/拖动：那一下属于面板里的列表（`scrollArea`），
-  // 顺手把背后的地图也滚一遍，关掉面板就会发现自己飘到了别处。
-  // 但**必须把增量取走**：留着不清，关掉面板的第一帧会把攒下的位移一次性用掉。
+  // 有面板盖在地图上时不吃滚轮/拖动：那一下属于面板里的列表（`scrollArea`）。
+  //
+  // 但这里**不能把滚轮增量取走**（早先是取走的）。`drawOverlay` 在这一帧之后才画，
+  // 取走等于面板再也看不到这一格 —— 而精炼 / 遗忘、牌组、帮助这三张面板全都
+  // 长在地图上，于是它们的列表一律滚不动。那正是"精炼时滚轮卡住"。
+  // 关掉面板时要防的"攒下的那一格落到地图上"，改由 main 在面板关闭时清掉。
+  if (G.panel.k !== 'none') {
+    consumeDragY(); // 拖动只有地图认，面板不用，留着反而会在关掉后拽一下镜头
+    return;
+  }
   const wheel0 = consumeWheel();
   const dy0 = consumeDragY();
-  if (G.panel.k !== 'none') return;
 
   // 滚轮：一格（约 100px）接近一行。滚轮向下 = 往塔底看。
   if (wheel0) { cam -= wheel0 / (ROW_GAP * 1.2); camManual = true; }
@@ -508,9 +513,9 @@ function leftPanel() {
   text(`${CURRICULUM.length} 章 · 本章 ${G.stageTopic}`, x + w - 24, dy + 17, { size: 12, color: C.dim, align: 'right' });
   onClick(x + 16, dy, w - 32, 34, () => { G.panel = { k: 'deck' }; });
 
-  // 增益牌：它们就躺在牌组里，这里只回答"这一局我带了什么进场"
-  const powers = deckPowers();
-  text('增益牌', x + 20, y + 146, { size: 13, color: C.dim, weight: 600 });
+  // 增益：整局生效的印记，不进牌组、不占牌位。这里回答"我这一局已经会了什么"。
+  const powers = G.powers.map((id) => POWER_BY_ID[id]);
+  text(`增益 · ${powers.length}`, x + 20, y + 146, { size: 13, color: C.dim, weight: 600 });
   if (!powers.length) {
     text('还没有。精英和幕 Boss 会掉。', x + 20, y + 170, { size: 12, color: C.faint });
     for (let i = 0; i < 3; i++) {
@@ -525,13 +530,25 @@ function leftPanel() {
       g.restore();
     }
   } else {
-    powers.slice(0, 4).forEach((p, i) => {
-      const yy = y + 164 + i * 24;
-      text(p.icon, x + 24, yy + 8, { size: 12, color: p.color, weight: 800 });
-      text(p.name, x + 42, yy + 8, { size: 13, color: C.ink2 });
+    // 池子从十二个涨到四十个之后，这里不能再按"两列六行"排 ——
+    // 一局捡到十几张时最后一行会压到「全塔」那一块上。改成三列，
+    // 并且**有上限**：超出部分只报一个数字，而不是继续往下长、
+    // 把下面的进度条挤出去。玩家真正关心的是"我这一局会了什么"，
+    // 不是把四十张全看一遍（那在牌组/图鉴里）。
+    const cols = 3;
+    const rowH = 15;
+    const maxRows = 5;
+    const shown = powers.slice(0, cols * maxRows);
+    shown.forEach((p, i) => {
+      const ex = x + 22 + (i % cols) * 96;
+      const ey = y + 170 + Math.floor(i / cols) * rowH;
+      text(p.icon, ex, ey, { size: 11, color: p.color, weight: 800 });
+      text(p.name, ex + 14, ey, { size: 11, color: C.ink2 });
     });
-    if (powers.length > 4) {
-      text(`等 ${powers.length} 张`, x + 24, y + 164 + 4 * 24 + 8, { size: 12, color: C.faint });
+    if (powers.length > shown.length) {
+      text(`+${powers.length - shown.length} 张`, x + 22 + (shown.length % cols) * 96,
+        y + 170 + Math.floor(shown.length / cols) * rowH,
+        { size: 11, color: C.faint });
     }
   }
 

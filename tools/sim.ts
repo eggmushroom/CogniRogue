@@ -11,20 +11,42 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { BAL, MODES, POWERS } from '../src/core/model';
-import type { CardDef, CardId, RunMode } from '../src/core/model';
+import { BAL, MISS_RULE, POWER_BY_ID } from '../src/core/model';
+import type { CardDef, CardId, PowerId } from '../src/core/model';
 import {
   G, PACK, answer, availableNodes, bankQuestionCount, canPay, cardAskState, chooseEventOption, defOf, dismissFeedback,
-  endTurn, enterNode, forgetCard, isPowerId, loadQuestionBank, openCardPick, playBasic, playFree, playPower, resetMemory, restHeal,
-  skipReward, startRun, takeCard, takePower, askCard, mergePacks, upgradeCard, cardKind, cardGrade,
+  endTurn, enterNode, forgetCard, loadQuestionBank, openCardPick, playBasic, playFree, resetMemory, restHeal,
+  skipReward, startRun, takeCard, ackPower, askCard, mergePacks, upgradeCard, cardKind, cardGrade,
   moveOf, cancelPanel, isUpgraded, JUNK_ID,
 } from '../src/core';
 
 /**
  * 参数可覆盖，方便扫参：
  *   npm run sim -- --hp=1.2 --dmg=1.3 --ap=5 --hand=6
+ *   npm run sim -- --boon=syllabus      // 单独量一张开局能力卡
  * 试一个数值不该改源码。
  */
+
+/**
+ * 固定种子：`SIM_SEED=42 npm run sim` 之后，**同样的代码永远跑出同样的数据**。
+ *
+ * 没有它，"改完之后数据变了"这句话没有任何意义 —— 模拟每局都在掷骰子，
+ * 两次跑之间本来就会差一两个百分点。改一行重构到底有没有改行为，只能靠
+ * 同一颗种子跑两版代码来判。
+ *
+ * 默认**不设种子**（保持随机），因为日常看平衡时希望多跑几次取平均。
+ * 种子只用于"前后对照"这种需要逐位一致的场合。
+ */
+const SEED = process.env.SIM_SEED;
+if (SEED) {
+  // 32 位 LCG（数值无关紧要，只要分布均匀、确定即可）—— 不用引入依赖。
+  let s = (Number(SEED) >>> 0) || 1;
+  Math.random = () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
 /**
  * 每档跑多少局。默认 800。
  *
@@ -42,15 +64,17 @@ let RUNS = 800;
  */
 let TAKE = true;
 /**
- * 目标牌组上限。真实玩家不会每场都拿牌：牌组超过这个数就跳过奖励。
- * 默认 20 张（3 基础 + 10 知识 + 约 6 张增益 + 少量替换），
+ * 目标牌组上限（知识卡张数）。真实玩家不会每场都拿牌：牌组超过这个数就跳过奖励。
+ *
+ * 20 是"增益还占牌位"那版的预算：大约 14 张知识卡 + 6 个增益位。
+ * 增益搬出牌组之后，同一个 20 就变成了"20 张知识卡"——机器人白得六张最强的牌，
+ * 熟练档从 24% 跳到 65%，普通战斗从 2.3 回合缩到 1.4 回合（A/S 免答也跟着空掉）。
+ * 所以这里跟着回到 14：**留住同一个标尺**，让"增益值多少"成为唯一的变量。
  * 用 `--deck=N` 扫"牌组厚度"这个变量。
  */
-let DECK_MAX = 20;
+let DECK_MAX = 14;
 /** 旧路径对照：绕开精英、事件一律离开、跳过战后奖励。只用于看"真实路径"改变了多少。 */
 let OLD_PATH = false;
-/** 这一局按哪档答错价码跑。三种模式各自有一条技巧曲线，默认跑中间那档。 */
-let MODE: RunMode = 'review';
 /**
  * 每个水平开跑前清空记忆。
  *
@@ -69,20 +93,34 @@ let FRESH_RUN = false;
  */
 let SMART = true;
 
+/**
+ * 关掉增益跑一遍（`--nopow=1`）。
+ *
+ * 增益现在不进牌组、捡到就整局生效，所以它值多少胜率没法从"牌组变厚了多少"看出来 ——
+ * 只能 A/B：同一种子、同一份地图，一档带增益一档不带。调数值时先看这两个数的差。
+ */
+let NOPOW = false;
+
+/**
+ * 开局带哪张能力卡（`--boon=syllabus`）。
+ *
+ * 开局三选一以前不在模拟里（`startRun()` 不带 boon），于是"课表只加题量"
+ * 这种零收益在 800 局里也不会露头。默认 null 保持旧基线，要 A/B 一张
+ * 开局卡时就显式带上它。
+ */
+let BOON: PowerId | null = null;
+
 for (const arg of process.argv.slice(2)) {
-  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|deck|path|rf|fresh|freshrun|mode|rest|sm|smart|ht)=([\w.-]+)$/.exec(arg);
+  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|deck|path|rf|fresh|freshrun|rest|sm|smart|ht|nopow|boon)=([\w.-]+)$/.exec(arg);
   if (!m) continue;
   const v = Number(m[2]);
+  if (m[1] === 'boon') { BOON = m[2] as PowerId; continue; }
   if (m[1] === 'runs') { RUNS = Math.round(v); continue; }
   if (m[1] === 'take') { TAKE = v > 0; continue; }
   if (m[1] === 'deck') { DECK_MAX = Math.max(10, Math.round(v)); continue; }
   if (m[1] === 'path') { OLD_PATH = m[2] === 'old'; continue; }
   if (m[1] === 'fresh') { FRESH = v > 0; continue; }
   if (m[1] === 'freshrun') { FRESH_RUN = v > 0; continue; }
-  if (m[1] === 'mode') {
-    MODE = (m[2] === 'learn' || m[2] === 'test') ? m[2] : 'review';
-    continue;
-  }
   if (m[1] === 'hp') BAL.hp = v;
   else if (m[1] === 'dmg') BAL.dmg = v;
   else if (m[1] === 'ap') { BAL.baseAp = v; }
@@ -94,6 +132,7 @@ for (const arg of process.argv.slice(2)) {
   else if (m[1] === 'calm') BAL.calmFirstTurn = v > 0;
   else if (m[1] === 'rf') BAL.refund = v > 0 ? 1 : 0;
   else if (m[1] === 'smart') { SMART = v > 0; }
+  else if (m[1] === 'nopow') { NOPOW = v > 0; }
   else if (m[1] === 'rest') BAL.restPct = v;
   else if (m[1] === 'sm') BAL.stageMaxHp = v;
   else if (m[1] === 'ht') BAL.hpType = v;
@@ -168,8 +207,8 @@ interface Stat {
   battles: number;
   turns: number;
   /** 一局里打出增益牌的次数，以及结局牌组里有几张增益牌 */
+  /** 一局结束时的增益个数（掉落即生效，不进牌组） */
   powers: number;
-  powerCards: number;
   /** 答错了几次。价码由这一局的模式决定，不再按卡片阶段分两档 */
   misses: number;
   /** 一局里打出几张基础牌。它衡量"地板"被用得多不多 */
@@ -195,14 +234,13 @@ function advance(idx: number) {
 
 function runOne(p: number, st: Stat) {
   if (FRESH_RUN) resetMemory();
-  startRun(MODE);
+  startRun(BOON);
   let guard = 0;
   let answers = 0;
   let right = 0;
   let wasBattle = false;
   let battles = 0;
   let turns = 0;
-  let plays = 0;
   let basics = 0;
   let freePlays = 0;
   let freeSA = 0;
@@ -225,21 +263,21 @@ function runOne(p: number, st: Stat) {
     if (panel.k === 'reward') {
       // 真实玩家会拿牌，但不会每场都拿：给还没到手的增益牌留出牌位，
       // 拿的时候也不瞎点第一张，挑一张对当前牌组最划算的。
-      const ownedPowers = G.deck.filter((id) => isPowerId(id)).length;
-      const room = DECK_MAX - Math.max(0, POWERS.length - ownedPowers);
-      if (TAKE && G.deck.length < room && panel.cards.length) {
+      // 增益不再进牌组，所以"牌位上要给它留位置"这条旧账没了：整副牌都拿来答题用
+      if (TAKE && G.deck.length < DECK_MAX && panel.cards.length) {
         const best = panel.cards.reduce((a, b) => (cardScore(b) > cardScore(a) ? b : a));
         takeCard(panel.cards.indexOf(best));
       } else skipReward();
       continue;
     }
-    if (panel.k === 'power') { takePower(panel.pool[0].id); continue; }
+    // 掉落面板：捡了就生效，唯一的选择是"知道了"
+    if (panel.k === 'powerdrop') { ackPower(); continue; }
     if (panel.k === 'rest') {
       // 复习点：血线够就精炼，不够就休息。精炼是这一版唯一的"变强"路径 ——
       // 卡面 +3 攻/+3 挡，一副 15 张牌精炼一半，输出就翻了半倍。
       const upg = G.deck.findIndex((id) => {
         const k = cardKind(defOf(id));
-        return k !== 'basic' && k !== 'power' && !isUpgraded(id);
+        return k !== 'basic' && !isUpgraded(id);
       });
       if (SMART && G.hp > G.maxHp * 0.55 && upg >= 0) { openCardPick('up'); continue; }
       restHeal();
@@ -253,7 +291,7 @@ function runOne(p: number, st: Stat) {
         let worst = Infinity;
         G.deck.forEach((id, i) => {
           const k = cardKind(defOf(id));
-          if (k === 'basic' || k === 'power') return;
+          if (k === 'basic') return;
           const s = cardScore(defOf(id));
           if (s < worst) { worst = s; rm = i; }
         });
@@ -267,7 +305,7 @@ function runOne(p: number, st: Stat) {
       let best = -Infinity;
       G.deck.forEach((id, i) => {
         const k = cardKind(defOf(id));
-        if (k === 'basic' || k === 'power' || isUpgraded(id)) return;
+        if (k === 'basic' || isUpgraded(id)) return;
         const s = cardScore(defOf(id));
         if (s > best) { best = s; upg = i; }
       });
@@ -298,6 +336,8 @@ function runOne(p: number, st: Stat) {
     if (G.screen === 'map') {
       const key = bestNode();
       if (!key) break;
+      // 平衡 A/B：进节点前抹掉增益，等同于"这一局从没掉过东西"
+      if (NOPOW) G.powers = [];
       enterNode(key);
       continue;
     }
@@ -314,7 +354,7 @@ function runOne(p: number, st: Stat) {
         if (inc - G.block >= 6) {
           const gd = G.hand.findIndex((id) => {
             const d = defOf(id);
-            if (id === JUNK_ID || !pay(id) || d.power) return false;
+            if (id === JUNK_ID || !pay(id)) return false;
             const k = cardKind(d);
             // 免答的防御牌也算数：以前这里写的是 `eff === 'guard' && canAsk(id)`，
             // 于是"已经攒满、可以免答"的格挡牌被机器人当成不存在 —— 免答一多就不挡，
@@ -324,11 +364,6 @@ function runOne(p: number, st: Stat) {
           });
           if (gd >= 0) { advance(gd); continue; }
         }
-        // 增益牌先打：它花行动力，但本场剩下每回合都在还。
-        // 不先打的话，这张牌在手里就是一张废纸，模拟会把它的价值算成 0。
-        const pw = G.hand.findIndex((id) => !!defOf(id).power && pay(id));
-        if (pw >= 0) { playPower(pw); plays += 1; continue; }
-        // 先打增益（本场持续），再答题出牌。
         // 等级攒满的知识卡直接打（playFree），还欠答题的走 askCard。
         const ask = G.hand.findIndex((id) => cardAskState(id) === 'ask' && pay(id));
         if (ask >= 0) { askCard(ask); continue; }
@@ -369,8 +404,7 @@ function runOne(p: number, st: Stat) {
   st.kinds += new Set(G.deck).size;
   st.battles += battles;
   st.turns += turns;
-  st.powers += plays;
-  st.powerCards += G.deck.filter((id) => isPowerId(id)).length;
+  st.powers += G.powers.length;
   st.basics += basics;
   st.misses += G.runBad;
   st.free += freePlays;
@@ -384,7 +418,8 @@ const LEVELS = [
   { name: '精通', p: 0.88 },
 ];
 
-console.log(`\nCogniRogue 无头模拟 · 每组 ${RUNS} 局 · ${MODES[MODE].name}模式 · 内置 ${PACK.cards.length} 张卡 / 题库 ${bankQuestionCount()} 道题\n`);
+console.log(`\nCogniRogue 无头模拟 · 每组 ${RUNS} 局 · 统一规则 · 内置 ${PACK.cards.length} 张卡 / 题库 ${bankQuestionCount()} 道题`
+  + `${BOON ? ` · 开局「${POWER_BY_ID[BOON]?.name ?? BOON}」` : ''}\n`);
 
 const header = ['水平', '基础正确率', '胜率', '平均到层', '答题/局', '实际正确率', '答对抽牌/局', '答错/局'];
 const widths = [8, 12, 9, 11, 10, 12, 14, 13];
@@ -402,7 +437,7 @@ console.log(widths.map((w) => '─'.repeat(w)).join(' '));
 
 const summary: Array<{
   level: string; p: number; win: number; deck: number; kinds: number;
-  turns: number; battles: number; powers: number; powerCards: number;
+  turns: number; battles: number; powers: number;
   misses: number; basics: number; free: number; freeSA: number;
 }> = [];
 
@@ -410,7 +445,7 @@ for (const lv of LEVELS) {
   if (FRESH) resetMemory();
   const st: Stat = {
     wins: 0, floors: 0, answers: 0, right: 0, runs: 0, draws: 0,
-    deck: 0, kinds: 0, battles: 0, turns: 0, powers: 0, powerCards: 0,
+    deck: 0, kinds: 0, battles: 0, turns: 0, powers: 0,
     misses: 0, basics: 0, free: 0, freeSA: 0,
   };
   for (let i = 0; i < RUNS; i++) runOne(lv.p, st);
@@ -420,7 +455,7 @@ for (const lv of LEVELS) {
     level: lv.name, p: lv.p, win,
     deck: st.deck / st.runs, kinds: st.kinds / st.runs,
     turns: st.turns / Math.max(1, st.battles), battles: st.battles / st.runs,
-    powers: st.powers / st.runs, powerCards: st.powerCards / st.runs,
+    powers: st.powers / st.runs,
     misses: st.misses / st.runs, basics: st.basics / st.runs,
     free: st.free / st.runs, freeSA: st.freeSA / st.runs,
   });
@@ -446,9 +481,9 @@ if (mid) {
   console.log(`免答：${mid.free.toFixed(1)} 次/局（其中 A/S 档 ${mid.freeSA.toFixed(1)} 次`
     + `，每场 ${(mid.free / Math.max(0.01, mid.battles)).toFixed(2)} 次）`);
   console.log(`初始牌组：一局打出 ${mid.basics.toFixed(1)} 张基础牌`
-    + `（另 ${mid.powers.toFixed(1)} 次增益牌）`);
-  console.log(`答错：${MODES[MODE].name}模式 ${mid.misses.toFixed(1)} 次/局`
-    + `（${MODES[MODE].cardLabel}；稳固度答错 ×${MODES[MODE].stabDrop}，答对 ×${MODES[MODE].stabGain}）`);
+    + `　·　一局拿到 ${mid.powers.toFixed(1)} 个增益`);
+  console.log(`答错：${mid.misses.toFixed(1)} 次/局`
+    + `（这一手作废、牌进弃牌堆；稳固度答错 ×${MISS_RULE.stabDrop}，答对 ×${MISS_RULE.stabGain}）`);
   console.log(`路径：${OLD_PATH ? '旧基线' : '真实'} · 取卡：${TAKE ? `战后拿卡（目标 ≤${DECK_MAX} 张）` : '战后跳过'}` + ` · 记忆：${FRESH_RUN ? '每局重置' : FRESH ? '每个水平重置' : '跨局累积'}`);
 }
 
@@ -465,13 +500,13 @@ if (mid) {
 //     但它仍然随水平上升。这一档放宽到 3 倍标准误 —— 练习场允许更宽的波动，
 //     不是靠断言把它判成"平"。
 const sePct = 48 / Math.sqrt(RUNS);
-const TOL: Record<RunMode, number> = { review: sePct * 2, test: sePct * 2, learn: sePct * 3 };
+const TOL = sePct * 2;
 let violated = false;
 for (let i = 1; i < summary.length; i++) {
-  if (summary[i].win < summary[i - 1].win - TOL[MODE]) {
+  if (summary[i].win < summary[i - 1].win - TOL) {
     violated = true;
     console.log(`✗ ${summary[i - 1].level} 胜率反而高于 ${summary[i].level}`
-      + `（${summary[i - 1].win.toFixed(1)}% → ${summary[i].win.toFixed(1)}%，容差 ${TOL[MODE].toFixed(1)}）`);
+      + `（${summary[i - 1].win.toFixed(1)}% → ${summary[i].win.toFixed(1)}%，容差 ${TOL.toFixed(1)}）`);
   }
 }
 // 「精通比新手强」这句话在 800 局上仍然偏紧：三个模式的真实跨度约 10–22 个点，
@@ -511,12 +546,6 @@ if (RUNS >= 400 && mid && mid.freeSA < 0.2) {
   console.log(`✗ A/S 档免答只有 ${mid.freeSA.toFixed(2)} 次/局（要求 ≥0.20）：`
     + '分级免答在空转。先看「节奏」那行的回合数 —— 一场打不到 3 回合，2/3 次就攒不满');
 }
-if (MODE === 'learn' && !violated) {
-  console.log(`· 学习模式四档胜率 ${summary.map((r) => r.win.toFixed(0)).join(' / ')}：`
-    + '底部低是设计（不补垫子、不补抽，练习场基本通关不了），顶端仍随水平上升');
-}
 console.log(violated
   ? '✗ 验收失败：水平更高没有赢更多'
-  : MODE === 'learn'
-    ? '✓ 验收通过：学习模式也随水平上升（底部低是设计，不是回归）'
-    : '✓ 验收通过：水平更高，胜率更高');
+  : '✓ 验收通过：水平更高，胜率更高');

@@ -1,9 +1,9 @@
 import type { ReportRow } from '../model/types';
-import { CURRICULUM } from '../model/data';
+import { CURRICULUM, POWER_BY_ID } from '../model/data';
 import { G } from '../infra/state';
 import { saveMem } from '../library/memory';
 import { saveStageMem, stageDigest } from '../library/stagemem';
-import { baseIdOf, deckPowers, isPowerId } from '../cards/registry';
+import { baseIdOf } from '../cards/registry';
 import { curFloor } from '../map/gen';
 import { clearRun } from './save';
 
@@ -55,18 +55,18 @@ export function endRun(win: boolean) {
     k: 'report',
     data: {
       win,
-      mode: G.mode,
+      boon: G.boon ? (POWER_BY_ID[G.boon]?.name ?? G.boon) : '无',
       stage: G.stage,
       stageTopic: G.stageTopic,
       stageOk: stageAs.filter((a) => a.right).length,
       stageBad: stageAs.filter((a) => !a.right).length,
       floor: curFloor(),
       runOk: G.runOk, runBad: G.runBad, floors: G.floors, deckSize: G.deck.length,
-      // 增益牌不算卡种：它没有题，混进来会把牌组的多样性说多。
-      // 精炼后缀也要剥掉：同一张牌的普通版和精炼版是两种 id，但只是一种卡。
-      kinds: new Set(G.deck.filter((id) => !isPowerId(id)).map(baseIdOf)).size,
+      // 牌组的"卡种"就是剥掉精炼后缀之后的种类数：同一张牌的普通版和精炼版
+      // 是两种 id，但只是一种卡。增益不进牌组，所以这里不必再排除什么。
+      kinds: new Set(G.deck.map(baseIdOf)).size,
       mastery: total, rows, answerDraws: G.answerDraws,
-      verdict, powers: deckPowers().map((p) => p.name),
+      verdict, powers: G.powers.map((id) => POWER_BY_ID[id]?.name ?? id),
     },
   };
 }

@@ -1,6 +1,7 @@
 import type { Question } from '../model/types';
 import { G } from '../infra/state';
 import { shuffle } from '../infra/util';
+import { rulesOf } from '../cards/powers';
 import { battleQuestionCount } from '../cards/grade';
 import { stagePool } from '../library/stage';
 
@@ -38,7 +39,11 @@ function eligible(list: Question[]): Question[] {
  */
 export function drawBattleQuestions() {
   const list = stagePool();
-  const want = battleQuestionCount(G.deck);
+  // 课表加的是**这一场的题量**（`R.questions`），而不是"答错不消耗" ——
+  // 后者等于把答错的代价删掉，那是规则层面的改动，不该由一个掉落物来做。
+  // 多出来的题要兑现成格挡，靠 `takeQuestion` 标出"这一道是不是新的"，
+  // 见 `syllabusBlock`。
+  const want = battleQuestionCount(G.deck) + rulesOf().questions;
   // 只放"还没到本局 3 次上限"的新题。凑不够 `want` 也不拿已满的题来凑数：
   // 那些题 `takeQuestion` 会跳过，放进 `qLeft` 只会让顶栏读数虚高。
   // 新题用完由 `takeQuestion` 进入复用，见那里。
@@ -66,11 +71,14 @@ export function takeQuestion(): Question | null {
     // `qLeft` 现在只装新题，这里理论上不会命中；保留跳过是给坏状态兜底。
     if ((G.qPicked[q.qid] ?? 0) >= MAX_PICK_PER_RUN) continue;
     G.qPicked[q.qid] = (G.qPicked[q.qid] ?? 0) + 1;
+    // 这一道确实是本场新题：课表只在 `fresh` 上兑现，复用不会白拿格挡。
+    G.qFresh = true;
     return q;
   }
   // 本场新题用完了（或整章都到了 3 次上限）。**这时允许重复最少被问到的那几道**，
   // 而不是让知识卡整场变成废纸：一场打不下去比重复一道题糟得多。
   // 内置题库每章 80 道，正常一局用不到这里；它是给"只写了 10 道题"的导入题库留的路。
+  G.qFresh = false;
   const list = stagePool();
   if (!list.length) return null;
   const min = Math.min(...list.map((q) => G.qPicked[q.qid] ?? 0));

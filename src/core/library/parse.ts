@@ -24,7 +24,7 @@ import type { QLevel, Question, QuestionBank } from '../model/types';
  * 解析层把违规的题收集到 `QuestionBank.issues`，由 `loadQuestionBank` 整体拒绝
  * 并原样报给写题人 —— 静默丢题比拒绝更难查。
  *
- * **这里没有卡牌。** 卡面（83 张、攻挡、效果、主题）在 `cards/catalog.ts`，
+ * **这里没有卡牌。** 卡面（87 张、攻挡、效果、主题）在 `cards/catalog.ts`，
  * 玩家从标题页导入的 md 只能换题目，换不掉卡池。`@ 卡名` 与 `% 攻 挡 效果`
  * 是旧知识包的遗留行，解析器直接忽略，方便手上的老题库继续导入。
  */
