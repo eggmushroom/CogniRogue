@@ -2,6 +2,18 @@
 
 ## 未发布
 
+### 课表：彻底和题量 / 题库解耦
+
+课表不再“每场多 2 道新题”，也不再要求“答对新题”。题目只是嵌在知识卡上的一层，
+题库随时可换、可以不答题；课表改成只认基础牌：
+
+- 卡面：**每回合第一次打出基础牌，获得 1 点格挡**；
+- 删掉 `Rules.questions`、`BAL.syllabusQuestions`、`BAL.syllabusBlockCap`；
+- 删掉 `syllabusBlock(fresh)`，换成 `syllabusBasicBlock()`，只比较 `G.turn`；
+- `questions.ts` 的题量只由牌组算，不再读任何能力牌；
+- `stagecheck` 的回归点改成：清空 `qLeft`、只打基础牌，课表仍然生效；
+  同一回合第二张基础牌不再补，下一回合重新生效。
+
 ### 答对返还 1 行动力：从全局规则变成能力牌「借书证」
 
 `BAL.refund` 不再是所有人开局就吃的规则。现在只有拿到 `librarycard`（借书证）

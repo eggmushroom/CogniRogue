@@ -62,8 +62,8 @@ export interface Rules {
   startBlock: number;
   /** 答对之后最多补抽几张（双面镜），也用作每回合的补抽上限 */
   answerDraw: number;
-  /** 这一场的新题数加成（课表） */
-  questions: number;
+  /** 每回合第一次打出基础牌补几点格挡（课表）。不读题目池 */
+  basicBlock: number;
   /** 奖励屏给几个选项（便签）。`BAL.rewardPicks` 是底数 */
   rewardPicks: number;
   /** 复习点的回复比例（修书胶）。`BAL.restPct` 是底数 */
@@ -121,7 +121,7 @@ export function rulesOf(ctx: RulesCtx = {}): Rules {
         + (hard && hasPower('corner') ? BAL.cornerBlock : 0)
       : 0,
     answerDraw: hasPower('mirrorcard') ? BAL.answerDrawCap : 0,
-    questions: hasPower('syllabus') ? BAL.syllabusQuestions : 0,
+    basicBlock: hasPower('syllabus') ? BAL.syllabusBlock : 0,
     rewardPicks: BAL.rewardPicks + (hasPower('sticky') ? BAL.stickyChoice : 0),
     restPct: BAL.restPct + (hasPower('mend') ? BAL.mendRest : 0),
     atkBonus: hasPower('press') ? BAL.pressAtk : 0,
@@ -155,22 +155,20 @@ export function applyCardBonus(out: EffOut, R: Rules = rulesOf()): EffOut {
 }
 
 /**
- * 课表：答对一道**本场新题**，补 1 点格挡，每场至多 `BAL.syllabusBlockCap` 点。
+ * 课表：每回合第一次打出基础牌，补 `rulesOf().basicBlock` 点格挡。
  *
- * 为什么读 `fresh` 而不是卡面：复用问过的题不给格挡 —— 否则这张牌会退化成
- * "只要答对就有格挡"，跟"课表 = 这一场多学两道新东西"这件事没有关系。
- * 返回实际补了多少，调用方据此写日志和飘字。
+ * 这条效果**不读题目池**：不读新题/复用，也不改本场题量。题目只是嵌在
+ * 知识卡上的一层；基础牌不答题也能打，所以课表在没有题、题库很小、
+ * 或者玩家完全不答题的局里都照常生效。
  *
- * 它不并进 `blkGain`：那个数是**这张牌自己的**格挡，反馈面板和卡面读的是
- * 同一个值。把增益塞进去，卡面写 6 实际 7，就破了"卡面写的数 = 打出来的数"。
+ * 用 `G.syllabusTurn` 记"这一回合已经给过"，值就是 `G.turn`，换回合直接比较；
+ * `startBattle` 清零，避免上一场的回合号碰巧相同。
  */
-export function syllabusBlock(fresh: boolean): number {
-  if (!fresh || !hasPower('syllabus')) return 0;
-  const cap = BAL.syllabusBlockCap;
-  if (G.syllabusBlocks >= cap) return 0;
-  const n = Math.min(BAL.syllabusBlock, cap - G.syllabusBlocks);
+export function syllabusBasicBlock(): number {
+  const n = rulesOf().basicBlock;
+  if (!n || G.syllabusTurn === G.turn) return 0;
+  G.syllabusTurn = G.turn;
   grantBlock(n);
-  G.syllabusBlocks += n;
   return n;
 }
 

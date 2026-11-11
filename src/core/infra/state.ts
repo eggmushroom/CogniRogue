@@ -15,7 +15,7 @@ export const G: GameState = {
   map: [], pos: null, node: null, seen: {},
   charge: {}, qLeft: [], qPicked: {}, answers: [],
   topicWrong: {}, okThisTurn: 0, topOkTopic: null,
-  markerRefund: 0, qFresh: false, syllabusBlocks: 0,
+  markerRefund: 0, qFresh: false, syllabusTurn: 0,
   onceUsed: {}, onceStage: {}, onceRun: {},
   carryBlock: 0, upGrade: 0,
   answerDraws: 0, answerDrawsThisTurn: 0, missDrawsThisTurn: 0,

@@ -1,7 +1,6 @@
 import type { Question } from '../model/types';
 import { G } from '../infra/state';
 import { shuffle } from '../infra/util';
-import { rulesOf } from '../cards/powers';
 import { battleQuestionCount } from '../cards/grade';
 import { stagePool } from '../library/stage';
 
@@ -39,11 +38,9 @@ function eligible(list: Question[]): Question[] {
  */
 export function drawBattleQuestions() {
   const list = stagePool();
-  // 课表加的是**这一场的题量**（`R.questions`），而不是"答错不消耗" ——
-  // 后者等于把答错的代价删掉，那是规则层面的改动，不该由一个掉落物来做。
-  // 多出来的题要兑现成格挡，靠 `takeQuestion` 标出"这一道是不是新的"，
-  // 见 `syllabusBlock`。
-  const want = battleQuestionCount(G.deck) + rulesOf().questions;
+  // 题量只由牌组算。课表不再改题量，也不再读新题/复用 ——
+  // 它只认基础牌，避免卡牌机制和题库大小绑死。
+  const want = battleQuestionCount(G.deck);
   // 只放"还没到本局 3 次上限"的新题。凑不够 `want` 也不拿已满的题来凑数：
   // 那些题 `takeQuestion` 会跳过，放进 `qLeft` 只会让顶栏读数虚高。
   // 新题用完由 `takeQuestion` 进入复用，见那里。

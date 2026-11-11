@@ -748,10 +748,10 @@ export interface GameState {
    */
   qFresh: boolean;
   /**
-   * 课表这一场已经补过多少点格挡。`startBattle` 清零；
-   * 上限是 `BAL.syllabusBlockCap` —— 一局五十多场，不封顶就是一条额外血条。
+   * 课表这一回合是否已经给过基础牌格挡。值是 `G.turn`，不是布尔：
+   * 换回合直接比数字，不用额外清账；`startBattle` 归零，避免跨场沿用。
    */
-  syllabusBlocks: number;
+  syllabusTurn: number;
   /** 本局靠"答对"额外抽到的张数。只给结算页用，不参与任何结算 */
   answerDraws: number;
   /** 本回合靠答对抽了几张，受 `BAL.answerDrawCap` 限制，`startTurn` 清零 */

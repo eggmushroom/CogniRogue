@@ -911,43 +911,30 @@ function missGain(eff: string) {
   const unglued = missAndCount([]);
   ok(unglued.after === unglued.before - 1, `没有胶水壶时会少一张（${unglued.before} → ${unglued.after}）`);
 
-  // 课表：新题答对才补格挡；复用不算，每场至多 2 点。
-  // 用洞察牌当样本：它的 `blk` 是 0，所以 `G.block` 的增量只可能是课表给的。
+  // 课表：每回合第一次打出基础牌补 1 点格挡；不读题目池。
+  // 把 `qLeft` 清空也不影响它 —— 这正是"卡牌机制和题目解耦"的回归点。
   {
-    const pierce = PACK.cards.find((c) => c.kind === 'knowledge' && c.eff === 'pierce' && c.cost === 1)!;
     battle(1, 'examiner');
     G.powers = ['syllabus'];
-    const foe = G.enemy!;
-    foe.hp = 999;
-    foe.block = 0;
+    G.enemy!.hp = 999;
     G.ap = 99;
-    G.charge = {};
-    G.syllabusBlocks = 0;
     G.block = 0;
-    const gains: number[] = [];
-    for (let i = 0; i < 3; i++) {
-      G.charge = {};
-      G.hand[0] = pierce.id;
-      const before = G.block;
-      askCard(0);
-      if (panelKind() !== 'question') throw new Error('课表测试：没弹题');
-      answer(panelAns().answer);
-      gains.push(G.block - before);
-      if (panelKind() === 'feedback') dismissFeedback();
-    }
-    ok(gains.join(',') === '1,1,0',
-      `课表：新题答对补 1 点，每场至多 2 点（本场 ${gains.join('+')}）`);
-
-    // 复用路径：清空本场新题池，下一手问的是本章旧题，课表不该再补。
     G.qLeft = [];
-    G.charge = {};
-    G.hand[0] = pierce.id;
+    G.hand[0] = 'base:strike';
+    playBasic(0);
+    ok(G.block === 1, `课表：第一张基础牌补 1 点（${G.block}）`);
+
+    G.hand[0] = 'base:strike';
     G.block = 0;
-    askCard(0);
-    if (panelKind() !== 'question') throw new Error('课表复用测试：没弹题');
-    answer(panelAns().answer);
-    ok(G.block === 0, '课表：复用的旧题不补格挡');
-    if (panelKind() === 'feedback') dismissFeedback();
+    playBasic(0);
+    ok(G.block === 0, '课表：同一回合第二张基础牌不再补');
+
+    G.turn += 1; // `startTurn` 自己不加回合号，正常流程由 `endTurn` 推进
+    startTurn();
+    G.hand[0] = 'base:strike';
+    G.block = 0;
+    playBasic(0);
+    ok(G.block === 1, '课表：下一回合重新生效');
   }
 
   // 许愿条：整局一次，第二次真的会死。

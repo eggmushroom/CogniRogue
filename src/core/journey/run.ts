@@ -49,7 +49,7 @@ export function startRun(boon: PowerId | null = null) {
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
     powers: boon ? [boon] : [], qPicked: {}, qLeft: [], charge: {}, answers: [],
     topicWrong: {},
-    answerDraws: 0, qFresh: false, syllabusBlocks: 0,
+    answerDraws: 0, qFresh: false, syllabusTurn: 0,
     onceUsed: {},
     apDown: 0, drawCut: 0, carryBlock: 0, upGrade: 0,
     runOk: 0, runBad: 0, floors: 0,

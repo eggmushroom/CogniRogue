@@ -11,7 +11,7 @@ import { recordAnswer } from '../library/stagemem';
 import { memOf, saveMem } from '../library/memory';
 import { shuffleOptions } from '../library/question';
 import { defOf, statOf } from '../cards/registry';
-import { applyCardBonus, clearOnceUsed, onceThisFight, rulesOf, syllabusBlock } from '../cards/powers';
+import { applyCardBonus, clearOnceUsed, onceThisFight, rulesOf, syllabusBasicBlock } from '../cards/powers';
 import { canPay, costNow, isXCost, refundOf } from '../cards/cost';
 import { cardGrade, gradeNeed, needsAsk } from '../cards/grade';
 import { cardKind } from '../cards/kinds';
@@ -62,8 +62,8 @@ export function startBattle(nd: MapNode) {
   // 本场要清的是免答计数和题池。答错不扣行动力、也不封牌：
   // 代价落在"本场新题少一道"上，新题用完后进入复用（见 combat/questions.ts）。
   G.charge = {};
-  // 课表的账按场清：每场最多补 2 点格挡（`syllabusBlock`）。
-  G.syllabusBlocks = 0;
+  // 课表的账按场清：`syllabusTurn` 记的是回合号，跨场不清会误判"这一回合已给过"。
+  G.syllabusTurn = 0;
   G.qFresh = false;
   // 联动的账按**场**清：本场打过几次、上一张留了什么，都不该带进下一场。
   G.cardPlays = {};
@@ -324,7 +324,7 @@ function thornsBack(hits: number[]) {
 
 export function answer(choice: number) {
   if (G.panel.k !== 'question' || G.busy) return;
-  const { idx, qid, q, view, fresh } = G.panel;
+  const { idx, qid, q, view } = G.panel;
   const id = G.hand[idx];
   if (!id) return;
   const card = defOf(id);
@@ -350,8 +350,6 @@ export function answer(choice: number) {
 
   let dmg = 0;
   let blkGain = 0;
-  /** 课表额外补的格挡。和 `blkGain` 分开，卡面数字仍然只算这张牌自己。 */
-  let powerBlk = 0;
   /** 这张牌自己会给出多少格挡（答错时用来区分"模式没给"和"这张牌本来就没有"） */
   let ownBlk = 0;
   let absorbed = 0;
@@ -384,15 +382,6 @@ export function answer(choice: number) {
     if (r.nextNote) apNote = join(apNote, `${r.nextNote}。`);
     if (xcost) apNote = join(apNote, `耗尽 ${spent} 点行动力，效果结算 ${repeat} 次。`);
     if (drawn) apNote = join(apNote, `专注：抽 ${drawn} 张。`);
-    // 课表：这一手问的是本场**新题**才补 1 点格挡，复用旧题不算。
-    // 只记 `powerBlk`、不并进 `blkGain` —— 后者是这张牌自己的格挡，
-    // 卡面和反馈面板读的是同一个数，混进增益就会变成两张皮。
-    powerBlk = syllabusBlock(fresh);
-    if (powerBlk) {
-      apNote = join(apNote,
-        `课表：这一道新题答对了，补 ${powerBlk} 点格挡`
-        + `（本场 ${G.syllabusBlocks}/${BAL.syllabusBlockCap}）。`);
-    }
     // 反伤在这张牌结算完之后收：先看见自己打了多少，再看见手上被割了一道。
     const back = thornsBack(hits);
     if (back) apNote = join(apNote, `反伤：你受到 ${back} 点。`);
@@ -646,7 +635,6 @@ export function answer(choice: number) {
       (right
         ? `，${shape}${absorbed ? `（${absorbed} 被挡）` : ''}` +
           (blkGain ? `，${blkGain} 格挡` : '') +
-          (powerBlk ? `，课表 +${powerBlk} 格挡` : '') +
           (heal ? `，回 ${heal}` : '') +
           (drawn ? `，抽 ${drawn}` : '')
         : `，效果作废${blkGain ? `，${blkGain} 格挡`
@@ -674,8 +662,6 @@ export function answer(choice: number) {
   // 答错时格挡补偿稍晚一点出场：先让玩家看见"焰灭了"，再看见"但还是挡住了 3 点"。
   // 两个数字同时冒出来，会读成"答错也有收益"，把失败感冲掉。
   if (blkGain) setTimeout(() => emit({ t: 'blk', n: blkGain }), base + (right ? 60 : 220));
-  // 课表的格挡来自增益而不是这张牌，晚一拍单独飘，玩家才知道是它给的。
-  if (powerBlk) setTimeout(() => emit({ t: 'blk', n: powerBlk }), base + 110);
   if (heal) setTimeout(() => emit({ t: 'heal', n: heal }), base + 60);
 
   G.panel = {
@@ -707,6 +693,8 @@ export function playBasic(idx: number) {
 
   const spent = costNow(card);
   const r = strikeWith(id, 1);
+  // 课表只认基础牌：不答题也能吃到，和题目池、题库大小都没有关系。
+  const syllabusBlk = syllabusBasicBlock();
   thornsBack(r.out.hits);
   spendAp(spent);
 
@@ -717,6 +705,7 @@ export function playBasic(idx: number) {
   const shape = r.out.hits.length > 1 ? `${r.out.hits.join('+')} 伤害` : `${r.dmg} 伤害`;
   log(
     `「${card.name}」${r.dmg ? shape : ''}${r.blk ? `${r.dmg ? '，' : ''}${r.blk} 格挡` : ''}` +
+      `${syllabusBlk ? `${r.dmg || r.blk ? '，' : ''}课表 +${syllabusBlk} 格挡` : ''}` +
       `（基础牌，不答题）${r.nextNote ? `　·　${r.nextNote}` : ''}`,
     '',
   );
@@ -728,7 +717,7 @@ export function playBasic(idx: number) {
       if (i === 0) fire(); else setTimeout(fire, i * 150);
     });
   }
-  if (r.blk) setTimeout(() => emit({ t: 'blk', n: r.blk }), 60);
+  if (r.blk + syllabusBlk) setTimeout(() => emit({ t: 'blk', n: r.blk + syllabusBlk }), 60);
 
   G.busy = true;
   setTimeout(() => {
