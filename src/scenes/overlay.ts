@@ -612,7 +612,7 @@ function drawReward(t: number) {
     const lift = hv ? -10 : 0;
     // 奖励预览也用同一套卡面数值；直接画 c.atk 会和入牌组后的卡面不一致。
     const st = statOf(c.id);
-    drawCard(px, cy + lift, cw, ch, c, st.atk, st.blk, { glow: hv, note: c.link?.note });
+    drawCard(px, cy + lift, cw, ch, c, st.atk, st.blk, { glow: hv, rule: c.link?.note });
     onClick(px, cy, cw, ch, () => takeCard(i), 'rewardcard');
   });
 
@@ -828,7 +828,7 @@ function drawCardPick(mode: 'up' | 'rm') {
       // `up` 只画**真的已经精炼过**的牌。精炼列表里的牌还没精炼，
       // 给它们全画上金边和 + 号会让"四张基础斩击"看起来都强化过了 ——
       // 那恰好和"只改一张"相反。
-      up: isUpgraded(o.id), glow: hv, note,
+      up: isUpgraded(o.id), glow: hv, note, rule: o.d.link?.note,
     });
     // 第几份：只在同名牌有第二份时才标，避免每张牌都挂一个没意义的 ×1。
     // 放右下角是因为卡面上半部被费用/类别/牌名/效果四行占满了。
@@ -939,7 +939,7 @@ function drawGallery(title: string, list: string[]) {
     const py = area.y + row * (ch + gapy);
     const d = defOf(id);
     const st = statOf(id);
-    drawCard(px, py, cw, ch, d, st.atk, st.blk, { up: isUpgraded(id), note: d.link?.note });
+    drawCard(px, py, cw, ch, d, st.atk, st.blk, { up: isUpgraded(id), rule: d.link?.note });
   });
   area.restore();
   overflowAffordance(area, x + 30, w - 60);

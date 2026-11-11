@@ -193,8 +193,10 @@ export interface CardOpts {
   up?: boolean;
   glow?: boolean;
   hovered?: boolean;
-  /** 卡内底部的额外说明（奖励/牌组/精炼/手牌联动用） */
+  /** 卡内底部的额外说明（精炼/奖励的数值预览用） */
   note?: string;
+  /** 联动规则：和「造成 X 点伤害」一样，写在效果行下面 */
+  rule?: string;
   /** 卡面内部底部的状态徽条（手牌用）：联动规则 / 免答，不占卡外空间 */
   badge?: string;
   /**
@@ -460,9 +462,17 @@ export function drawCard(
   // 2. 位置和大小按"效果写完还剩多少地方"算，不是写死一个高度。写死的话：
   //    一行效果的牌（猛击类）下半空出一大片，三行的牌（X 费）又会和字挤在一起。
   //    现在按剩余空间取中间、按可用高度定尺寸，一行和四行的牌都填得满。
+  // 联动说明不是卡外注脚，而是效果区里的下一行：和「造成 X 点伤害」同栏、
+  // 同字号、同一套换行。先量好行数，下面的水印才知道还剩多少地方。
+  let ruleLines: string[] = [];
+  if (opts.rule && kind !== 'junk') {
+    g.font = font(Math.round(14 * s), 400, FONT_UI);
+    ruleLines = wrapText(opts.rule, w - pad * 2).slice(0, 2);
+  }
   const rows = (per > 0 ? 1 : 0)
     + (out.blk > 0 || out.pierce || out.healRatio > 0 || out.draw > 0 ? 1 : 0)
-    + (xc ? 0.75 : 0);
+    + (xc ? 0.75 : 0)
+    + ruleLines.length;
   const textBot = by0 + nameLines.length * lh + 9 * s + rows * eh;
   const bottomY = y + h - 15 * s;
   const room = Math.max(0, bottomY - textBot);
@@ -581,6 +591,14 @@ export function drawCard(
       g.font = font(Math.round(12.5 * s), 700, FONT_UI);
       g.fillStyle = withAlpha(C.gold, 0.8);
       g.fillText('耗尽全部行动力', x + pad, ly + 1 * s);
+      ly += eh;
+    }
+    for (const ln of ruleLines) {
+      g.textAlign = 'left';
+      g.font = font(Math.round(14 * s), 400, FONT_UI);
+      g.fillStyle = bodyCol;
+      g.fillText(ln, x + pad, ly);
+      ly += eh;
     }
   }
 
