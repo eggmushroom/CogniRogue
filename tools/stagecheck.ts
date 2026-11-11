@@ -600,7 +600,7 @@ function missGain(eff: string) {
 }
 
 // ── 10e. 增益对着现行机制说话 ───────────────────────────────
-// 四十个必须两两不同，不能有"恒真"的描述（旧版装订线写"答错不花行动力"，
+// 四十一个必须两两不同，不能有"恒真"的描述（旧版装订线写"答错不花行动力"，
 // 而答错本来就不扣行动力 → 那个增益等于没有效果），也不能再把增益说成一张牌。
 // 每一条还必须声明作用域，并且被对应的通道真的消费 —— 见 10f。
 {
@@ -622,7 +622,7 @@ function missGain(eff: string) {
     `荧光笔与双面镜已分开：${marker.card} / ${mirror.card}`);
 }
 
-// ── 10f. 四十张牌，每一张都真的接到了东西上 ─────────────────
+// ── 10f. 四十一张牌，每一张都真的接到了东西上 ───────────────
 // 这是"扩充"这件事唯一值得守的门：一条 `POWERS` 定义写得很漂亮，但结算层
 // 从来没读它 —— 玩家捡到的是一张空牌，而且不会有任何报错。
 // 四条通道各验一遍：
@@ -746,9 +746,35 @@ function missGain(eff: string) {
       `装订线：答错格挡正好减半（${full} → ${half}）`);
   }
 
-  // 荧光笔：每回合第一次答对多退 1 点（1 费牌因此净赚 1 点）。
+  // 借书证：把答对退款从全局规则改成能力牌。没有它时 2 费牌净花 2；
+  // 有它时退回 1 点，净花 1。
+  {
+    const two = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 2)!;
+    const after = (powers: string[]) => {
+      battle(1, 'examiner');
+      G.powers = powers as never;
+      G.ap = 3;
+      G.charge = {};
+      G.markerRefund = 0;
+      G.okThisTurn = 0;
+      G.hand[0] = two.id;
+      askCard(0);
+      if (panelKind() !== 'question') throw new Error('借书证测试：没弹题');
+      answer((G.panel as unknown as { view: { answer: number } }).view.answer);
+      const left = G.ap;
+      if (panelKind() === 'feedback') dismissFeedback();
+      return left;
+    };
+    const without = after([]);
+    const withCard = after(['librarycard']);
+    ok(without === 1, `没有借书证：2 费答对净花 2 点（3 → ${without}）`);
+    ok(withCard === 2, `借书证：2 费答对退回 1 点（3 → ${withCard}）`);
+  }
+
+  // 荧光笔：每回合第一次答对多退 1 点；借书证提供基础退款后，
+  // 1 费牌答对退 2 点，正好抵消费用。
   battle(1, 'examiner');
-  G.powers = ['marker'];
+  G.powers = ['marker', 'librarycard'];
   const card = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 1)!;
   G.ap = 3;
   G.charge = {};
@@ -759,7 +785,7 @@ function missGain(eff: string) {
   if (panelKind() !== 'question') throw new Error('荧光笔测试：没弹题');
   answer((G.panel as unknown as { view: { answer: number } }).view.answer);
   if (panelKind() === 'feedback') dismissFeedback();
-  ok(G.ap === 4, `荧光笔：1 费牌答对后退 2 点（3 - 1 + 2 = ${G.ap}）`);
+  ok(G.ap === 4, `荧光笔 + 借书证：1 费牌答对退 2 点（3 - 1 + 2 = ${G.ap}）`);
 }
 
 // ── 10b. 「一场一次」的账：同一场只响一次，换场重新响 ──────

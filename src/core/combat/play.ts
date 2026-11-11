@@ -561,10 +561,10 @@ export function answer(choice: number) {
   // 赔的是学习机会，不是这一回合的出手次数。
   if (right) {
     spendAp(spent);
-    // 退款上限是"最多退 1 点"（`BAL.refund`），荧光笔是**额外**的一层，
-    // 所以它不能塞进 refundOf 里 —— 那会把 1 费牌的全额退款一起改掉。
+    // 退款上限由「借书证」提供；荧光笔是**额外**的一层，所以它不能塞进
+    // refundOf 里 —— 那会把 1 费牌的全额退款一起改掉。
     // 它也因此允许退得比花掉的多：1 费牌答对 = +1 点净收入，这才是"笔给行动力"。
-    let back = refundOf(spent) + G.markerRefund;
+    let back = refundOf(spent, rulesOf().refund) + G.markerRefund;
     // 回形针：这一场第一次打出 3 费以上的牌，再多退 2 点。
     // 它和荧光笔同一条加法，但触发条件完全不同（一张看"第几次答对"，
     // 一张看"这一手多贵"），所以各占一个 `onceThisFight` 槽。

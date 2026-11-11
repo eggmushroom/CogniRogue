@@ -18,11 +18,11 @@ import { baseIdOf, hasPower, isUpgraded, upgradedId } from './registry';
  * 十八张牌的时候，`hasPower` 散成了 25 处，横跨 deck / play / questions /
  * events / rewards 五个文件。想知道"这张牌到底在哪生效"，只能全文搜。
  *
- * ## 四十张牌，四种作用域
+ * ## 四十一张牌，四种作用域
  *
  * 牌一多，真正的问题不再是"有没有唯一通道"，而是**"这张牌多久兑现一次"**。
  * 十八张的时候一半的牌都挂在"每场第一次答对/答错"上，一局捡到八九张，
- * 同一个瞬间会有两三张抢着响。所以 40 张按 `PowerScope` 分四条通道：
+ * 同一个瞬间会有两三张抢着响。所以 41 张按 `PowerScope` 分四条通道：
  *
  *   · `always`  常驻数值 —— `rulesOf()` 把它折成一组数字（`Rules`）。
  *     结算层读数字，不读牌名。加一张同类牌只改 `rulesOf` 的一行。
@@ -36,7 +36,7 @@ import { baseIdOf, hasPower, isUpgraded, upgradedId } from './registry';
  *
  * ## 为什么不直接上状态空间 / ECS
  *
- * 那套东西解决的是"实体数量上万、组件自由组合"的问题。这里只有 40 张
+ * 那套东西解决的是"实体数量上万、组件自由组合"的问题。这里只有 41 张
  * 单例增益，玩家就一个，怪物是"模板 + 实例"。为它铺一层组件表，代价是
  * core 里六十来个文件全部改读写方式，换来的是把 15 个字段变成一张表 ——
  * 而这一层用一百来行就做到了。**先要唯一通道，再要抽象。**
@@ -52,6 +52,8 @@ import { baseIdOf, hasPower, isUpgraded, upgradedId } from './registry';
 export interface Rules {
   /** 每回合行动力上限（沙漏：第一回合 +1） */
   apMax: number;
+  /** 答对后最多退回几点（借书证）。没有它时为 0 */
+  refund: number;
   /** 这一回合能看几张牌（索引卡 / 折角 / 板书）。**不含**敌人砍掉的 `G.drawCut` */
   draw: number;
   /** 回合开始的保底格挡（长明灯）—— 不是"额外"，它就是这一回合的起点 */
@@ -107,6 +109,7 @@ export function rulesOf(ctx: RulesCtx = {}): Rules {
 
   return {
     apMax: BAL.baseAp + (first && hasPower('hourglass') ? 1 : 0),
+    refund: hasPower('librarycard') ? BAL.refund : 0,
     draw: BAL.drawPerTurn
       + (hasPower('board') ? BAL.boardDraw : 0)
       + (hasPower('index') && handLeft <= 2 ? 1 : 0)

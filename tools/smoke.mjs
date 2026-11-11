@@ -428,6 +428,8 @@ await step('标题 → 选一张能力卡 → 开局', async () => {
   if (!label) throw new Error('开局选卡没有出现');
   await clickLabel(label);
   globalThis.__boon = label.slice('boon:'.length);
+  // 退款现在是借书证给的，不再人人有；后面那条经济断言按这一局实际有没有它来算。
+  globalThis.__refund = await evalJs('cog.state.powers.includes("librarycard") ? 1 : 0');
 }, async () => {
   const st = await evalJs(`({ screen: cog.state.screen, boon: cog.state.boon, powers: cog.state.powers })`);
   // 选中的那张必须真的进了 powers —— 否则它只是个记在 state 里的名字
@@ -475,11 +477,14 @@ await step('「继续」→ 回到战斗', async () => {
   await clickLabel('继续');
 }, async () => (await S('cog.state.panel.k')) === 'none');
 
-// 经济规则：答对退回 1 点（1 费牌因此等于免费）。它要是坏了，整套节奏就塌了
+// 经济规则：有借书证时答对退回 1 点，没有就不退。它要是坏了，整套节奏就塌了
 // （1 费牌的免费出手是"会的人一回合能打完手牌"的唯一来源），所以单独钉一条。
-await step('答对 → 只退回 1 点（1 费牌因此一点没少）', async () => {},
-  async () => (await S('cog.state.ap'))
-    === globalThis.__apBeforeAsk - Math.max(0, globalThis.__askCost - 1));
+await step('答对 → 按借书证退回行动力', async () => {},
+  async () => {
+    const back = Math.min(globalThis.__askCost, globalThis.__refund);
+    return (await S('cog.state.ap'))
+      === globalThis.__apBeforeAsk - globalThis.__askCost + back;
+  });
 
 await step('结束回合 → 回合数前进，敌人真的演了动作且输入被锁', async () => {
   if (!await waitReady()) throw new Error('上一步一直没结算完');
@@ -618,7 +623,7 @@ await step('2 费牌答对 → 只退回 1 点，净花 1 点', async () => {
   await ensureQuestions();
   const id = await evalJs('cog.pack.cards.find((c) => c.cost === 2).id');
   // A 级牌要答对 2 次才免答，所以这一手一定会出题；顺手把计数清掉更稳。
-  await evalJs(`(() => { const G = cog.state; G.hand[0] = ${JSON.stringify(id)}; G.ap = 3; G.charge = {}; })()`);
+  await evalJs(`(() => { const G = cog.state; G.powers = ['librarycard']; G.hand[0] = ${JSON.stringify(id)}; G.ap = 3; G.charge = {}; })()`);
   await clickCard(0);
   if (!await waitFor('opt')) throw new Error('付得起的 2 费牌没有弹题');
   const right = await evalJs('cog.state.panel.view.answer');
@@ -642,7 +647,7 @@ await step('X 费牌 → 吃光行动力，按点数结算 3 次', async () => {
   await ensureQuestions();
   // 试答之刺：X 费 + 洞察 + 单段 —— 3 点行动力就该打 3 段
   const id = await evalJs('cog.pack.cards.find((c) => c.cost === "x" && c.eff === "pierce").id');
-  await evalJs(`(() => { const G = cog.state; G.hand[0] = ${JSON.stringify(id)}; G.ap = 3; G.charge = {}; })()`);
+  await evalJs(`(() => { const G = cog.state; G.powers = ['librarycard']; G.hand[0] = ${JSON.stringify(id)}; G.ap = 3; G.charge = {}; })()`);
   await clickCard(0);
   if (!await waitFor('opt')) throw new Error('X 费牌没有弹题');
   const right = await evalJs('cog.state.panel.view.answer');

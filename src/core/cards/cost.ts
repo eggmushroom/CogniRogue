@@ -1,4 +1,3 @@
-import { BAL } from '../model/data';
 import type { CardCost, CardDef } from '../model/types';
 import { G } from '../infra/state';
 
@@ -7,8 +6,8 @@ import { G } from '../infra/state';
  *
  * 费用是这个游戏里**唯一一种同时管两件事**的数：
  *   1. 打得出去吗 —— 手上得先有这么多点行动力（`canPay`）；
- *   2. 答对之后净花几点 —— 一手最多退 1 点（`BAL.refund`），所以 1 费免费、
- *      2 费净花 1 点、3 费净花 2 点。
+ *   2. 答对之后净花几点 —— 有「借书证」时一手最多退 1 点（`BAL.refund`），
+ *      所以 1 费免费、2 费净花 1 点、3 费净花 2 点；没有借书证则退 0 点。
  *
  * 高费牌不是"更强的一手"，而是"更大的一张票"：3 点的牌打对，用一次答题换掉别人
  * 三次答题的输出；打错**不扣行动力**，但这一手没打出来、还消耗本场一道新题。
@@ -51,8 +50,8 @@ export function canPay(c: CardDef): boolean {
 /**
  * 答对之后退回多少点。
  *
- * **一手最多退 1 点**（`BAL.refund`）—— 这条和"全退"的差别就是费用存在的意义：
- * 1 费牌答对等于免费（和以前完全一样），2 费净花 1 点、3 费净花 2 点。
+ * 退款上限由 `rulesOf().refund` 传入：有「借书证」时最多退 1 点，没有就是 0。
+ * 1 费牌在有借书证时答对等于免费，2 费净花 1 点、3 费净花 2 点。
  * 于是行动力同时买两样东西：犯错的机会，和一次打得更重的机会。
  */
-export const refundOf = (spent: number): number => Math.min(spent, BAL.refund);
+export const refundOf = (spent: number, cap = 0): number => Math.min(spent, cap);

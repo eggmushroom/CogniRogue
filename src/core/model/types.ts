@@ -196,7 +196,7 @@ export type CardCost = 0 | 1 | 2 | 3 | 'x';
  * 而且它们按 `PowerScope` 分档：常驻的只有 1–2 点，一次性的才敢给 3–4 点。
  */
 export type PowerId =
-  | 'hourglass' | 'index' | 'binder' | 'mirrorcard' | 'lamp' | 'marker'
+  | 'librarycard' | 'hourglass' | 'index' | 'binder' | 'mirrorcard' | 'lamp' | 'marker'
   | 'paperweight' | 'dogear' | 'bookmark' | 'sticky' | 'syllabus' | 'eraser'
   // ── 第二批：答错的四张「代价」牌 + 两张学习向 ──
   // 前十二张里只有装订线 / 橡皮两张在管"答错"，而答错正是这游戏唯一会被惩罚的动作。
