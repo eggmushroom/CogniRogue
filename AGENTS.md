@@ -39,7 +39,7 @@
 
 - 改完至少 `npm run check`（tsc + 依赖方向守卫）。
 - 动过战斗逻辑再跑 `npm run sim`：无头几千局，断言"胜率必须随水平单调上升"。
-  学习模式也参与这条断言，只是底部低（不补垫子、不补抽，练习场基本通关不了）。
+  四档水平都参与这条断言，只是底部低（不补垫子、不补抽，新手档基本通关不了）。
   **还要看它多打的那行「免答」**：`A/S 档` 低于 0.2 次/局就说明分级免答是空转的
   （一场打不到 3 回合，要攒 2/3 次的牌凑不满）。这一条比胜率更容易悄悄坏掉。
 - 动过点击热区或布局跑 `npm run smoke`；怀疑是时序问题，加 `SMOKE_CPU=6`
@@ -54,7 +54,7 @@
   在那之前不要用调字号的方式局部打补丁 —— 会把版式调乱，还治不好。
 - 内置题库当前是**临时单词表** `packs/words.md`（400 题 / 5 个题池）；课程表
   `CURRICULUM` 取其中五章对应五幕，每一幕从来源题库切出自己的 BANK（`library/stage.ts`）。
-  卡池恒定 83 张，固化在 `cards/catalog.ts`；原来的 CS 三份 md（algorithms / advanced /
+  卡池恒定 87 张（83 张基础 + 4 张联动），固化在 `cards/catalog.ts`；原来的 CS 三份 md（algorithms / advanced /
   systems）保留在 `packs/` 里可导入。加题改 `packs/words.md`（或导入新题库），加卡改 catalog，
   调整课程只改 `CURRICULUM`，三件事互不牵连。
 - `packs/words.md` 是生成物，别手改：源表（单词 → 释义）在 `tools/words.mjs`，
