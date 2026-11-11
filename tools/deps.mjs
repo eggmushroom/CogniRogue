@@ -27,14 +27,11 @@ const LAYERS = ['model', 'infra', 'cards', 'library', 'map', 'combat', 'journey'
 /**
  * 已知违规的显式豁免（只警告、不失败）。每一条都要写清楚它为什么存在、
  * 什么时候该删 —— 豁免表一旦长起来，守卫就退化成装饰品。
+ *
+ * 现在是空的：combat → journey 的 settlePending 已经改成由 journey 注册回调，
+ * 战斗层不再反向 import journey。
  */
-const EXEMPT = [
-  {
-    from: 'combat',
-    to: 'journey',
-    why: 'settlePending（奖励 / 过幕 / 结算）由 combat 直接调用；下一步要把它挪回 journey 驱动',
-  },
-];
+const EXEMPT = [];
 
 /** 表现层：不在 LAYERS 里，彼此可以自由引用，但不许被 core import。 */
 const PRESENTATION = new Set(['gfx', 'scenes', 'input', 'main']);

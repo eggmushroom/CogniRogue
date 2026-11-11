@@ -142,10 +142,9 @@ const SHOTS = [
     setTimeout(() => location.replace(location.origin + '/'), 30);
   })()`, 2600],
   ['mode', '?dev=mode', null, 600],
+  // 五幕各有自己的色相与物种：同一张地图换一幕，光柱、幕名和节点底色都跟着换。
+  // （map3 / map5 两张图删了：README 只用到第一幕那张，多拍的没人看，还会被当成文档签入。）
   ['map', '?dev=map', null, 600],
-  // 五幕各有自己的色相与物种：同一张地图换一幕，光柱、幕名和节点底色都跟着换
-  ['map3', '?dev=map&stage=3', null, 600],
-  ['map5', '?dev=map&stage=5', null, 600],
   // 幕 Boss 的专属立绘：换皮先过一眼，别让"新怪"其实还是旧图
   ['boss1', '?dev=foe:cataloguer', `(() => {
     cog.state.enemy.maxHp = cog.state.enemy.hp = 9999;
@@ -161,6 +160,9 @@ const SHOTS = [
   })()`, 700],
   ['screenshot', '?dev=battle', null, 500],
   ['deck', '?dev=deck', null, 500],
+  // 精炼面板：牌组里 4 张基础斩击要显示成 4 格，每格都写"选完是多少伤"。
+  // 玩家报过"精炼看不到效果"，这一屏就是那条反馈的证据。
+  ['refine', '?dev=refine', null, 500],
   ['reward', '?dev=reward', null, 500],
   ['rest', '?dev=rest', null, 400],
   ['event', '?dev=event', null, 400],
@@ -169,12 +171,6 @@ const SHOTS = [
   ['feedback', '?dev=answer', null, 1400],
   // 答错那一屏：学习模式的价码写在反馈面板里
   ['wrong', '?dev=wrong', null, 1400],
-  // 这一回合答错过的牌：压暗 + 虚线边框。这是战斗里**唯一**还留着的"不能打"状态，
-  // 直接写 failedTurn 比真去答错一道题稳定（不用等反馈面板收场）。
-  ['spent', '?dev=battle', `(() => {
-    const i = cog.state.hand.findIndex((c) => !c.id.startsWith('base:'));
-    if (i >= 0) cog.state.failedTurn[cog.state.hand[i].id] = true;
-  })()`, 600],
   // 光刃飞出去的那一瞬：0.18s 左右正好在半路
   ['strike', '?dev=battle', 'cog.strike()', 180],
   // 敌人回合：真的走一次 endTurn（?dev=foe:xxx 把招式固定成单招循环），
@@ -187,7 +183,7 @@ const SHOTS = [
   ['enemyjam', '?dev=foe:jam', 'cog.endTurn()', 260],
   ['powers', '?dev=powerpick', null, 500],
   ['powerafter', '?dev=power', `(() => {
-    const i = cog.state.hand.findIndex((c) => c.id === 'pow:hourglass');
+    const i = cog.state.hand.indexOf('pow:hourglass');
     cog.power(i);
   })()`, 700],
   ['report', '?dev=report', null, 700],
