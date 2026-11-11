@@ -719,6 +719,33 @@ function missGain(eff: string) {
   if (panelKind() === 'feedback') dismissFeedback();
   ok(dealt > 0, `装订线：答错也打出了 ${dealt} 点（半额结算）`);
 
+  // 装订线的格挡也必须真的减半。旧实现里 `resolveEff` 只把 `mult` 乘在伤害上，
+  // 格挡仍是全额，`play.ts` 又补了半次 —— 结果答错反而比答对更硬。
+  {
+    // 必须挑 `eff === 'guard'`：有些牌 `blk` 很高，但效果是 pierce/chain，实际格挡是 0。
+    const guard = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 1 && c.eff === 'guard' && c.blk > 0)!;
+    const blockOf = (powers: string[], wrong: boolean) => {
+      battle(1, 'examiner');
+      G.powers = powers as never;
+      const foe = G.enemy!;
+      foe.hp = 999;
+      G.ap = 99;
+      G.block = 0;
+      G.hand[0] = guard.id;
+      askCard(0);
+      if (panelKind() !== 'question') throw new Error('装订线格挡测试：没弹题');
+      const view = (G.panel as unknown as { view: { answer: number; options: string[] } }).view;
+      answer(wrong ? (view.answer + 1) % view.options.length : view.answer);
+      const got = G.block;
+      if (panelKind() === 'feedback') dismissFeedback();
+      return got;
+    };
+    const full = blockOf([], false);
+    const half = blockOf(['binder'], true);
+    ok(full > 0 && half === Math.round(full / 2),
+      `装订线：答错格挡正好减半（${full} → ${half}）`);
+  }
+
   // 荧光笔：每回合第一次答对多退 1 点（1 费牌因此净赚 1 点）。
   battle(1, 'examiner');
   G.powers = ['marker'];

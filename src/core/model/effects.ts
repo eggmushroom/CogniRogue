@@ -77,7 +77,10 @@ export function resolveEff(
   return {
     key: d.key,
     hits: Array.from({ length: (mods?.times ?? d.times) * n }, () => per),
-    blk: Math.round(blk * (mods?.blkMul ?? d.blk)) * n,
+    // `mult` 也要乘在格挡上：装订线的"半额结算"要求伤害和格挡一起减半。
+    // 之前只乘伤害，导致装订线答错时格挡反而是全额，再被 play.ts 补半次，
+    // 实际变成 1.5 倍 —— 一张防御牌答错比答对还硬。
+    blk: Math.round(blk * (mods?.blkMul ?? d.blk) * mult) * n,
     healRatio: mods?.heal ?? d.heal ?? 0,
     draw: (mods?.draw ?? d.draw ?? 0) * n,
     pierce: !!d.pierce,

@@ -412,7 +412,7 @@ export function answer(choice: number) {
       apNote = join(apNote, `答对：抽 ${BAL.answerDraw} 张（本回合 ${G.answerDrawsThisTurn}/${cap}）。`);
     }
 
-    // 书签：这一场**第一道**答对，多抽两张。和双面镜刻意分开记 ——
+    // 书签：这一场**第一道**答对，多抽一张。和双面镜刻意分开记 ——
     // 双面镜数的是"每回合第一次"，书签数的是"这一场第一次"；共用一个计数
     // 会让第一回合把书签的机会顺手吃掉，玩家看到的是一张空牌。
     if (onceThisFight('bookmark')) {
@@ -597,20 +597,16 @@ export function answer(choice: number) {
     parts = r.parts;
     dmg = r.dmg;
     absorbed = r.absorbed;
-    // 格挡也减半：只补伤害会让一张纯防御的牌在这条路上凭空变强。
-    //
-    // 注意这里和 `strikeWith` 有一处重复：`strikeWith` 内部已经
-    // `grantBlock(out.blk)`，而 `out.blk` 已经乘过装订线的 0.5。所以这一手
-    // 实际加的是 0.5 + 0.25 = **0.75 倍**，而不是设计意图的 0.5 倍。
-    // 先按原样保留（只影响答错那一手的 1–2 点格挡），修它要单独走一轮并重扫 sim。
-    const halfBlk = Math.round(r.blk / 2);
-    if (halfBlk > 0) { grantBlock(halfBlk); blkGain += halfBlk; }
+    // `strikeWith` 内部已经 `grantBlock(out.blk)`；`resolveEff` 现在会把
+    // `mult` 也乘到格挡上，所以这里**不能再补一次**。之前补半次的实际后果是：
+    // 全额 + 半额 = 1.5 倍格挡，防御牌答错反而比答对更硬。
+    blkGain = r.blk;
     heal = r.heal;
     drawn += r.drawn;
     linkNote = r.linkNote;
     if (r.nextNote) apNote = join(apNote, `${r.nextNote}。`);
     apNote = join(apNote, `装订线：这一手仍然按一半结算`
-      + `${dmg ? `（${dmg} 伤害` : '（'}${halfBlk ? `${dmg ? '，' : ''}${halfBlk} 格挡` : ''}）。`);
+      + `（${dmg} 伤害${r.blk ? `，${r.blk} 格挡` : ''}${r.drawn ? `，抽 ${r.drawn} 张` : ''}）。`);
   }
 
   G.busy = true;
