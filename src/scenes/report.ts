@@ -27,7 +27,7 @@ export function drawReport(d: ReportData) {
 
   const total = d.runOk + d.runBad;
   const stats: Array<[string, string]> = [
-    [d.boon, '开局能力'],
+    [d.mode, '开局模式'],
     [`${d.runOk}/${total}`, '本局答题'],
     [`${total ? Math.round((d.runOk / total) * 100) : 0}%`, '正确率'],
     [`第 ${d.stage} 幕`, `本章 · ${d.stageTopic}`],

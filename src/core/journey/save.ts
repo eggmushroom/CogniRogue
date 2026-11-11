@@ -1,11 +1,11 @@
 import { G, resetTurnState } from '../infra/state';
 import { readStore, writeStore } from '../infra/storage';
-import { BAL, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS } from '../model/data';
+import { BAL, MODE_BY_ID, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS } from '../model/data';
 import { floorOf } from '../map';
 import { baseIdOf, isKnownCardId } from '../cards/registry';
 import { LEGACY_CARD_IDS } from '../cards/legacy';
 import { enterStage } from '../library/stage';
-import type { MapNode, PowerId } from '../model/types';
+import type { MapNode, ModeId, PowerId } from '../model/types';
 
 /**
  * journey/save —— 一局的断点。
@@ -22,13 +22,13 @@ import type { MapNode, PowerId } from '../model/types';
  *   3. **版本号不对就当没有**。宁可让玩家重开，也不要用一份结构对不上的存档
  *      把一个好好的界面弄崩。
  */
-const KEY = 'cognirogue.run.v6';
+const KEY = 'cognirogue.run.v7';
 
 interface Snapshot {
-  v: 6;
+  v: 7;
   stage: number;
-  /** 开局选的那张能力卡；它同时也记在 `powers` 里，这里单独留一份给结算页 */
-  boon: PowerId | null;
+  /** 开局选的模式；它决定开局能力，但能力本身仍然存在 `powers` 里 */
+  mode: ModeId | null;
   hp: number;
   maxHp: number;
   /**
@@ -97,9 +97,9 @@ function usedTable(ids: string[]): Partial<Record<PowerId, boolean>> {
 /** 每走完一个节点存一次。战斗中途、面板打开时不存。 */
 export function saveRun() {  if (G.screen !== 'map' || !G.map.length || G.panel.k !== 'none' || G.pending) return;
   const snap: Snapshot = {
-    v: 6,
+    v: 7,
     stage: G.stage,
-    boon: G.boon,
+    mode: G.mode,
     hp: G.hp,
     maxHp: G.maxHp,
     deck: G.deck,
@@ -158,7 +158,7 @@ export function resumeRun(): boolean {
   const s = readSnapshot();
   if (!s) return false;
   Object.assign(G, {
-    screen: 'map', boon: s.boon, stage: s.stage, stageTopic: '', panel: { k: 'none' }, log: [],
+    screen: 'map', mode: s.mode, stage: s.stage, stageTopic: '', panel: { k: 'none' }, log: [],
     deck: s.deck, map: s.map, pos: s.pos, seen: s.seen, node: null,
     hp: s.hp, maxHp: s.maxHp, block: 0,
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
@@ -229,9 +229,9 @@ function readSnapshot(): Snapshot | null {
   // 结构对不上就当没有：一份坏存档不该让首页崩掉。
   // 这里逐项校验，而不是只看"看起来像" —— 一个 stage=2.5 就能让
   // `STAGES[stage-1].name` 抛异常，后果是首页每帧都渲染失败。
-  if (!isRecord(s) || s.v !== 6) return null;
+  if (!isRecord(s) || s.v !== 7) return null;
   if (!Number.isInteger(s.stage) || s.stage < 1 || s.stage > STAGES.length) return null;
-  if (s.boon !== null && !(typeof s.boon === 'string' && !!POWER_BY_ID[s.boon])) return null;
+  if (s.mode !== null && !(typeof s.mode === 'string' && !!MODE_BY_ID[s.mode as ModeId])) return null;
   if (!isNum(s.hp) || !isNum(s.maxHp) || s.hp <= 0 || s.maxHp <= 0 || s.hp > s.maxHp) return null;
   if (!Array.isArray(s.map) || s.map.length !== STAGE_ROWS) return null;
   // 节点坐标必须和它在数组里的位置对得上：`enterNode` 用 key 里的 r/i 去

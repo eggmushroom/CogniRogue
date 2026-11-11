@@ -11,8 +11,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { BAL, MISS_RULE, POWER_BY_ID } from '../src/core/model';
-import type { CardDef, CardId, PowerId } from '../src/core/model';
+import { BAL, MISS_RULE, MODE_BY_ID, POWER_BY_ID } from '../src/core/model';
+import type { CardDef, CardId, ModeId, PowerId } from '../src/core/model';
 import {
   G, PACK, answer, availableNodes, bankQuestionCount, canPay, cardAskState, chooseEventOption, defOf, dismissFeedback,
   endTurn, enterNode, forgetCard, loadQuestionBank, openCardPick, playBasic, playFree, resetMemory, restHeal,
@@ -23,7 +23,8 @@ import {
 /**
  * 参数可覆盖，方便扫参：
  *   npm run sim -- --hp=1.2 --dmg=1.3 --ap=5 --hand=6
- *   npm run sim -- --boon=syllabus      // 单独量一张开局能力卡
+ *   npm run sim -- --mode=study          // 学习 / 复习 / 测试
+ *   npm run sim -- --boon=syllabus       // 额外 A/B 一张能力牌
  * 试一个数值不该改源码。
  */
 
@@ -102,18 +103,23 @@ let SMART = true;
 let NOPOW = false;
 
 /**
- * 开局带哪张能力卡（`--boon=syllabus`）。
+ * 开局模式（`--mode=study|review|test`）。
  *
- * 开局三选一以前不在模拟里（`startRun()` 不带 boon），于是"课表只加题量"
- * 这种零收益在 800 局里也不会露头。默认 null 保持旧基线，要 A/B 一张
- * 开局卡时就显式带上它。
+ * 正式开局必须三选一；模拟默认不带模式，保持"没有任何开局能力"的旧基线。
+ */
+let MODE: ModeId | null = null;
+
+/**
+ * 额外塞一张开局能力（`--boon=syllabus`），只给 A/B 单张牌用。
+ * 它不改变模式的初始能力，只是在模式之上再加一张。
  */
 let BOON: PowerId | null = null;
 
 for (const arg of process.argv.slice(2)) {
-  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|deck|path|rf|fresh|freshrun|rest|sm|smart|ht|nopow|boon)=([\w.-]+)$/.exec(arg);
+  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|deck|path|rf|fresh|freshrun|rest|sm|smart|ht|nopow|mode|boon)=([\w.-]+)$/.exec(arg);
   if (!m) continue;
   const v = Number(m[2]);
+  if (m[1] === 'mode') { MODE = m[2] as ModeId; continue; }
   if (m[1] === 'boon') { BOON = m[2] as PowerId; continue; }
   if (m[1] === 'runs') { RUNS = Math.round(v); continue; }
   if (m[1] === 'take') { TAKE = v > 0; continue; }
@@ -234,7 +240,7 @@ function advance(idx: number) {
 
 function runOne(p: number, st: Stat) {
   if (FRESH_RUN) resetMemory();
-  startRun(BOON);
+  startRun(MODE, BOON ? [BOON] : []);
   let guard = 0;
   let answers = 0;
   let right = 0;
@@ -419,7 +425,8 @@ const LEVELS = [
 ];
 
 console.log(`\nCogniRogue 无头模拟 · 每组 ${RUNS} 局 · 统一规则 · 内置 ${PACK.cards.length} 张卡 / 题库 ${bankQuestionCount()} 道题`
-  + `${BOON ? ` · 开局「${POWER_BY_ID[BOON]?.name ?? BOON}」` : ''}\n`);
+  + `${MODE ? ` · ${MODE_BY_ID[MODE].name}模式` : ''}`
+  + `${BOON ? ` · 额外「${POWER_BY_ID[BOON]?.name ?? BOON}」` : ''}\n`);
 
 const header = ['水平', '基础正确率', '胜率', '平均到层', '答题/局', '实际正确率', '答对抽牌/局', '答错/局'];
 const widths = [8, 12, 9, 11, 10, 12, 14, 13];

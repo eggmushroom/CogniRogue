@@ -1,5 +1,5 @@
 import type { ReportRow } from '../model/types';
-import { CURRICULUM, POWER_BY_ID } from '../model/data';
+import { CURRICULUM, MODE_BY_ID, POWER_BY_ID } from '../model/data';
 import { G } from '../infra/state';
 import { saveMem } from '../library/memory';
 import { saveStageMem, stageDigest } from '../library/stagemem';
@@ -55,7 +55,7 @@ export function endRun(win: boolean) {
     k: 'report',
     data: {
       win,
-      boon: G.boon ? (POWER_BY_ID[G.boon]?.name ?? G.boon) : '无',
+      mode: G.mode ? (MODE_BY_ID[G.mode]?.name ?? G.mode) : '无',
       stage: G.stage,
       stageTopic: G.stageTopic,
       stageOk: stageAs.filter((a) => a.right).length,

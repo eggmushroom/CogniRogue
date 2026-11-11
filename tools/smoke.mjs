@@ -390,15 +390,15 @@ async function waitFor(label, ms = 20000) {
 }
 
 /**
- * 等开局三张能力卡里出现任意一张，返回它的完整 label（`boon:<id>`）。
+ * 等开局三个模式里出现任意一个，返回它的完整 label（`mode:<id>`）。
  *
- * `waitFor` 是精确匹配，而这里事先不知道玩家会看到哪三张 —— 按前缀找。
+ * `waitFor` 是精确匹配，而这里事先不知道玩家会看到哪三个 —— 按前缀找。
  */
 async function waitBoon(ms = 20000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     const l = await evalJs(
-      `(cog.hots().find((h) => h.label.startsWith('boon:')) || {}).label || ''`,
+      `(cog.hots().find((h) => h.label.startsWith('mode:')) || {}).label || ''`,
     );
     if (l) return l;
     await sleep(60);
@@ -422,18 +422,19 @@ if (CPU_RATE > 0) {
 
 await boot();
 
-await step('标题 → 选一张能力卡 → 开局', async () => {
+await step('标题 → 选一个模式 → 开局', async () => {
   await clickLabel('开始新的一局');
   const label = await waitBoon();
-  if (!label) throw new Error('开局选卡没有出现');
+  if (!label) throw new Error('开局选模式没有出现');
   await clickLabel(label);
-  globalThis.__boon = label.slice('boon:'.length);
+  globalThis.__mode = label.slice('mode:'.length);
   // 退款现在是借书证给的，不再人人有；后面那条经济断言按这一局实际有没有它来算。
   globalThis.__refund = await evalJs('cog.state.powers.includes("librarycard") ? 1 : 0');
 }, async () => {
-  const st = await evalJs(`({ screen: cog.state.screen, boon: cog.state.boon, powers: cog.state.powers })`);
-  // 选中的那张必须真的进了 powers —— 否则它只是个记在 state 里的名字
-  return st.screen === 'map' && st.boon === globalThis.__boon && st.powers.includes(st.boon);
+  const st = await evalJs(`({ screen: cog.state.screen, mode: cog.state.mode, powers: cog.state.powers })`);
+  // 模式必须真的兑现成初始能力：学习 2 张、复习 1 张、测试 0 张。
+  const want = st.mode === 'study' ? 2 : st.mode === 'review' ? 1 : 0;
+  return st.screen === 'map' && st.mode === globalThis.__mode && st.powers.length === want;
 });
 await step('地图 → 进节点', () => clickLabel('node'), async () => (await S('cog.state.screen')) === 'battle');
 // 点牌就是出题：中间不该再有任何浮层。这一步挂了就说明又退回了"先选档再看题"
@@ -1022,7 +1023,7 @@ globalThis.__snap = await evalJs(`(() => {
   s.floors = 6;
   s.hp = 41;
   cog.save();
-  const raw = localStorage.getItem('cognirogue.run.v6');
+  const raw = localStorage.getItem('cognirogue.run.v7');
   return { len: raw ? raw.length : 0, deck: s.deck.length, hp: s.hp };
 })()`);
 await boot(URL_);
@@ -1052,7 +1053,7 @@ await step('开新的一局 → 断点清掉，再刷新首页不再提「继续
   if (!await waitFor('开始新的一局')) throw new Error('首页没有「开始新的一局」');
   await clickLabel('开始新的一局');
   const bl = await waitBoon();
-  if (!bl) throw new Error('开局选卡没有出现');
+  if (!bl) throw new Error('开局选模式没有出现');
   await clickLabel(bl);
   if ((await S('cog.state.screen')) !== 'map') throw new Error('没有进入地图');
   // 再刷一次：首页应该退回"没有存档"的那套版式
@@ -1225,16 +1226,16 @@ await step('软自动推进真的把判定面板收掉', async () => {}, async (
 });
 
 await boot(URL_ + '?dev=report');
-await step('结算 → 再来一局 → 重新选能力卡', async () => {
+await step('结算 → 再来一局 → 重新选模式', async () => {
   globalThis.__floorBefore = await S('cog.state.floors');
   await clickLabel('再来一局');
   const label = await waitBoon();
-  if (!label) throw new Error('再来一局没有回到开局选卡');
+  if (!label) throw new Error('再来一局没有回到模式选择');
   await clickLabel(label);
-  globalThis.__boon2 = label.slice('boon:'.length);
+  globalThis.__mode2 = label.slice('mode:'.length);
 }, async () => {
-  const st = await evalJs(`({ p: cog.state.panel.k, floor: cog.state.floors, boon: cog.state.boon })`);
-  return st.p === 'none' && st.floor === 0 && st.boon === globalThis.__boon2;
+  const st = await evalJs(`({ p: cog.state.panel.k, floor: cog.state.floors, mode: cog.state.mode })`);
+  return st.p === 'none' && st.floor === 0 && st.mode === globalThis.__mode2;
 });
 
 ws.close();

@@ -1,5 +1,5 @@
-import { BAL, POWER_BY_ID, STAGES, STAGE_ROWS, planFor, stageOf } from '../model/data';
-import type { GameState, PowerId } from '../model/types';
+import { BAL, MODE_BY_ID, STAGES, STAGE_ROWS, planFor, stageOf } from '../model/data';
+import type { GameState, ModeId, PowerId } from '../model/types';
 import { G, log, resetTurnState } from '../infra/state';
 import { raiseMaxHp, refillHp } from '../infra/write';
 import { pick } from '../infra/util';
@@ -29,7 +29,7 @@ setSettleHandler(settlePending);
  * 100 层的结构在 `nextStage()` 这一件事上：幕 Boss 死掉不是结局，是**换地图**。
  * 只有第五幕的 Boss 会真的结束这一局。
  */
-export function startRun(boon: PowerId | null = null) {
+export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []) {
   tickDue();
   // 上一局如果是中途退出的，答题流水只进了内存；开局前落一次盘，
   // 免得"没打完的那一局"把章节记忆丢掉。
@@ -37,17 +37,20 @@ export function startRun(boon: PowerId | null = null) {
   // 新开一局 = 丢掉上一个断点。否则首页会一直挂着一条"继续"，指向已经被覆盖的地图。
   clearRun();
   // 初始牌组 = 8 张基础牌（4 斩击 + 4 格挡）+ 2 张随机知识卡。
-  // 开局选的那张能力卡直接进 `powers`，和后面捡到的增益走完全同一条通道 ——
-  // 它不是"模式开关"，是一件会一直在战斗里起作用的东西。
+  // 模式带进来的能力直接进 `powers`，和后面捡到的增益走完全同一条通道。
   const deck = basicDeck().concat(startDeck());
+  const modeDef = mode ? MODE_BY_ID[mode] : null;
+  // `extraPowers` 只给模拟 / 调试用：`--boon=xxx` 仍然可以单独 A/B 一张牌，
+  // 不改变正式开局只能选三个模式这件事。
+  const startPowers = [...new Set([...(modeDef?.powers ?? []), ...extraPowers])];
 
   Object.assign(G, {
-    screen: 'map', boon, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck,
+    screen: 'map', mode, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck,
     draw: [], discard: [], hand: [],
     map: genStage(1), pos: null, seen: {}, node: null,
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0,
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
-    powers: boon ? [boon] : [], qPicked: {}, qLeft: [], charge: {}, answers: [],
+    powers: startPowers, qPicked: {}, qLeft: [], charge: {}, answers: [],
     topicWrong: {},
     answerDraws: 0, qFresh: false, syllabusTurn: 0,
     onceUsed: {},
@@ -61,16 +64,14 @@ export function startRun(boon: PowerId | null = null) {
   // 每场一次由 `startBattle` 清，这里不用管。
   clearRunOnce();
   clearStageOnce();
-  // 开局这张如果是「拾取即结算」类，和精英掉落的走同一条通道。
-  // 现在的三张都不是，但通道必须一致 —— 否则换一张开局牌就会静默失效。
-  if (boon) applyInstant(boon);
+  // 模式带的能力如果是「拾取即结算」类，和精英掉落的走同一条通道。
+  for (const id of startPowers) applyInstant(id);
   // 第一幕的题库从来源题库里切出来。卡和题解耦之后，这一步才是"这一章问什么"
   // 的唯一入口；牌组、卡面、奖励都不参与。
   enterStage(1);
 
   const st = stageOf(1);
-  const b = boon ? POWER_BY_ID[boon] : null;
-  log(`── 你走进记忆的档案馆${b ? ` · 带着「${b.name}」` : ''} ──`, 'turn');
+  log(`── 你走进记忆的档案馆${modeDef ? ` · ${modeDef.name}模式` : ''} ──`, 'turn');
   log(`第一幕 · ${st.name} —— 本章「${G.stageTopic}」，题目从这一章的题库里抽`, 'turn');
   log(`全塔 ${FLOOR_MAX} 层，每 ${STAGE_ROWS} 层一幕，幕末有 Boss`, 'turn');
 }

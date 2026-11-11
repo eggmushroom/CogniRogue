@@ -190,11 +190,13 @@ export type CardCost = 0 | 1 | 2 | 3 | 'x';
  * 它不抽、不付钱、不占牌位，所以也没有"要不要拿"这一步 —— 掉落不是成本，
  * 牌组厚度才是，而这条路现在完全不碰牌组。
  *
- * 池子有四十个（`POWERS`）：一局大约会走过十几个精英 / Boss，池子必须够掉，
- * 否则后半程的精英会变成"打完什么也没有"。四十个里大部分是小份加数，
+ * 池子有四十一个（`POWERS`）：一局大约会走过十几个精英 / Boss，池子必须够掉，
+ * 否则后半程的精英会变成"打完什么也没有"。四十一个里大部分是小份加数，
  * 拿齐一整轮确实变强 —— 所以每一条的强度都按"总量除回来"重定过，
  * 而且它们按 `PowerScope` 分档：常驻的只有 1–2 点，一次性的才敢给 3–4 点。
  */
+export type ModeId = 'study' | 'review' | 'test';
+
 export type PowerId =
   | 'librarycard' | 'hourglass' | 'index' | 'binder' | 'mirrorcard' | 'lamp' | 'marker'
   | 'paperweight' | 'dogear' | 'bookmark' | 'sticky' | 'syllabus' | 'eraser'
@@ -547,8 +549,8 @@ export interface ReportData {
   /** 最后一章本局的答题数（来自答题流水，不是卡牌记忆） */
   stageOk: number;
   stageBad: number;
-  /** 这一局开局选的能力卡名字 —— 结算页要写清楚"这局是怎么搭起来的" */
-  boon: string;
+  /** 这一局的开局模式名字 —— 结算页要写清楚"这局是怎么搭起来的" */
+  mode: string;
   runOk: number;
   runBad: number;
   floors: number;
@@ -599,8 +601,8 @@ export interface LogLine { msg: string; kind: '' | 'hi' | 'bad' | 'turn' }
 
 export interface GameState {
   screen: 'title' | 'map' | 'battle' | 'report' | 'atlas';
-  /** 开局选的那张能力卡；整局不变，但它进的是 `powers`，会一直生效 */
-  boon: PowerId | null;
+  /** 开局选的学习 / 复习 / 测试模式；它决定开局塞哪几张能力牌 */
+  mode: ModeId | null;
   /**
    * 当前第几幕（1..5）。地图只装当前这一幕的 20 行 —— 100 层不画成一张图，
    * 否则一屏 100 个点，等于没有地图。层号用 `floorOf()` 换算成 1..100。

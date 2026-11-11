@@ -5,7 +5,7 @@ import { bar, drawCard, icon, panel, squeeze, text } from '../gfx/ui';
 import { onClick, hover } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import * as FX from '../gfx/fx';
-import { BAL, EFFS, POWER_BY_ID, stageOf } from '../core/model';
+import { BAL, EFFS, MODE_BY_ID, POWER_BY_ID, stageOf } from '../core/model';
 import { G } from '../core/infra';
 import { linkStatus, liveStatOf } from '../core/combat/link';
 import { curFloor } from '../core/map';
@@ -144,24 +144,22 @@ function topBar(t: number) {
   text(`第 ${curFloor()} 层`, 438, 31, { size: 17, color: C.ink2, weight: 600 });
   text(`${st.name} · ${G.stageTopic}`, 438, 52, { size: 11, color: st.color, weight: 600 });
 
-  // 开局能力：整局不变，所以只说一次。
-  // 这里原来是"模式胶囊"，写着一个选完就再也想不起来的档位名；现在写的是
-  // 这一局真正带进来的那张能力卡 —— 玩家会在战斗里反复撞见它的效果。
-  const boon = G.boon ? POWER_BY_ID[G.boon] : null;
-  /** 能力卡胶囊占多宽；没有能力卡时题数胶囊直接从 524 排起 */
-  let boonW = 0;
-  if (boon) {
-    const label = `◆ ${boon.name}`;
+  // 开局模式：整局不变，所以只说一次。它决定开局带几张能力，而不是难度档位。
+  const mode = G.mode ? MODE_BY_ID[G.mode] : null;
+  /** 模式胶囊占多宽；没有模式时题数胶囊直接从 524 排起 */
+  let modeW = 0;
+  if (mode) {
+    const label = `◆ ${mode.name}`;
     g.font = font(13, 600, FONT_UI);
     const tw = g.measureText(label).width + 30;
-    boonW = tw + 10;
+    modeW = tw + 10;
     roundRect(524, 18, tw, 26, 13);
-    g.fillStyle = withAlpha(boon.color, 0.12);
+    g.fillStyle = withAlpha(mode.color, 0.12);
     g.fill();
-    g.strokeStyle = withAlpha(boon.color, 0.5);
+    g.strokeStyle = withAlpha(mode.color, 0.5);
     g.lineWidth = 1.2;
     g.stroke();
-    text(label, 524 + tw / 2, 31, { size: 13, color: boon.color, weight: 600, align: 'center' });
+    text(label, 524 + tw / 2, 31, { size: 13, color: mode.color, weight: 600, align: 'center' });
   }
 
   // 本场还剩几道**新题**（不是"还能不能答"）。答错不扣行动力，代价落在
@@ -171,7 +169,7 @@ function topBar(t: number) {
     const left = G.qLeft.length;
     const reusing = left === 0;
     const col = reusing ? C.dim : left <= 2 ? C.red : left <= 4 ? C.gold : C.cyan;
-    const bx = 524 + boonW;
+    const bx = 524 + modeW;
     g.font = font(13, 700, FONT_UI);
     const label = reusing ? '题 复用' : `题 ${left}`;
     const bw = g.measureText(label).width + 30;

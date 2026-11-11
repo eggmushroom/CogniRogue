@@ -7,7 +7,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
-import { BAL, FOES, POWERS, STAGES, STAGE_ROWS } from '../src/core/model';
+import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS } from '../src/core/model';
 import type { MapNode } from '../src/core/model';
 import {
   EVENTS, G, answer, askCard, canAsk, canPay, cancelPanel, chooseEventOption, clearRun, defOf,
@@ -1166,7 +1166,7 @@ function missGain(eff: string) {
 
 // ── 16. 坏存档当没有：不抛异常、不把首页带崩 ───────────────
 // 设计承诺"版本或形状对不上就当没有"。stage=2.5 会让 STAGES[stage-1]
-// 变成 undefined；boon='foo' 会让 POWER_BY_ID[boon] 变成 undefined。两者都必须被
+// 变成 undefined；mode='foo' 会让 MODE_BY_ID[mode] 变成 undefined。两者都必须被
 // readSnapshot 拒绝，而不是留到标题/答题时才炸。
 {
   const store = new Map<string, string>();
@@ -1180,7 +1180,7 @@ function missGain(eff: string) {
   } as Storage;
 
   const base = {
-    v: 6, stage: 1, boon: null, hp: 50, maxHp: 70,
+    v: 7, stage: 1, mode: null, hp: 50, maxHp: 70,
     deck: ['base:strike'], powers: [],
     map: genStage(1), pos: null, seen: {}, topicWrong: {},
     floors: 0, runOk: 0, runBad: 0, answerDraws: 0,
@@ -1188,11 +1188,16 @@ function missGain(eff: string) {
   };
   const put = (snap: unknown) => {
     clearRun();
-    store.set('cognirogue.run.v6', JSON.stringify(snap));
+    store.set('cognirogue.run.v7', JSON.stringify(snap));
   };
 
   put(base);
   ok(runSaveInfo()?.stage === 1, '合法存档可读');
+
+  put({ ...base, mode: 'study' });
+  ok(runSaveInfo()?.stage === 1, '带模式的存档可读');
+  resumeRun();
+  ok(G.mode === 'study', 'mode 随断点存回来');
 
   const oldId = Object.keys(LEGACY_CARD_IDS)[0];
   put({ ...base, deck: [oldId] });
@@ -1224,7 +1229,7 @@ function missGain(eff: string) {
   put({ ...base, powers: undefined });
   ok(runSaveInfo() === null, '缺 powers 字段的存档被拒绝（v5 形状）');
 
-  // v6 新增的三个字段：每幕/整局一次的账、抛光布的精炼加成。
+  // v7：模式 + 每幕/整局一次的账 + 抛光布的精炼加成。
   // 少任何一个都该判坏档 —— 静默忽略会让那张牌在读档之后重新可用。
   for (const key of ['onceStage', 'onceRun'] as const) {
     const bad: Record<string, unknown> = { ...base };
@@ -1250,8 +1255,8 @@ function missGain(eff: string) {
   put({ ...base, stage: 2.5 });
   ok(runSaveInfo() === null, '小数 stage 被拒绝');
 
-  put({ ...base, boon: 'foo' });
-  ok(runSaveInfo() === null, '非法 boon 被拒绝');
+  put({ ...base, mode: 'foo' });
+  ok(runSaveInfo() === null, '非法 mode 被拒绝');
 
   put({ ...base, map: [[{}]] });
   ok(runSaveInfo() === null, '坏地图被拒绝');
@@ -1500,6 +1505,24 @@ C) 3
   ok(grantBlock(5) === 5 && G.block === 5, 'grantBlock 是累加');
   setBlock(2);
   ok(G.block === 2, 'setBlock 是设值不是累加（回合开始的重置靠它）');
+}
+
+// ── 14. 三个模式：初始能力 2 / 1 / 0 ─────────────────────
+// 难度靠初始能力数量递进，而不是三个模式共用一个保底。
+{
+  ok(MODES.length === 3, `模式只有三个（${MODES.length}）`);
+
+  startRun('study');
+  ok(G.mode === 'study' && G.powers.length === 2
+    && G.powers.includes('librarycard') && G.powers.includes('syllabus'),
+    `学习：借书证 + 课表（${G.powers.join(' / ')}）`);
+
+  startRun('review');
+  ok(G.mode === 'review' && G.powers.length === 1 && G.powers[0] === 'librarycard',
+    `复习：只带借书证（${G.powers.join(' / ')}）`);
+
+  startRun('test');
+  ok(G.mode === 'test' && G.powers.length === 0, '测试：没有初始能力');
 }
 
 // ── 14. 资源写入只有一条通道 ───────────────────────────────

@@ -9,7 +9,7 @@ import type { GameState, LogLine } from '../model/types';
  * 类型形状放在 model/types.ts，这里只负责「实例 + 读它的小函数」。
  */
 export const G: GameState = {
-  screen: 'title', boon: null, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck: [], powers: [],
+  screen: 'title', mode: null, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck: [], powers: [],
   hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0, ap: BAL.baseAp, apMax: BAL.baseAp,
   turn: 1, enemy: null, draw: [], discard: [], hand: [], returned: null,
   map: [], pos: null, node: null, seen: {},

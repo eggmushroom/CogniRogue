@@ -2,7 +2,7 @@ import { g, roundRect, VH, VW, wrapText } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, topicColor, withAlpha } from '../gfx/theme';
 import { action, button, drawCard, drawPowerEmblem, squeeze, text } from '../gfx/ui';
 import { consumeWheel, hover, onClick } from '../input';
-import { BAL, BOONS, EFFS, POWER_BY_ID, effSummary, resolveEff } from '../core/model';
+import { BAL, EFFS, MODES, POWER_BY_ID, effSummary, resolveEff } from '../core/model';
 import { clamp, G } from '../core/infra';
 import { countQuestions, sourceBank } from '../core/library';
 import {
@@ -968,51 +968,54 @@ function drawBoon() {
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
   box(x, y, w, h, withAlpha(C.gold, 0.42));
-  heading('这次带什么上路', x + 48, y + 66,
-    '挑一张带走，整局生效。它们不是难度档位 —— 和路上捡到的增益一样，是构筑的一部分。');
+  heading('这次从哪个模式开始', x + 48, y + 66,
+    '学习 2 张初始能力 · 复习 1 张 · 测试 0 张；难度逐级递加。');
 
   const gap = 24;
   const cw = (w - 96 - gap * 2) / 3;
   const ch = 264;
   const cy = y + 132;
-  BOONS.forEach((id, i) => {
-    const p = POWER_BY_ID[id];
-    if (!p) return;
+  MODES.forEach((m, i) => {
     const cx = x + 48 + i * (cw + gap);
     const hv = hover(cx, cy, cw, ch);
     roundRect(cx, cy, cw, ch, 14);
-    g.fillStyle = hv ? withAlpha(p.color, 0.13) : 'rgba(255,255,255,.035)';
+    g.fillStyle = hv ? withAlpha(m.color, 0.13) : 'rgba(255,255,255,.035)';
     g.fill();
-    g.strokeStyle = withAlpha(p.color, hv ? 0.9 : 0.42);
+    g.strokeStyle = withAlpha(m.color, hv ? 0.9 : 0.42);
     g.lineWidth = hv ? 2 : 1.3;
     g.stroke();
 
-    // 顶部一道能力色：三张并排时，颜色比标题更先被看见
+    // 顶部一道模式色：三张并排时，颜色比标题更先被看见
     roundRect(cx + 1, cy + 1, cw - 2, 4, 3);
-    g.fillStyle = p.color;
+    g.fillStyle = m.color;
     g.fill();
 
-    // 同一个字形在掉落、牌组、结算页都用过 —— 这里不换一种画法
-    text(p.icon, cx + 44, cy + 58, {
-      size: 30, weight: 800, family: FONT_TITLE, color: p.color, align: 'center',
+    text(m.icon, cx + 44, cy + 58, {
+      size: 30, weight: 800, family: FONT_TITLE, color: m.color, align: 'center',
     });
-    text(p.name, cx + 78, cy + 58, { size: 26, weight: 800, family: FONT_TITLE, color: p.color });
+    text(m.name, cx + 78, cy + 58, { size: 26, weight: 800, family: FONT_TITLE, color: m.color });
 
-    // 一句话规则：这张卡在战斗里到底做什么。和掉落面板用的是同一句，不另写一套。
-    g.font = font(14, 600, FONT_UI);
-    g.fillStyle = C.ink;
-    wrapText(p.card, cw - 48).slice(0, 2)
-      .forEach((ln, j) => g.fillText(ln, cx + 24, cy + 104 + j * 22));
-
-    g.font = font(12, 400, FONT_UI);
+    g.font = font(13, 400, FONT_UI);
     g.fillStyle = C.ink2;
-    wrapText(p.desc, cw - 48).slice(0, 4)
-      .forEach((ln, j) => g.fillText(ln, cx + 24, cy + 152 + j * 19));
+    wrapText(m.desc, cw - 48).slice(0, 2)
+      .forEach((ln, j) => g.fillText(ln, cx + 24, cy + 98 + j * 19));
 
-    text(hv ? '带这张上路 →' : '点击选择', cx + cw / 2, cy + ch - 24, {
-      size: 13, align: 'center', color: hv ? p.color : C.faint, weight: 700,
+    text('初始能力', cx + 24, cy + 150, { size: 12, color: C.faint, weight: 700 });
+    if (m.powers.length) {
+      m.powers.forEach((id, j) => {
+        const p = POWER_BY_ID[id];
+        text(`· ${p?.name ?? id}`, cx + 24, cy + 176 + j * 22, {
+          size: 14, color: p?.color ?? C.ink, weight: 600,
+        });
+      });
+    } else {
+      text('无 —— 全靠路上捡', cx + 24, cy + 176, { size: 14, color: C.faint });
+    }
+
+    text(hv ? '从这里开始 →' : '点击选择', cx + cw / 2, cy + ch - 24, {
+      size: 13, align: 'center', color: hv ? m.color : C.faint, weight: 700,
     });
-    onClick(cx, cy, cw, ch, () => startRun(id), `boon:${id}`);
+    onClick(cx, cy, cw, ch, () => startRun(m.id), `mode:${m.id}`);
   });
 
   text('开局选一次，整局不变；想换就重开一局。Esc 返回。',
