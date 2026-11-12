@@ -56,7 +56,7 @@ export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []
 
   const st = stageOf(1);
   log(`── 你走进记忆的档案馆${modeDef ? ` · ${modeDef.name}模式` : ''} ──`, 'turn');
-  log(`第一幕 · ${st.name} —— 本章「${G.stageTopic}」，题目从这一章的题库里抽`, 'turn');
+  log(`第一幕 · ${st.name}：本章「${G.stageTopic}」，题目从这一章的题库里抽`, 'turn');
   log(`全塔 ${FLOOR_MAX} 层，每 ${STAGE_ROWS} 层一幕，幕末有 Boss`, 'turn');
 }
 

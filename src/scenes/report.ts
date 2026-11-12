@@ -21,7 +21,7 @@ export function drawReport(d: ReportData) {
   text(d.win ? '你走到了档案馆的尽头' : `这次倒在了第 ${d.floor} 层 · ${st.name}`, x + 48, y + 68, {
     size: 34, weight: 700, family: FONT_TITLE, color: accent,
   });
-  text('知识等级不会掉。下一局开局前挑一张能力卡带走；起手固定 10 张。', x + 48, y + 106, {
+  text('知识等级不会掉。答过的题会按稳固度排到下一次复习；起手固定 10 张。', x + 48, y + 106, {
     size: 14, color: C.dim,
   });
 

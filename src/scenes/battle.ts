@@ -917,7 +917,7 @@ function drawHand(t: number, dt: number) {
   prevFx = handFx.slice();
 
   if (!G.hand.length && G.pending === null) {
-    text('手里没牌了 —— 结束回合', HAND.cx, HAND.cy - 40, { size: 20, align: 'center', color: C.dim });
+    text('手里没牌了：结束回合', HAND.cx, HAND.cy - 40, { size: 20, align: 'center', color: C.dim });
   }
 }
 

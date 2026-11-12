@@ -566,7 +566,8 @@ function devJump() {
       qid: `q_demo_3_${i}`, topic: G.stageTopic, stageTopic: G.stageTopic, stage: G.stage,
       right: i < 12, choice: 0, answer: 0, stem: `演示题 ${i + 1}`,
     }));
-    G.deck.push('pow:lamp');
+    // 牌组里加一张 S 级卡：起手只给 C/B，所以这张一定是新卡种
+    G.deck.push(PACK.cards.find((c) => c.cost === 3)!.id);
     endRun(true);
   }
 }

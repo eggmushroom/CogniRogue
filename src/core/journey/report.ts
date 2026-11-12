@@ -30,15 +30,15 @@ export function endRun(win: boolean) {
   const acc = asks ? G.runOk / asks : 0;
   let verdict: string;
   if (!asks) {
-    verdict = '这一局你一道题都没答。战斗不是靠躲过去的 —— 下一局先点开一张牌。';
+    verdict = '这一局你一道题都没答。战斗不是靠躲过去的：下一局先点开一张牌。';
   } else if (acc >= 0.8) {
     verdict = `你答对了 ${Math.round(acc * 100)}%。`
-      + '后半场你不是在赌，是在用记住的东西打仗 —— 答对退回的行动力和多抽的那张牌，都是这么来的。';
+      + '后半场你不是在赌，是在用记住的东西打仗：答对才结算、才攒免伤次数；借书证给退款，双面镜给抽牌。';
   } else if (acc >= 0.6) {
     verdict = `你答对了 ${Math.round(acc * 100)}%。这个区间是"半懂"：牌打得出去，但每一手都要重新想一次。`
       + '把错得最多的那一章连着答两轮，比换一副更强的牌有用。';
   } else {
-    verdict = `你答对了 ${Math.round(acc * 100)}%。牌面够强，题没记住 —— 这副牌现在是借来的。`
+    verdict = `你答对了 ${Math.round(acc * 100)}%。牌面够强，题没记住：这副牌现在是借来的。`
       + '先把牌组压薄，让同一张卡多被问几次。';
   }
 

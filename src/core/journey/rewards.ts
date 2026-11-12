@@ -67,7 +67,7 @@ export function grantPower(): PowerId | null {
   G.powers.push(p.id);
   // 拾取即结算的那一类不等下一场，在这里就落到这一局上。
   const instant = p.scope === 'instant' ? applyInstant(p.id) : '';
-  log(`精英掉落「${p.name}」—— ${instant || p.card}（整局生效）`, 'hi');
+  log(`精英掉落「${p.name}」：${instant || p.card}（整局生效）`, 'hi');
   emit({ t: 'power', id: p.id });
   return p.id;
 }

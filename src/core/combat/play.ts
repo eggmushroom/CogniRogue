@@ -162,7 +162,7 @@ export function askCard(idx: number) {
   const q = takeQuestion();
   if (!q) {
     // 空题库：给一个能查的失败原因，不静默吞掉点击。
-    log('这一章的题库是空的 —— 检查题库文件，或者先用基础牌撑过去', 'bad');
+    log('这一章的题库是空的：检查题库文件，或者先用基础牌撑过去', 'bad');
     emit({ t: 'fizzle', eff: card.eff });
     return;
   }
@@ -435,7 +435,7 @@ export function answer(choice: number) {
     G.runBad += 1;
     m.lapses += 1;
     m.bad += 1;
-    apNote = join(apNote, '这一手不花行动力 —— 代价是这一场少了一道题。');
+    apNote = join(apNote, '这一手不花行动力：代价是这一场少了一道题。');
 
     const missNote = onPlayerMiss();
     if (missNote) apNote = join(apNote, missNote);
@@ -464,10 +464,10 @@ export function answer(choice: number) {
     if (back > 0) {
       gainAp(back);
       apNote = join(apNote, back > spent
-        ? `答对了，退回 ${back} 点 —— 这一手净赚 ${back - spent} 点。`
+        ? `答对了，退回 ${back} 点：这一手净赚 ${back - spent} 点。`
         : back >= spent
           ? '答对了，这一手不花行动力。'
-          : `答对了，退回 ${back} 点 —— 这张牌净花 ${spent - back} 点。`);
+          : `答对了，退回 ${back} 点：这张牌净花 ${spent - back} 点。`);
     }
   } else {
     G.markerRefund = 0;
