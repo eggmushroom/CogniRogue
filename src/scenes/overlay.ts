@@ -2,7 +2,8 @@ import { g, roundRect, VH, VW, wrapText } from '../gfx/canvas';
 import { C, font, FONT_TITLE, FONT_UI, topicColor, withAlpha } from '../gfx/theme';
 import { action, button, drawCard, drawPowerEmblem, squeeze, text } from '../gfx/ui';
 import { consumeWheel, hover, onClick } from '../input';
-import { BAL, EFFS, MODES, POWER_BY_ID, effSummary, resolveEff } from '../core/model';
+import { easeOut } from '../gfx/geom';
+import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf, resolveEff } from '../core/model';
 import { clamp, G } from '../core/infra';
 import { countQuestions, sourceBank } from '../core/library';
 import {
@@ -72,7 +73,7 @@ function box(
   g.fillStyle = chv ? 'rgba(255,255,255,.14)' : 'rgba(255,255,255,.05)';
   g.fill();
   text('×', cx, cy + 1, { size: 22, align: 'center', color: chv ? C.ink : C.dim });
-  onClick(cx - 16, cy - 16, 32, 32, onClose);
+  onClick(cx - 16, cy - 16, 32, 32, onClose, '×');
 }
 
 function heading(s: string, x: number, y: number, sub?: string) {
@@ -235,10 +236,12 @@ function drawQuestion(idx: number, q: Question, view: QView) {
 
   const st = liveStatOf(ent);
   const eff = EFFS[card.eff] ?? EFFS.strike;
+  // 卡面和实际结算都吃 applyCardBonus；答题面板少了这一步，压书石/校规在场时会少 1。
+  const out = applyCardBonus(resolveEff(card.eff, st.atk, st.blk, 1, card.mods));
   const sumW = 300;
   const sx = x + w - 84 - sumW;
   text('答对就拿到的效果', sx, y + 50, { size: 12, color: C.dim, align: 'left' });
-  text(effSummary(card.eff, st.atk, st.blk, card.mods, xc), sx, y + 74, {
+  text(effSummaryOf(out, card.eff, xc), sx, y + 74, {
     size: 13, color: eff.color, weight: 700, align: 'left',
   });
   // 题干基线在 y+132，联动行只能落在 y+100，再往下会撞上题干。
@@ -317,7 +320,7 @@ function drawFeedback(t: number, quiz: QuizState) {
   };
 
   const u = clamp(quiz.reveal / 0.26, 0, 1);
-  const ease = 1 - Math.pow(1 - u, 3);
+  const ease = easeOut(u);
   dimQuestion(clamp(0.72 + quiz.reveal * 1.4, 0.72, 1));
 
   // 整块面板都是"继续"；× 在 box 里后注册，演出未完时先不注册。
@@ -633,8 +636,8 @@ function drawRest(t: number) {
 
   const opts: Array<{ t: string; s: string; fn: () => void; col: string }> = [
     { t: '休息', s: `回复 ${Math.round(G.maxHp * BAL.restPct)} 点生命`, col: C.green, fn: restHeal },
-    { t: '精炼一张卡', s: '挑中的那一张：攻/挡底数 +3（同名的其余几张不变）', col: C.gold, fn: () => openCardPick('up') },
-    { t: '遗忘', s: '永久移除一张卡（牌组只剩 4 张时不能再删）', col: C.purple, fn: () => openCardPick('rm') },
+    { t: '精炼一张卡', s: '挑中的那一张：攻/挡底数 +3（同名的其余几张不变）', col: C.gold, fn: () => openCardPick('up', { k: 'rest' }) },
+    { t: '遗忘', s: '永久移除一张卡（牌组只剩 4 张时不能再删）', col: C.purple, fn: () => openCardPick('rm', { k: 'rest' }) },
   ];
 
   const bw = 288;

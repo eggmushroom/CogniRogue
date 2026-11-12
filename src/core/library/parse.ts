@@ -1,4 +1,4 @@
-import type { QLevel, Question, QuestionBank } from '../model/types';
+import type { Question, QuestionBank } from '../model/types';
 
 /**
  * 题库 DSL：纯文本。
@@ -9,7 +9,7 @@ import type { QLevel, Question, QuestionBank } from '../model/types';
  *   A) 选项 / B) 选项
  *   = B                      答案字母
  *   + 解析                   可选
- *   ? 同一池的另一道题        `? 理解:` 前缀存成 `level`
+ *   ? 同一池的另一道题        `? 理解:` 这类前缀会被剥掉，只留题干
  *
  * 主题不限，格式要过：题干非空、2–4 个选项、答案在范围内。
  * 违规题进 `issues`，由 `loadQuestionBank` 整体拒绝。
@@ -17,13 +17,6 @@ import type { QLevel, Question, QuestionBank } from '../model/types';
  * `@ 卡名` / `% 攻 挡 效果` 是旧包遗留行，解析时忽略。
  * 卡面在 `cards/catalog.ts`，导入题库换不掉卡池。
  */
-
-/** 写题人用的中文标签 → 认知层级。没写标签的旧题保持 undefined。 */
-const Q_LEVEL: Record<string, QLevel> = {
-  识记: 'recall', 回忆: 'recall',
-  理解: 'understand', 应用: 'understand',
-  迁移: 'transfer', 挑战: 'transfer', 进阶: 'transfer', 变式: 'transfer',
-};
 
 export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 4;
@@ -85,7 +78,7 @@ export function parseQuestionBank(text: string): QuestionBank {
   const flushQ = () => {
     if (q) {
       const issue = diagnose(q, qLine);
-      if (issue) bank.issues!.push(issue);
+      if (issue) bank.issues.push(issue);
       else push(bank, topic, q);
     }
     q = null;
@@ -112,7 +105,6 @@ export function parseQuestionBank(text: string): QuestionBank {
       const s = line.startsWith('? ') ? line.slice(2).trim() : line.slice(4).trim();
       const m = s.match(/^(识记|理解|迁移|回忆|应用|挑战|进阶|变式)\s*[:：]\s*(.+)$/);
       q = newQ(m ? m[2].trim() : s);
-      if (m) q.level = Q_LEVEL[m[1]];
       continue;
     }
 
@@ -127,7 +119,7 @@ export function parseQuestionBank(text: string): QuestionBank {
     const am = line.match(/^=\s*([A-Za-z])/);
     if (am) {
       if (q) q.answer = am[1].toUpperCase().charCodeAt(0) - 65;
-      else bank.issues!.push(`第 ${lineNo} 行：= 答案字母前面没有题目`);
+      else bank.issues.push(`第 ${lineNo} 行：= 答案字母前面没有题目`);
       continue;
     }
 
@@ -166,10 +158,10 @@ export function parseAnyQuestionBank(text: string): QuestionBank {
       const q: Question = {
         qid: '', topic,
         q: x.q ?? '', options: x.options ?? [], answer: x.answer ?? -1,
-        explain: x.explain ?? '', level: x.level,
+        explain: x.explain ?? '',
       };
       const issue = diagnose(q, 0);
-      if (issue) bank.issues!.push(`${where}[${i}]：${issue.slice(issue.indexOf('：') + 1)}`);
+      if (issue) bank.issues.push(`${where}[${i}]：${issue.slice(issue.indexOf('：') + 1)}`);
       else {
         q.qid = questionId(topic, q.q);
         if (!out.some((y) => y.qid === q.qid)) out.push(q);

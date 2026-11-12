@@ -1,11 +1,11 @@
 import { BAL } from '../model/data';
-import type { CardDef, EventDef } from '../model/types';
+import type { CardDef, CardPickFrom, EventDef, Panel } from '../model/types';
 import { G, log } from '../infra/state';
 import { healHp, loseHp } from '../infra/write';
 import { emit } from '../infra/events';
 import { pick } from '../infra/util';
 import { PACK } from '../cards/pack';
-import { baseIdOf, defOf, isUpgraded, upgradedId } from '../cards/registry';
+import { baseIdOf, defOf, isUpgraded, upGain, upgradedId } from '../cards/registry';
 import { onceThisStage, rulesOf } from '../cards/powers';
 import { finishNode } from './nodes';
 
@@ -51,14 +51,14 @@ export function restHeal() {
   finishNode();
 }
 
-/** 打开精炼 / 遗忘的选牌面板。删牌要求牌组 > 4，精炼按张 */
-export function openCardPick(mode: 'up' | 'rm'): boolean {
+/** 打开精炼 / 遗忘的选牌面板。删牌要求牌组 > 4，精炼按张。 */
+export function openCardPick(mode: 'up' | 'rm', from?: CardPickFrom): boolean {
   if (mode === 'rm' && G.deck.length <= 4) { log('牌组太薄，不能再删了', ''); return false; }
   if (mode === 'up' && !G.deck.some((id) => !isUpgraded(id))) {
     log('没有能精炼的牌', '');
     return false;
   }
-  G.panel = { k: 'cardpick', mode };
+  G.panel = { k: 'cardpick', mode, from };
   return true;
 }
 
@@ -68,7 +68,7 @@ export function upgradeCard(i: number) {
   if (isUpgraded(id)) return;
   // 换 id 就是精炼：base:strike → base:strike+
   G.deck[i] = upgradedId(id);
-  log(`「${defOf(id).name}」被精炼：攻/挡底数 +3（按效果折算）`, 'hi');
+  log(`「${defOf(id).name}」被精炼：攻/挡底数 +${upGain()}（按效果折算）`, 'hi');
   // 代价在选完牌时才收
   const paid = settlePendingCost();
   if (paid) log(paid, 'bad');
@@ -130,8 +130,9 @@ export const EVENTS: EventDef[] = [
         t: '把错得最多的那几页撕掉', sub: '永久移除一张你选择的牌，回复 10 点生命',
         run: () => {
           if (!openCardPick('rm')) return null;
-          const got = healBy(10);
-          return `你撕掉一页，回了 ${got} 点生命；选一张要移除的牌。`;
+          // 回血要等真的删掉一张后才结算；先记在 pendingHeal 上，取消时清掉。
+          G.pendingHeal = 10;
+          return '你撕掉一页；选一张要移除的牌（选完才回 10 点生命）。';
         },
       },
       { t: '合上，放回原处', sub: '什么也不发生', run: () => '你把它放了回去。' },
@@ -185,7 +186,12 @@ export const EVENTS: EventDef[] = [
 
 export function chooseEventOption(i: number) {
   if (G.panel.k !== 'event') return;
-  const msg = G.panel.ev.opts[i]?.run();
+  const ev = G.panel.ev;
+  const msg = ev.opts[i]?.run();
+  // 选项可能把面板交给 cardpick；记住来源，取消时才能回到事件本身而不是直接关掉。
+  // `run()` 可能改写 G.panel，TS 仍按调用前的 narrowing 看它，所以这里重新按 Panel 读一次。
+  const after = G.panel as Panel;
+  if (after.k === 'cardpick') after.from = { k: 'event', ev };
   if (msg) log(msg, 'hi');
   // null 表示选项没被消费，面板留在原地
   if (msg === null) return;
@@ -193,11 +199,20 @@ export function chooseEventOption(i: number) {
   if (G.panel.k === 'event') finishNode();
 }
 
-/** 选牌收尾时结算待付款项。取消走 `cancelPanel`，那里直接清零 */
+/** 选牌收尾时结算待付的代价与收益。取消走 `cancelPanel`，那里直接清零。 */
 export function settlePendingCost(): string {
-  const n = G.pendingCost;
-  if (n <= 0) return '';
+  const cost = G.pendingCost;
+  const heal = G.pendingHeal;
   G.pendingCost = 0;
-  const lost = hurtBy(n);
-  return `这一页抄完，你付出 ${lost} 点生命。`;
+  G.pendingHeal = 0;
+  let note = '';
+  if (cost > 0) {
+    const lost = hurtBy(cost);
+    note += `这一页抄完，你付出 ${lost} 点生命。`;
+  }
+  if (heal > 0) {
+    const got = healBy(heal);
+    note += `你撕掉一页，回了 ${got} 点生命。`;
+  }
+  return note;
 }

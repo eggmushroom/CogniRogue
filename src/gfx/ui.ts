@@ -1,6 +1,6 @@
 import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
-import { C, font, FONT_UI, FONT_TITLE, FONT_NUM, withAlpha } from './theme';
+import { C, font, FONT_UI, FONT_NUM, withAlpha } from './theme';
 import { EFFS, effFace, resolveEff } from '../core/model';
 import { cardGrade, cardKind, cardType, costGlyph, GRADE_META, isXCost, CARD_TYPE_META } from '../core/cards';
 import { applyCardBonus } from '../core/cards/powers';
@@ -259,24 +259,16 @@ function drawCostMark(
   g.restore();
 }
 
-/** 手牌、奖励、牌组共用一种卡面；颜色按三类，不泄露主题。 */
-export function drawCard(
-  x: number, y: number, w: number, h: number,
-  card: CardDef, atk: number, blk: number, opts: CardOpts = {},
+/** 卡面绘制拆出来的各段；每段自己 save/restore，不依赖上一段留下的画布状态。 */
+
+type CardKindView = ReturnType<typeof cardKind>;
+type FaceView = ReturnType<typeof effFace>;
+type EffView = (typeof EFFS)[keyof typeof EFFS];
+
+function drawCardFrame(
+  x: number, y: number, w: number, h: number, r: number,
+  tc: string, kind: CardKindView, opts: CardOpts,
 ) {
-  // 身份只算一次，下面所有分支读 kind。
-  const kind = cardKind(card);
-
-
-  const typeMeta = CARD_TYPE_META[cardType(card)];
-  const tc = kind === 'junk' ? C.faint : typeMeta.color;
-  const eff = EFFS[card.eff] ?? EFFS.strike;
-  // 卡面数值必须走 statOf / resolveEff，和结算同一函数，不能手写数字。
-  const out = applyCardBonus(resolveEff(card.eff, atk, blk, 1, card.mods));
-  const face = effFace(out);
-  const per = face.per;
-  const r = 12;
-
   g.save();
   // 投影
   g.save();
@@ -301,7 +293,10 @@ export function drawCard(
     : withAlpha(tc, opts.hovered ? 0.95 : 0.5);
   g.lineWidth = opts.up ? 2.2 : 1.5;
   g.stroke();
+  g.restore();
+}
 
+function drawCardWash(x: number, y: number, w: number, h: number, r: number, tc: string) {
   g.save();
   roundRect(x, y, w, h, r);
   g.clip();
@@ -318,10 +313,9 @@ export function drawCard(
   g.fillStyle = bar1;
   g.fillRect(x, y, w, 4);
   g.restore();
+}
 
-  const pad = w * 0.09;
-  const s = w / 220;
-
+function drawCardUnder(x: number, y: number, w: number, h: number, r: number, tc: string, kind: CardKindView) {
   g.save();
   roundRect(x, y, w, h, r);
   g.clip();
@@ -332,12 +326,17 @@ export function drawCard(
   g.fillStyle = low;
   g.fillRect(x, y + h - lowH, w, lowH);
   g.restore();
+}
 
+function drawCardTexture(
+  x: number, y: number, w: number, h: number, r: number,
+  cardId: string, tc: string, s: number,
+) {
   g.save();
   roundRect(x, y, w, h, r);
   g.clip();
   let hsh = 0;
-  for (let i = 0; i < card.id.length; i++) hsh = (hsh * 31 + card.id.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < cardId.length; i++) hsh = (hsh * 31 + cardId.charCodeAt(i)) >>> 0;
   const cx = x + w * 0.5;
   const cy = y + h * 0.7;
   const rays = 14 + (hsh % 9);
@@ -360,17 +359,19 @@ export function drawCard(
     g.fillRect(x, yy, w, 1);
   }
   g.restore();
+}
 
+function drawCardHeader(
+  x: number, y: number, w: number, s: number, pad: number,
+  kind: CardKindView, typeMeta: { name: string; color: string }, eff: EffView,
+  card: CardDef, opts: CardOpts,
+) {
   // 费用：左上角，与右上角类别徽章同一条中心线。
   if (kind !== 'junk') {
     drawCostMark(x + pad, y + 30 * s, s, costGlyph(card), {
       x: isXCost(card), afford: opts.afford !== false,
     });
   }
-
-  const xc = isXCost(card);
-  const lh = 26 * s;
-  const eh = 24 * s;
 
   // 类别徽章：右上角，知识卡写「类别·效果」，基础牌只写类别。
   const badgeName = kind === 'basic' ? typeMeta.name : `${typeMeta.name}·${eff.name}`;
@@ -415,65 +416,60 @@ export function drawCard(
       size: Math.round(11 * s), align: 'center', color: gm.color, weight: 800,
     });
   }
+}
 
-  // 牌名字体先设再量行，顺序反了会沿用上次的字号。
-  g.font = font(Math.round(21 * s), 700, FONT_UI);
-  const nameLines = kind === 'junk' ? ['杂念'] : wrapText(card.name, w - pad * 2).slice(0, 2);
-  const by0 = y + 76 * s;
+function drawCardFooter(x: number, y: number, w: number, h: number, pad: number, s: number, tc: string) {
+  const fy = y + h - 15 * s;
+  const fg = g.createLinearGradient(x + pad, 0, x + w - pad, 0);
+  fg.addColorStop(0, withAlpha(tc, 0));
+  fg.addColorStop(0.5, withAlpha(tc, 0.2));
+  fg.addColorStop(1, withAlpha(tc, 0));
+  g.fillStyle = fg;
+  g.fillRect(x + pad, fy, w - pad * 2, Math.max(1, 0.8 * s));
+}
 
-  // 水印先于文字绘制；大小和位置按效果行剩余空间算。
-  let ruleLines: string[] = [];
-  if (opts.rule && kind !== 'junk') {
-    // 量规则行要换小字号，但量完必须还原：联动卡带着 opts.rule 进来，
-    // 不还原的话牌名、名字下短线和精炼 + 号都按 14px 排版，跟其他卡不是一套版式。
-    g.save();
-    g.font = font(Math.round(14 * s), 400, FONT_UI);
-    ruleLines = wrapText(opts.rule, w - pad * 2).slice(0, 2);
-    g.restore();
-  }
-  const rows = (per > 0 ? 1 : 0)
-    + (out.blk > 0 || out.pierce || out.healRatio > 0 || out.draw > 0 ? 1 : 0)
-    + (out.selfHp > 0 ? 1 : 0)
-    + (xc ? 0.75 : 0)
-    + ruleLines.length;
-  const textBot = by0 + nameLines.length * lh + 9 * s + rows * eh;
-  const bottomY = y + h - 15 * s;
-  const room = Math.max(0, bottomY - textBot);
-  const artS = Math.min(h * 0.42, Math.max(h * 0.22, room * 1.05));
-  drawArtIcon(
-    kind === 'junk' ? 'junk' : eff.key,
-    x + w * 0.5, textBot + room * 0.5, artS,
-    kind === 'junk' ? C.faint : tc,
-    { alpha: kind === 'junk' ? 0.2 : 0.1 },
-  );
-
-  const bodyCol = kind === 'junk' ? C.faint : C.ink2;
-
-  g.fillStyle = kind === 'junk' ? C.dim : C.ink;
+function drawCardNote(x: number, y: number, w: number, h: number, r: number, pad: number, s: number, note: string) {
+  g.save();
+  roundRect(x, y, w, h, r);
+  g.clip();
+  const nh = 58 * s;
+  const ng = g.createLinearGradient(0, y + h - nh, 0, y + h);
+  ng.addColorStop(0, 'rgba(7,9,14,0)');
+  ng.addColorStop(0.55, 'rgba(7,9,14,.6)');
+  ng.addColorStop(1, 'rgba(7,9,14,.92)');
+  g.fillStyle = ng;
+  g.fillRect(x, y + h - nh, w, nh);
+  g.font = font(Math.round(12.5 * s), 600, FONT_UI);
+  // 注脚和牌名共用左栏；长句允许两行，避免截掉规则。
   g.textAlign = 'left';
-  nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
+  g.fillStyle = C.ink2;
+  const noteLines = wrapText(note, w - pad * 2).slice(0, 2);
+  noteLines.forEach((ln, i) => {
+    g.fillText(squeeze(ln, w - pad * 2), x + pad, y + h - (20 + (noteLines.length - 1 - i) * 15) * s);
+  });
+  g.restore();
+}
 
-  // 精炼标记放在名字后，右上角留给类别徽章。
-  if (opts.up) {
-    const nw = g.measureText(nameLines[0] ?? '').width;
-    text('+', x + pad + nw + 1.5 * s, by0, {
-      size: Math.round(21 * s), weight: 800, color: C.gold,
-    });
-  }
+interface CardEffectsView {
+  x: number;
+  w: number;
+  s: number;
+  pad: number;
+  kind: CardKindView;
+  face: FaceView;
+  per: number;
+  xc: boolean;
+  nameLines: string[];
+  by0: number;
+  lh: number;
+  eh: number;
+  bodyCol: string;
+  ruleLines: string[];
+  eff: EffView;
+}
 
-  // 名字下的短线是分隔符，不是装饰框。
-  if (kind !== 'junk') {
-    const nw = Math.max(40 * s, Math.min(w - pad * 2, g.measureText(nameLines[0] ?? '').width));
-    const uy = by0 + (nameLines.length - 1) * lh + 9.5 * s;
-    const ug = g.createLinearGradient(x + pad, 0, x + pad + nw, 0);
-    ug.addColorStop(0, 'rgba(255,255,255,.32)');
-    ug.addColorStop(0.6, 'rgba(255,255,255,.1)');
-    ug.addColorStop(1, 'rgba(255,255,255,0)');
-    g.fillStyle = ug;
-    g.fillRect(x + pad, uy, nw, Math.max(1.6, 2 * s));
-  }
-
-  // 效果行：动词小、数字大、单位小。
+function drawCardEffects(c: CardEffectsView) {
+  const { x, s, pad, kind, face, per, xc, nameLines, by0, lh, eh, bodyCol, ruleLines, eff } = c;
   const ey = by0 + nameLines.length * lh + 9 * s;
   const effLine = (pre: string, num: number, suf: string, yy: number, col: string) => {
     const ns = String(num);
@@ -551,40 +547,109 @@ export function drawCard(
       ly += eh;
     }
   }
+}
 
-  // 卡面收底横线，给效果行下方留出边界。
-  if (kind !== 'junk') {
-    const fy = y + h - 15 * s;
-    const fg = g.createLinearGradient(x + pad, 0, x + w - pad, 0);
-    fg.addColorStop(0, withAlpha(tc, 0));
-    fg.addColorStop(0.5, withAlpha(tc, 0.2));
-    fg.addColorStop(1, withAlpha(tc, 0));
-    g.fillStyle = fg;
-    g.fillRect(x + pad, fy, w - pad * 2, Math.max(1, 0.8 * s));
-  }
+/** 手牌、奖励、牌组共用一种卡面；颜色按三类，不泄露主题。 */
+export function drawCard(
+  x: number, y: number, w: number, h: number,
+  card: CardDef, atk: number, blk: number, opts: CardOpts = {},
+) {
+  // 身份只算一次，下面所有分支读 kind。
+  const kind = cardKind(card);
 
-  // 说明画在卡内底部，用向下压暗的渐变托底。
-  if (opts.note) {
+
+  const typeMeta = CARD_TYPE_META[cardType(card)];
+  const tc = kind === 'junk' ? C.faint : typeMeta.color;
+  const eff = EFFS[card.eff] ?? EFFS.strike;
+  // 卡面数值必须走 statOf / resolveEff，和结算同一函数，不能手写数字。
+  const out = applyCardBonus(resolveEff(card.eff, atk, blk, 1, card.mods));
+  const face = effFace(out);
+  const per = face.per;
+  const r = 12;
+
+  g.save();
+  drawCardFrame(x, y, w, h, r, tc, kind, opts);
+  drawCardWash(x, y, w, h, r, tc);
+
+  const pad = w * 0.09;
+  const s = w / 220;
+
+  drawCardUnder(x, y, w, h, r, tc, kind);
+  drawCardTexture(x, y, w, h, r, card.id, tc, s);
+
+  const xc = isXCost(card);
+  const lh = 26 * s;
+  const eh = 24 * s;
+
+  drawCardHeader(x, y, w, s, pad, kind, typeMeta, eff, card, opts);
+
+  g.font = font(Math.round(21 * s), 700, FONT_UI);
+  const nameLines = kind === 'junk' ? ['杂念'] : wrapText(card.name, w - pad * 2).slice(0, 2);
+  const by0 = y + 76 * s;
+
+  // 水印先于文字绘制；大小和位置按效果行剩余空间算。
+  let ruleLines: string[] = [];
+  if (opts.rule && kind !== 'junk') {
+    // 量规则行要换小字号，但量完必须还原：联动卡带着 opts.rule 进来，
+    // 不还原的话牌名、名字下短线和精炼 + 号都按 14px 排版，跟其他卡不是一套版式。
     g.save();
-    roundRect(x, y, w, h, r);
-    g.clip();
-    const nh = 58 * s;
-    const ng = g.createLinearGradient(0, y + h - nh, 0, y + h);
-    ng.addColorStop(0, 'rgba(7,9,14,0)');
-    ng.addColorStop(0.55, 'rgba(7,9,14,.6)');
-    ng.addColorStop(1, 'rgba(7,9,14,.92)');
-    g.fillStyle = ng;
-    g.fillRect(x, y + h - nh, w, nh);
-    g.font = font(Math.round(12.5 * s), 600, FONT_UI);
-    // 注脚和牌名共用左栏；长句允许两行，避免截掉规则。
-    g.textAlign = 'left';
-    g.fillStyle = C.ink2;
-    const noteLines = wrapText(opts.note, w - pad * 2).slice(0, 2);
-    noteLines.forEach((ln, i) => {
-      g.fillText(squeeze(ln, w - pad * 2), x + pad, y + h - (20 + (noteLines.length - 1 - i) * 15) * s);
-    });
+    g.font = font(Math.round(14 * s), 400, FONT_UI);
+    ruleLines = wrapText(opts.rule, w - pad * 2).slice(0, 2);
     g.restore();
   }
+  const rows = (per > 0 ? 1 : 0)
+    + (out.blk > 0 || out.pierce || out.healRatio > 0 || out.draw > 0 ? 1 : 0)
+    + (out.selfHp > 0 ? 1 : 0)
+    + (xc ? 0.75 : 0)
+    + ruleLines.length;
+  const textBot = by0 + nameLines.length * lh + 9 * s + rows * eh;
+  const bottomY = y + h - 15 * s;
+  const room = Math.max(0, bottomY - textBot);
+  const artS = Math.min(h * 0.42, Math.max(h * 0.22, room * 1.05));
+  drawArtIcon(
+    kind === 'junk' ? 'junk' : eff.key,
+    x + w * 0.5, textBot + room * 0.5, artS,
+    kind === 'junk' ? C.faint : tc,
+    { alpha: kind === 'junk' ? 0.2 : 0.1 },
+  );
+
+  const bodyCol = kind === 'junk' ? C.faint : C.ink2;
+
+  g.fillStyle = kind === 'junk' ? C.dim : C.ink;
+  g.textAlign = 'left';
+  nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
+
+  // 精炼标记放在名字后，右上角留给类别徽章。
+  if (opts.up) {
+    const nw = g.measureText(nameLines[0] ?? '').width;
+    text('+', x + pad + nw + 1.5 * s, by0, {
+      size: Math.round(21 * s), weight: 800, color: C.gold,
+    });
+  }
+
+  // 名字下的短线是分隔符，不是装饰框。
+  if (kind !== 'junk') {
+    const nw = Math.max(40 * s, Math.min(w - pad * 2, g.measureText(nameLines[0] ?? '').width));
+    const uy = by0 + (nameLines.length - 1) * lh + 9.5 * s;
+    const ug = g.createLinearGradient(x + pad, 0, x + pad + nw, 0);
+    ug.addColorStop(0, 'rgba(255,255,255,.32)');
+    ug.addColorStop(0.6, 'rgba(255,255,255,.1)');
+    ug.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = ug;
+    g.fillRect(x + pad, uy, nw, Math.max(1.6, 2 * s));
+  }
+
+  // 效果行：动词小、数字大、单位小。
+  drawCardEffects({
+    x, w, s, pad, kind, face, per, xc, nameLines, by0, lh, eh,
+    bodyCol, ruleLines, eff,
+  });
+
+  // 卡面收底横线，给效果行下方留出边界。
+  if (kind !== 'junk') drawCardFooter(x, y, w, h, pad, s, tc);
+
+  // 说明画在卡内底部，用向下压暗的渐变托底。
+  if (opts.note) drawCardNote(x, y, w, h, r, pad, s, opts.note);
   g.restore();
 }
 
@@ -709,10 +774,6 @@ export function drawPowerEmblem(
     text(opts.note, x + w / 2, y + h + 18, { size: 14, align: 'center', color: C.dim });
   }
   g.restore();
-}
-
-export function title(s: string, x: number, y: number, size = 44, color = C.ink) {
-  text(s, x, y, { size, weight: 700, family: FONT_TITLE, color });
 }
 
 /* ── 图标（emoji 跨系统不稳定，一律手画） ─────────────────── */

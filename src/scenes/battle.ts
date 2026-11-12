@@ -6,6 +6,7 @@ import type { IconName } from '../gfx/ui';
 import { onClick, hover } from '../input';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { groundGlow, shieldDome, shieldSeal } from '../gfx/aura';
+import { clamp01, easeOut } from '../gfx/geom';
 import * as FX from '../gfx/fx';
 import { BAL, EFFS, MODE_BY_ID, POWER_BY_ID, stageOf } from '../core/model';
 import { G } from '../core/infra';
@@ -736,9 +737,6 @@ function layoutHand(): Slot[] {
   return out;
 }
 
-const easeOut = (p: number) => 1 - Math.pow(1 - p, 3);
-const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
-
 /**
  * 对齐上一帧与这一帧的同一张牌，返回 `keep[j] = 上一帧下标`（-1 = 新抽到）。
  * 逐位比对会让整排同名牌错位；`skip` 是确定离手的那一格，必须剔除，否则飞走的是最左份。
@@ -765,6 +763,60 @@ function alignHand(prev: string[], hand: string[], skip = -1): number[] {
     else j += 1;
   }
   return keep;
+}
+
+/**
+ * 手牌点击只在这里注册：热区用上一帧的槽位，闭包里的 slot 可能已经指向别的牌。
+ * 拆出来之后 `drawHand` 只负责布局、飞行和绘制。
+ */
+function bindHandCard(args: {
+  px: number; py: number; w: number; h: number; id: string; slot: number;
+  card: CardDef; isBase: boolean; isJunk: boolean;
+  askState: ReturnType<typeof cardAskState>;
+}) {
+  const { px, py, w, h, id, slot, card, isBase, isJunk, askState } = args;
+  const payUp = () => {
+    if (canPay(card)) return true;
+    FX.shake(6);
+    FX.floatText(HAND.cx, HAND.cy - 54,
+      isXCost(card) ? '行动力不够：X 费牌至少要 1 点'
+        : `行动力不够：这张牌要 ${costOf(card)} 点`,
+      C.red, 20, { vy: -34 });
+    return false;
+  };
+
+  // 先认原位，不在了才 indexOf；同名四张一律 indexOf 会总是拿走最左份。
+  const idxOf = () => (G.hand[slot] === id ? slot : G.hand.indexOf(id));
+  const cardPulse = (c: string) => {
+    FX.ring(px, py - h / 2, withAlpha(c, 0.5), 46, 0.32);
+    FX.burst(px, py - h / 2 + 10, c, 8, { speed: 140, size: 3, grav: -90, life: 0.42 });
+  };
+
+  if (isBase) {
+    onClick(px - w / 2, py - h / 2, w, h, () => {
+      const i = idxOf();
+      if (i < 0 || !payUp()) return;
+      cardPulse(C.gold);
+      eject = { id, at: i };
+      playBasic(i);
+    }, 'card', slot);
+  } else if (!isJunk) {
+    onClick(px - w / 2, py - h / 2, w, h, () => {
+      const i = idxOf();
+      if (i < 0 || !payUp()) return;
+      cardPulse(EFFS[card.eff]?.color ?? C.gold);
+      eject = { id, at: i };
+      // 攒满等级直接打，否则抽题；新题用完 askCard 会复用，不用单独分支。
+      if (askState === 'free') playFree(i); else askCard(i);
+    }, 'card', slot);
+  } else {
+    onClick(px - w / 2, py - h / 2, w, h, () => {
+      text('杂念打不出去，回合结束进弃牌堆', HAND.cx, HAND.cy - 40, {
+        size: 18, align: 'center', color: C.dim,
+      });
+      FX.shake(4);
+    }, 'junk', slot);
+  }
 }
 
 function drawHand(t: number, dt: number) {
@@ -903,54 +955,7 @@ function drawHand(t: number, dt: number) {
 
     // 还在飞的牌不注册热区，但下标必须带上；少一项会让热区和牌整体错位。
     if (flying) continue;
-
-    const payUp = () => {
-      if (canPay(card)) return true;
-      FX.shake(6);
-      FX.floatText(HAND.cx, HAND.cy - 54,
-        isXCost(card) ? '行动力不够：X 费牌至少要 1 点'
-          : `行动力不够：这张牌要 ${costOf(card)} 点`,
-        C.red, 20, { vy: -34 });
-      return false;
-    };
-
-    /**
-     * 热区是上一帧注册的，闭包里的 `s.i` 可能已指向别的牌。
-     * 先认原位，不在了才 indexOf；同名四张一律 indexOf 会总是拿走最左份。
-     */
-    const idxOf = () => (G.hand[s.i] === id ? s.i : G.hand.indexOf(id));
-    const cardPulse = (c: string) => {
-      FX.ring(px, py - h / 2, withAlpha(c, 0.5), 46, 0.32);
-      FX.burst(px, py - h / 2 + 10, c, 8, {
-        speed: 140, size: 3, grav: -90, life: 0.42,
-      });
-    };
-
-    if (isBase) {
-      onClick(px - w / 2, py - h / 2, w, h, () => {
-        const i = idxOf();
-        if (i < 0 || !payUp()) return;
-        cardPulse(C.gold);
-        eject = { id, at: i };
-        playBasic(i);
-      }, 'card', s.i);
-    } else if (!isJunk) {
-      onClick(px - w / 2, py - h / 2, w, h, () => {
-        const i = idxOf();
-        if (i < 0 || !payUp()) return;
-        cardPulse(EFFS[card.eff]?.color ?? C.gold);
-        eject = { id, at: i };
-        // 攒满等级直接打，否则抽题；新题用完 askCard 会复用，不用单独分支。
-        if (askState === 'free') playFree(i); else askCard(i);
-      }, 'card', s.i);
-    } else {
-      onClick(px - w / 2, py - h / 2, w, h, () => {
-        text('杂念打不出去，回合结束进弃牌堆', HAND.cx, HAND.cy - 40, {
-          size: 18, align: 'center', color: C.dim,
-        });
-        FX.shake(4);
-      }, 'junk', s.i);
-    }
+    bindHandCard({ px, py, w, h, id, slot: s.i, card, isBase, isJunk, askState });
   }
 
 

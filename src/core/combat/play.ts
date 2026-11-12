@@ -1,23 +1,23 @@
-import { BAL, FOES, MISS_RULE } from '../model/data';
-import { EFFS, resolveEff } from '../model/effects';
-import type { CardId, Feedback, MapNode } from '../model/types';
-import { G, checkPending, log, topTopic } from '../infra/state';
+import { BAL, FOES } from '../model/data';
+import { resolveEff } from '../model/effects';
+import type { EffOut } from '../model/effects';
+import type { CardId, Eff, MapNode } from '../model/types';
+import { G, checkPending, log } from '../infra/state';
+import { after } from '../infra/schedule';
 import { emit } from '../infra/events';
 import { grantBlock, gainAp, healHp, loseHp, spendAp } from '../infra/write';
 import { pick, shuffle } from '../infra/util';
 import { stagePool } from '../library/stage';
 import { floorOf } from '../map/gen';
-import { recordAnswer } from '../library/stagemem';
-import { memOf, saveMem } from '../library/memory';
 import { shuffleOptions } from '../library/question';
 import { defOf } from '../cards/registry';
 import { applyCardBonus, clearOnceUsed, onceThisFight, rulesOf, syllabusBasicBlock } from '../cards/powers';
-import { canPay, costNow, isXCost, refundOf } from '../cards/cost';
-import { cardGrade, gradeNeed, needsAsk } from '../cards/grade';
+import { canPay, costNow, isXCost } from '../cards/cost';
+import { cardGrade, needsAsk } from '../cards/grade';
 import { cardKind } from '../cards/kinds';
 import { drawCards, startTurn } from './deck';
 import { commitLink, liveStatOf } from './link';
-import { makeFoe, onPlayerMiss } from './foe';
+import { makeFoe } from './foe';
 import { requestSettle } from './pending';
 import { drawBattleQuestions, takeQuestion } from './questions';
 
@@ -27,7 +27,34 @@ import { drawBattleQuestions, takeQuestion } from './questions';
  * 且都要先 `canPay` 再动牌堆。
  * 答对奖励只有两条：退 1 点行动力、抽一张牌，没有倍率层。
  */
-const join = (a: string, b: string) => (a ? a + ' ' : '') + b;
+
+/**
+ * 进入下一场 / 过幕前要清的场次字段。`deck`、血量和这一局牌组不在这里。
+ * 所有“开新场”的路径都应该先过它，避免下一场还带着上一场的免答计数或题池。
+ */
+export function resetBattleFields() {
+  G.enemy = null;
+  G.panel = { k: 'none' };
+  G.pending = null;
+  G.busy = false;
+  G.turn = 1;
+  G.draw = [];
+  G.discard = [];
+  G.hand = [];
+  G.charge = {};
+  G.syllabusTurn = 0;
+  G.cardPlays = {};
+  G.nextBoost = null;
+  G.drawnThisTurn = 0;
+  G.cardsThisTurn = 0;
+  G.apDown = 0;
+  G.drawCut = 0;
+  // 索引贴/事件留下的跨回合或跨节点残账不能带进下一场。
+  G.carryBlock = 0;
+  G.pendingCost = 0;
+  G.pendingHeal = 0;
+  G.qLeft = [];
+}
 
 export function startBattle(nd: MapNode) {
   // 一幕一套物种；找不到时回退到全表，别让一场战斗开不起来。
@@ -39,28 +66,13 @@ export function startBattle(nd: MapNode) {
   );
 
   G.screen = 'battle';
+  resetBattleFields();
   G.enemy = e;
-  G.panel = { k: 'none' };
-  G.pending = null;
-  G.busy = false;
-  G.turn = 1;
   G.draw = shuffle(G.deck);
-  G.discard = [];
-  G.hand = [];
 
-  // 本场清免答计数和题池；答错不扣行动力、不封牌，代价落在本场新题数上。
-  G.charge = {};
-  // `syllabusTurn` 记回合号，跨场不清会误判已给过。
-  G.syllabusTurn = 0;
-  // 联动的账按场清
-  G.cardPlays = {};
-  G.nextBoost = null;
-  G.drawnThisTurn = 0;
-  G.cardsThisTurn = 0;
   drawBattleQuestions();
   // fog：本场每回合少抽一张。记在场上，手牌上限 / 动画 / 日志读同一个数。
   G.drawCut = e.mech === 'fog' ? (e.mechV ?? BAL.mech.fog) : 0;
-  G.apDown = 0;
 
   // 增益跨战斗保留，但「一场一次」的账必须清，否则那张牌从第二场起不再响。
   // 行动力上限由 `startTurn` 按 `rulesOf()` 重算。
@@ -118,33 +130,16 @@ export function playFree(idx: number) {
   const r = strikeWith(id, 1, repeat);
   const back = thornsBack(r.out.hits);
 
-  spendAp(spent);
-  G.discard.push(id);
-  G.hand.splice(idx, 1);
-  checkPending();
-
   const shape = r.out.hits.length > 1 ? `${r.out.hits.join('+')} 伤害` : `${r.dmg} 伤害`;
-  log(
-    `「${card.name}」${r.dmg ? shape : ''}${r.blk ? `${r.dmg ? '，' : ''}${r.blk} 格挡` : ''}` +
+  commitSimplePlay(id, idx, r, {
+    spent,
+    logKind: 'hi',
+    logMsg:
+      `「${card.name}」${r.dmg ? shape : ''}${r.blk ? `${r.dmg ? '，' : ''}${r.blk} 格挡` : ''}` +
       `${r.selfHp ? `，失去 ${r.selfHp} 生命` : ''}` +
       `（${cardGrade(card)} 级，这一场已免答${back ? `；反伤 ${back}` : ''}）` +
       `${r.nextNote ? `　·　${r.nextNote}` : ''}`,
-    'hi',
-  );
-  if (r.dmg > 0) {
-    r.parts.forEach((p, i) => {
-      const fire = () => emit({ t: 'dmg', n: p.d, absorbed: p.a, eff: card.eff, seq: i });
-      if (i === 0) fire(); else setTimeout(fire, i * 150);
-    });
-  }
-  if (r.blk) setTimeout(() => emit({ t: 'blk', n: r.blk }), 60);
-  if (r.heal) setTimeout(() => emit({ t: 'heal', n: r.heal }), 60);
-
-  G.busy = true;
-  setTimeout(() => {
-    G.busy = false;
-    requestSettle();
-  }, 200);
+  });
 }
 
 /** 点一张知识卡 = 从**本场预抽的题**里取一道。 */
@@ -192,10 +187,15 @@ export function cancelPanel() {
   }
   // 选牌面板（精炼 / 遗忘）现在可以取消：事件里"精炼一张、失去 N 点生命"
   // 的代价挂在 `G.pendingCost` 上，取消就要把它一起丢掉：否则玩家取消一次，
-  // 之后随便做点什么就凭空掉 10 点血。
+  // 之后随便做点什么就凭空掉 10 点血。收益挂在 `G.pendingHeal` 上，同理。
+  // 从事件 / 复习点打开的选牌，取消后回到原面板，不能把节点空丢在半路。
   if (G.panel.k === 'cardpick') {
+    const from = G.panel.from;
     G.pendingCost = 0;
-    G.panel = { k: 'none' };
+    G.pendingHeal = 0;
+    if (from && from.k === 'event') G.panel = { k: 'event', ev: from.ev };
+    else if (from && from.k === 'rest') G.panel = { k: 'rest' };
+    else G.panel = { k: 'none' };
     return;
   }
   if (G.panel.k === 'deck' || G.panel.k === 'pile'
@@ -225,12 +225,30 @@ function damageEnemy(raw: number, pierce = false) {
 }
 
 /**
+ * 一手结算的完整结果。同时给反馈面板、日志和演出用。
+ * 注意 `hits` 是扣格挡前的原始段值，`parts` 是实际打进/被吸收的值。
+ */
+export interface StrikeResult {
+  out: EffOut;
+  dmg: number;
+  absorbed: number;
+  blk: number;
+  heal: number;
+  drawn: number;
+  selfHp: number;
+  parts: { d: number; a: number }[];
+  linkNote: string;
+  boosted: boolean;
+  nextNote: string;
+}
+
+/**
  * 一张卡真正打出去的那一下。`mult` 只给装订线的"半额结算"传 0.5，其余路径
  * 一律 1：没有全局倍率，卡面写的数就是打出来的数。
  * `repeat` 是 X 费牌花掉的点数，走同一条结算路径，所以牌面写的段数和实际打出的段数
  * 永远由同一份 `resolveEff` 决定。
  */
-function strikeWith(id: CardId, mult: number, repeat = 1) {
+export function strikeWith(id: CardId, mult: number, repeat = 1): StrikeResult {
   const card = defOf(id);
   // 这一回合第几张真正生效的牌。答错不增加，所以墨水瓶/节拍器只数打出去的牌。
   G.cardsThisTurn += 1;
@@ -296,7 +314,7 @@ function strikeWith(id: CardId, mult: number, repeat = 1) {
  * 反伤：打出有攻击段的牌就挨一下，格挡挡不住。
  * 数的是打出几张，不是打中几段；击杀的那一下不反伤。
  */
-function thornsBack(hits: number[]) {
+export function thornsBack(hits: number[]) {
   const e = G.enemy;
   if (!e || e.mech !== 'thorns' || e.hp <= 0 || !hits.some((h) => h > 0)) return 0;
   const n = e.mechV ?? BAL.mech.thorns;
@@ -307,265 +325,52 @@ function thornsBack(hits: number[]) {
   return n;
 }
 
-export function answer(choice: number) {
-  if (G.panel.k !== 'question' || G.busy) return;
-  const { idx, qid, q, view } = G.panel;
-  const id = G.hand[idx];
-  if (!id) return;
-  const card = defOf(id);
-  // 键盘数字键直接打进来，越界不算答错
-  if (!Number.isInteger(choice) || choice < 0 || choice >= view.options.length) return;
-  // 判定只看打乱后的视图
-  const right = choice === view.answer;
-  const m = memOf(card.id);
-  // 这一手的价格：X 费按此刻剩余的全部行动力，先定价再结算。
-  const xcost = isXCost(card);
-  const spent = xcost ? G.ap : costNow(card);
-  const repeat = xcost ? Math.max(1, spent) : 1;
-
-  let dmg = 0;
-  let blkGain = 0;
-  let absorbed = 0;
-  let heal = 0;
-  let drawn = 0;
-  let selfHp = 0;
-  let hits: number[] = [];
-  let parts: { d: number; a: number }[] = [];
-  let apNote = '';
-  /** 这一手伤害里来自前序出牌的部分 */
-  let linkNote = '';
-  /** 胶水壶：这张牌留在手里 */
-  let backToHand = false;
-
-  if (right) {
-    // 毛笔：这一场第一次答对，段数 +1（不是翻倍）。记账必须在结算之前。
-    const extra = onceThisFight('brush') ? BAL.brushRepeat : 0;
-    const r = strikeWith(id, 1, repeat + extra);
-    if (extra) apNote = join(apNote, `毛笔：这一场第一次答对，效果结算 ${repeat + extra} 次。`);
-    hits = r.out.hits;
-    dmg = r.dmg;
-    absorbed = r.absorbed;
-    blkGain = r.blk;
-    heal = r.heal;
-    drawn = r.drawn;
-    selfHp = r.selfHp;
-    parts = r.parts;
-    linkNote = r.linkNote;
-    if (r.selfHp) apNote = join(apNote, `反噬：失去 ${r.selfHp} 点生命。`);
-    if (r.nextNote) apNote = join(apNote, `${r.nextNote}。`);
-    if (xcost) apNote = join(apNote, `耗尽 ${spent} 点行动力，效果结算 ${repeat} 次。`);
-    if (drawn) apNote = join(apNote, `专注：抽 ${drawn} 张。`);
-    // 反伤在结算完之后收
-    const back = thornsBack(hits);
-    if (back) apNote = join(apNote, `反伤：你受到 ${back} 点。`);
-
-    // 答对抽牌由双面镜提供，默认关闭；上限读 `rulesOf().answerDraw`。
-    const cap = rulesOf().answerDraw;
-    if (G.answerDrawsThisTurn < cap && drawCards(BAL.answerDraw)) {
-      G.answerDrawsThisTurn += BAL.answerDraw;
-      G.answerDraws += BAL.answerDraw;
-      drawn += BAL.answerDraw;
-      apNote = join(apNote, `答对：抽 ${BAL.answerDraw} 张（本回合 ${G.answerDrawsThisTurn}/${cap}）。`);
-    }
-
-    // 书签：这一场第一道答对补格挡，和双面镜（给牌）分属两条线。
-    if (onceThisFight('bookmark')) {
-      grantBlock(BAL.bookmarkBlock);
-      blkGain += BAL.bookmarkBlock;
-      apNote = join(apNote, `书签：这一场第一道答对，获得 ${BAL.bookmarkBlock} 点格挡。`);
-    }
-
-    // 答对攒等级，攒够 `gradeNeed` 这场就免答；按卡 id 记，同名牌副本共用。
-    const need = gradeNeed(card);
-    if (need > 0) {
-      const before = G.charge[card.id] ?? 0;
-      G.charge[card.id] = Math.min(need, before + 1);
-      if (G.charge[card.id] >= need && before < need) {
-        apNote = join(apNote, `这一场「${card.name}」已免答：再打它不用答题。`);
-      }
-    }
-
-    G.okThisTurn += 1;
-    G.runOk += 1;
-    // 记的是本回合答对的题主题，`topTopic()` 之后可能被改写，结算时重对一次。
-    if (q.topic === topTopic()) G.topOkTopic = q.topic;
-    m.reps += 1;
-    m.ok += 1;
-    // 答对涨稳固度；批注在这一场第一道答对时额外多涨一点。
-    let stabGain = MISS_RULE.stabGain;
-    if (onceThisFight('margin')) {
-      stabGain += BAL.marginStab;
-      apNote = join(apNote, `批注：这一场第一道答对，稳固度额外 +${BAL.marginStab}。`);
-    }
-    m.stab = Math.min(60, Math.max(m.stab * (1 + 0.8 * stabGain), m.stab + stabGain));
-    m.due = Math.round(m.stab);
-    // 荧光笔：本回合第一道答对多退 1 点，在下面统一结算退款。
-    if (onceThisFight('marker')) {
-      G.markerRefund += 1;
-      apNote = join(apNote, '荧光笔：这一场第一道答对，这一手多退 1 点行动力。');
-    }
-  } else {
-    // 答错：这一手作废，不补格挡、不补抽，牌进弃牌堆。
-    if (onceThisFight('gluepot')) {
-      // 胶水壶：这一场第一次答错，牌留在手里；回合结束照常进弃牌堆。
-      backToHand = true;
-      apNote = join(apNote, '胶水壶：这张牌没有离开手牌，这一回合还能再打它。');
-    } else {
-      // 默认：进弃牌堆，要等洗牌才回来。
-      apNote = join(apNote, '它进了弃牌堆，要等洗牌才回来。');
-    }
-
-    // 草稿纸：这一场第一次答错补一张。
-    if (onceThisFight('scratch')) {
-      const got = drawCards(BAL.scratchDraw);
-      if (got) {
-        drawn += got;
-        apNote = join(apNote, `草稿纸：这一场第一次答错，补抽 ${got} 张。`);
-      }
-    }
-
-    // 橡皮：这一场第一次答错补 3 点格挡，不救那一手。
-    if (onceThisFight('eraser')) {
-      grantBlock(BAL.eraserBlock);
-      blkGain += BAL.eraserBlock;
-      apNote = join(apNote, `橡皮：这一场第一次答错，补了 ${BAL.eraserBlock} 点格挡。`);
-    }
-
-    G.topicWrong[q.topic] = (G.topicWrong[q.topic] || 0) + 1;
-    G.runBad += 1;
-    m.lapses += 1;
-    m.bad += 1;
-    apNote = join(apNote, '这一手不花行动力：代价是这一场少了一道题。');
-
-    const missNote = onPlayerMiss();
-    if (missNote) apNote = join(apNote, missNote);
-
-    // 稳固度下降、到期提前：惩罚靠日程不靠扣血。
-    // 书套：这一场第一次答错，两项都不动。
-    if (onceThisFight('slipcase')) {
-      apNote = join(apNote, '书套：这一场第一次答错，稳固度和到期都没动。');
-    } else {
-      m.stab = Math.max(1, m.stab * MISS_RULE.stabDrop);
-      m.due = 1;
-    }
-  }
-
-  // 节奏结算：答对先付再退最多 1 点；答错一分不扣。
-  if (right) {
-    spendAp(spent);
-    // 退款上限来自借书证；荧光笔是额外一层，不进 `refundOf`。
-    let back = refundOf(spent, rulesOf().refund) + G.markerRefund;
-    // 回形针：这一场第一次打出 3 费以上的牌，再多退 2 点。
-    if (spent >= 3 && onceThisFight('clip')) {
-      back += BAL.clipRefund;
-      apNote = join(apNote, `回形针：这一场第一次打出 ${spent} 费牌，多退 ${BAL.clipRefund} 点。`);
-    }
-    G.markerRefund = 0;
-    if (back > 0) {
-      gainAp(back);
-      apNote = join(apNote, back > spent
-        ? `答对了，退回 ${back} 点：这一手净赚 ${back - spent} 点。`
-        : back >= spent
-          ? '答对了，这一手不花行动力。'
-          : `答对了，退回 ${back} 点：这张牌净花 ${spent - back} 点。`);
-    }
-  } else {
-    G.markerRefund = 0;
-  }
-
-  // 装订线：这一场第一次答错，仍然按一半结算。
-  if (!right && onceThisFight('binder')) {
-    const r = strikeWith(id, 0.5, repeat);
-    hits = r.out.hits;
-    parts = r.parts;
-    dmg = r.dmg;
-    absorbed = r.absorbed;
-    // `resolveEff` 已经把 mult 乘进格挡，这里不能再补一次。
-    blkGain = r.blk;
-    heal = r.heal;
-    drawn += r.drawn;
-    linkNote = r.linkNote;
-    if (r.nextNote) apNote = join(apNote, `${r.nextNote}。`);
-    apNote = join(apNote, `装订线：这一手仍然按一半结算`
-      + `（${dmg} 伤害${r.blk ? `，${r.blk} 格挡` : ''}${r.drawn ? `，抽 ${r.drawn} 张` : ''}）。`);
-  }
-
-  G.busy = true;
-  // 两条去向互斥：胶水壶留在手里，其余进弃牌堆。
-  if (!backToHand) {
-    G.discard.push(id);
-    G.hand.splice(idx, 1);
-  }
-  saveMem();
-
-  // 章节记忆按题号记，和卡牌记忆分开。
-  recordAnswer({ stageTopic: G.stageTopic, qid, right });
-  G.answers.push({
-    qid, topic: q.topic, stageTopic: G.stageTopic, stage: G.stage, right, choice,
-    answer: view.answer, stem: q.q.slice(0, 80),
-  });
-  // 环形缓冲，只留最近若干条
-  if (G.answers.length > 120) G.answers.shift();
-
-  const effName = EFFS[card.eff].name;
-  const shape = hits.length > 1 ? `${hits.join('+')} 伤害` : `${dmg} 伤害`;
-  const missNote = backToHand ? '，牌留在手里' : '，进弃牌堆';
-  const leftNote = G.qLeft.length
-    ? `本场还剩 ${G.qLeft.length} 道新题`
-    : '本场新题已用完，开始复用';
-  log(
-    `「${effName}·${q.topic}」${right ? '答对' : '答错'}` +
-      (right
-        ? `，${shape}${absorbed ? `（${absorbed} 被挡）` : ''}` +
-          (blkGain ? `，${blkGain} 格挡` : '') +
-          (selfHp ? `，失去 ${selfHp} 生命` : '') +
-          (heal ? `，回 ${heal}` : '') +
-          (drawn ? `，抽 ${drawn}` : '')
-        : `，效果作废${blkGain ? `，${blkGain} 格挡` : '，这张牌本身没有格挡'}${missNote}`) +
-      `　·　${leftNote}`,
-    right ? 'hi' : 'bad',
-  );
-
-  checkPending();
-
-  // 多段伤害按段错开发出；第一下同步发，表现层靠它在本帧知道这一手打出去了。
-  if (right) {
-    parts.forEach((p, i) => {
-      const fire = () => emit({ t: 'dmg', n: p.d, absorbed: p.a, eff: card.eff, seq: i });
-      if (i === 0) fire(); else setTimeout(fire, i * 150);
+/**
+ * 一手的结果怎么演：三段出牌路径共用。
+ * 0 伤害的知识卡（纯防御 / 纯过牌）不发空光刃；答错的牌只有在真的没造成伤害时才演"焰灭"，
+ * 装订线半额结算已经打出了伤害，不能再播一段"没打出去"。
+ */
+export function publishStrike(
+  r: { parts: { d: number; a: number }[]; blk: number; heal: number },
+  eff: Eff,
+  opts: { wrong?: boolean; base?: number; blockBonus?: number } = {},
+) {
+  const dealt = r.parts.some((p) => p.d > 0);
+  if (dealt) {
+    r.parts.forEach((p, i) => {
+      const fire = () => emit({ t: 'dmg', n: p.d, absorbed: p.a, eff, seq: i });
+      if (i === 0) fire(); else after(i * 150, fire);
     });
-  } else {
-    // 答错：抬手、甩出去、半路散掉。
-    emit({ t: 'fizzle', eff: card.eff });
+  } else if (opts.wrong) {
+    emit({ t: 'fizzle', eff });
   }
-  const base = parts.length * 150;
-  // 答错时的格挡补偿晚一点出场，先让"焰灭了"被看见。
-  if (blkGain) setTimeout(() => emit({ t: 'blk', n: blkGain }), base + (right ? 60 : 220));
-  if (heal) setTimeout(() => emit({ t: 'heal', n: heal }), base + 60);
 
-  const fb: Feedback = {
-    idx, qid, choice, right,
-    dmg, absorbed, blk: blkGain, eff: card.eff, hits, parts, heal, draw: drawn, apNote, linkNote,
-    explain: q.explain, question: q.q, options: view.options, answer: view.answer,
-    topic: q.topic,
-  };
-  lastFb = fb;
-  /**
-   * 答对**不画**判定面板（见 scenes/overlay.ts）：效果已经当场结算，
-   * 那块面板除了盖住战场没有别的作用，光刃和伤害数字全被它压在底下。
-   * 状态仍然停在 feedback 一小会，只是给打击演出当输入锁 —— 表现层演完就收掉，
-   * 不需要玩家再点一次「继续」。
-   */
-  G.panel = { k: 'feedback', fb };
+  const base = opts.base ?? 0;
+  const blk = r.blk + (opts.blockBonus ?? 0);
+  if (blk) after(base + (opts.wrong ? 220 : 60), () => emit({ t: 'blk', n: blk }));
+  if (r.heal) after(base + 60, () => emit({ t: 'heal', n: r.heal }));
 }
 
 /**
- * 最近一次判定的完整结果。
- * 答对不再有面板可读，测试和调试仍要拿到"这一手打了几段、退了几点"。
+ * 免答直打 / 基础牌共用的收尾：扣费、离手、判胜负、日志、演出、输入锁。
+ * 知识卡的答题路径不用它——那条路径要留反馈面板，不能 200ms 后自动收。
  */
-let lastFb: Feedback | null = null;
-export function lastFeedback() {
-  return lastFb;
+function commitSimplePlay(
+  id: CardId, idx: number, r: StrikeResult,
+  opts: { spent: number; logMsg: string; logKind: '' | 'hi' | 'bad'; blockBonus?: number },
+) {
+  spendAp(opts.spent);
+  G.discard.push(id);
+  G.hand.splice(idx, 1);
+  checkPending();
+  log(opts.logMsg, opts.logKind);
+  publishStrike(r, defOf(id).eff, { blockBonus: opts.blockBonus });
+
+  G.busy = true;
+  after(200, () => {
+    G.busy = false;
+    requestSettle();
+  });
 }
 
 /**
@@ -585,33 +390,16 @@ export function playBasic(idx: number) {
   // 课表只认基础牌，和题目池无关。
   const syllabusBlk = syllabusBasicBlock();
   thornsBack(r.out.hits);
-  spendAp(spent);
-
-  G.discard.push(id);
-  G.hand.splice(idx, 1);
-  checkPending();
 
   const shape = r.out.hits.length > 1 ? `${r.out.hits.join('+')} 伤害` : `${r.dmg} 伤害`;
-  log(
-    `「${card.name}」${r.dmg ? shape : ''}${r.blk ? `${r.dmg ? '，' : ''}${r.blk} 格挡` : ''}` +
+  commitSimplePlay(id, idx, r, {
+    spent,
+    blockBonus: syllabusBlk,
+    logKind: '',
+    logMsg:
+      `「${card.name}」${r.dmg ? shape : ''}${r.blk ? `${r.dmg ? '，' : ''}${r.blk} 格挡` : ''}` +
       `${syllabusBlk ? `${r.dmg || r.blk ? '，' : ''}课表 +${syllabusBlk} 格挡` : ''}` +
       `（基础牌，不答题）${r.nextNote ? `　·　${r.nextNote}` : ''}`,
-    '',
-  );
-
-  // 纯防御的基础牌没有伤害段：不发光刃，只飘格挡
-  if (r.dmg > 0) {
-    r.parts.forEach((p, i) => {
-      const fire = () => emit({ t: 'dmg', n: p.d, absorbed: p.a, eff: card.eff, seq: i });
-      if (i === 0) fire(); else setTimeout(fire, i * 150);
-    });
-  }
-  if (r.blk + syllabusBlk) setTimeout(() => emit({ t: 'blk', n: r.blk + syllabusBlk }), 60);
-
-  G.busy = true;
-  setTimeout(() => {
-    G.busy = false;
-    requestSettle();
-  }, 200);
+  });
 }
 

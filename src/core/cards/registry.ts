@@ -1,5 +1,4 @@
-import { POWER_BY_ID } from '../model/data';
-import type { CardDef, CardId, PowerDef, PowerId } from '../model/types';
+import type { CardDef, CardId, PowerId } from '../model/types';
 import { G } from '../infra/state';
 import { PACK } from './pack';
 import { basicDef, isBasicId } from './basics';
@@ -12,6 +11,9 @@ const JUNK: CardDef = {
   id: '__junk', topic: '杂念', name: '杂念', atk: 0, blk: 0,
   eff: 'strike', junk: true, kind: 'junk',
 };
+
+/** 卡表是常量，查表每帧都会走；用 Map 而不是线性 find。 */
+const CARD_BY_ID = new Map<string, CardDef>(PACK.cards.map((c) => [c.id, c]));
 
 export const JUNK_ID = JUNK.id;
 
@@ -33,7 +35,7 @@ export const defOf = (id: CardId | null | undefined): CardDef => {
   const base = baseIdOf(id);
   if (base === JUNK_ID) return JUNK;
   // 基础牌固定在内置表里，不进 PACK（PACK 是"可获取的知识卡池"）
-  return PACK.cards.find((c) => c.id === base) ?? basicDef(base) ?? JUNK;
+  return CARD_BY_ID.get(base) ?? basicDef(base) ?? JUNK;
 };
 
 /**
@@ -41,13 +43,11 @@ export const defOf = (id: CardId | null | undefined): CardDef => {
  */
 export const isKnownCardId = (id: string): boolean => {
   const base = baseIdOf(id);
-  return base !== JUNK_ID
-    && (PACK.cards.some((c) => c.id === base) || isBasicId(base));
+  return base !== JUNK_ID && (CARD_BY_ID.has(base) || isBasicId(base));
 };
 
 /** 这一局是不是已经拿到了这种增益。 */
 export const hasPower = (id: PowerId) => G.powers.includes(id);
-export const powerById = (id: string): PowerDef | null => POWER_BY_ID[id] ?? null;
 
 /** 精炼加成 = 底数 3 + 「抛光布」写进 G.upGrade 的档位。 */
 export const UP_GAIN = 3;

@@ -1,6 +1,6 @@
 import { G } from '../infra/state';
 import { planFor } from '../model/data';
-import type { Question, QuestionBank, StageBank } from '../model/types';
+import type { Question, QuestionBank } from '../model/types';
 import { allQuestions, bankGeneration, flattenBank, setActiveBank, sourceBank } from './bank';
 
 /**
@@ -16,7 +16,7 @@ let ACTIVE_GEN = -1;
 /**
  * 切到第 `stage` 幕的题库。章节名对不上任何题池时回退到来源题库的全部题目。
  */
-export function enterStage(stage: number): StageBank {
+export function enterStage(stage: number): void {
   const plan = planFor(stage);
   const src = sourceBank();
   const own = src.byTopic[plan.topic] ?? [];
@@ -30,7 +30,6 @@ export function enterStage(stage: number): StageBank {
   ACTIVE_STAGE = stage;
   ACTIVE_GEN = bankGeneration();
   G.stageTopic = plan.topic;
-  return { v: 1, plan, bank };
 }
 
 /** 阶段号或来源题库变了，就重新切一次。调用点可以每帧问，不贵。 */

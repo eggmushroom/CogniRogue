@@ -29,8 +29,12 @@ export type GameEvent =
 type FxListener = (e: GameEvent) => void;
 const fxListeners: FxListener[] = [];
 
-export function onFx(l: FxListener) {
+export function onFx(l: FxListener): () => void {
   fxListeners.push(l);
+  return () => {
+    const i = fxListeners.indexOf(l);
+    if (i >= 0) fxListeners.splice(i, 1);
+  };
 }
 
 export function emit(e: GameEvent) {

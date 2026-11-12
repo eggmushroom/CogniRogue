@@ -79,7 +79,7 @@ export function loadQuestionBank(text: string): { ok: boolean; msg: string } {
     return { ok: false, msg: '解析失败：' + (err as Error).message };
   }
 
-  const issues = next.issues ?? [];
+  const issues = next.issues;
   if (issues.length) {
     // 面板上放不下长篇诊断，只列前两条；其余用计数带过
     const shown = issues.slice(0, 2).join('；');

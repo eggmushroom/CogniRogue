@@ -119,7 +119,14 @@ export function effFace(out: EffOut): EffFace {
  * 否则玩家会以为「造成 8×2 伤害」就是全部，花 3 点也只打两次。
  */
 export function effSummary(key: Eff, atk: number, blk: number, mods?: EffMods, x = false): string {
-  const o = resolveEff(key, atk, blk, 1, mods);
+  return effSummaryOf(resolveEff(key, atk, blk, 1, mods), key, x);
+}
+
+/**
+ * 从已经结算过 `applyCardBonus` 的结果生成同一段文案。
+ * 答题面板必须走这个入口：只调 `effSummary` 会漏掉压书石 / 校规。
+ */
+export function effSummaryOf(o: EffOut, key: Eff, x = false): string {
   const f = effFace(o);
   const dmg = f.hits > 1 ? `${f.per}×${f.hits} 伤害` : `${f.per} 伤害`;
   const tail = [

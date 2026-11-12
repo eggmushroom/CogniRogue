@@ -1,5 +1,5 @@
 import type { ReportRow } from '../model/types';
-import { CURRICULUM, MODE_BY_ID, POWER_BY_ID } from '../model/data';
+import { CURRICULUM, MODE_BY_ID } from '../model/data';
 import { G } from '../infra/state';
 import { saveMem } from '../library/memory';
 import { saveStageMem, stageDigest } from '../library/stagemem';
@@ -43,9 +43,8 @@ export function endRun(win: boolean) {
   }
 
   G.screen = 'report';
-  // 本章本局的答题数：从流水里数，而不是从卡牌记忆里推：同一张卡可能
-  // 在前几章问过别的题。流水只留最近若干条，所以它是"这一章打到现在"的下限。
-  const stageAs = G.answers.filter((a) => a.stage === G.stage && a.stageTopic === G.stageTopic);
+  // 本章本局的答题数：直接读累计计数，不读 answers 环形缓冲。
+  // 环形缓冲只有最近 120 条，长局读到一半就会少算，而且读档后会被清零。
   G.panel = {
     k: 'report',
     data: {
@@ -53,15 +52,15 @@ export function endRun(win: boolean) {
       mode: G.mode ? (MODE_BY_ID[G.mode]?.name ?? G.mode) : '无',
       stage: G.stage,
       stageTopic: G.stageTopic,
-      stageOk: stageAs.filter((a) => a.right).length,
-      stageBad: stageAs.filter((a) => !a.right).length,
+      stageOk: G.stageOk,
+      stageBad: G.stageBad,
       floor: curFloor(),
       runOk: G.runOk, runBad: G.runBad, floors: G.floors, deckSize: G.deck.length,
       // 牌组的"卡种"就是剥掉精炼后缀之后的种类数：同一张牌的普通版和精炼版
       // 是两种 id，但只是一种卡。增益不进牌组，所以这里不必再排除什么。
       kinds: new Set(G.deck.map(baseIdOf)).size,
       mastery: total, rows, answerDraws: G.answerDraws,
-      verdict, powers: G.powers.map((id) => POWER_BY_ID[id]?.name ?? id),
+      verdict, powers: G.powers,
     },
   };
 }

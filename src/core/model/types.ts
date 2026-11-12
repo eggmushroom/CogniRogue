@@ -1,8 +1,5 @@
 /** 领域模型。这一层不认识 canvas，也不认识 DOM。 */
 
-/** 题的认知层级，来自题库里的 `? 理解:` 前缀；目前只存不用。 */
-export type QLevel = 'recall' | 'understand' | 'transfer';
-
 /** 答错价码：三种模式共用；差异只来自开局带的增益。 */
 export interface MissRule {
   /** 答错时稳固度乘数 */
@@ -21,8 +18,6 @@ export interface Question {
   options: string[];
   answer: number;
   explain: string;
-  /** 见 QLevel。可选：旧题库与 JSON 题库都没有这个字段。 */
-  level?: QLevel;
 }
 
 /** 每次出题打乱选项后的视图；题面、判定、反馈必须读同一份。 */
@@ -41,7 +36,7 @@ export interface QuestionBank {
   name: string;
   byTopic: Record<string, Question[]>;
   /** 格式问题（带行号与题目标识）。空数组 = 格式合格。 */
-  issues?: string[];
+  issues: string[];
 }
 
 /** 一幕对应的课程章节：阶段是 20 层的容器，topic 才是这一段学什么。 */
@@ -53,12 +48,6 @@ export interface StagePlan {
 }
 
 /** 某一章当前的题库。运行时只认它，不认卡牌上的 topic。 */
-export interface StageBank {
-  v: 1;
-  plan: StagePlan;
-  bank: QuestionBank;
-}
-
 /** 一章的摘要，给结算页和下一章生成用；不放完整题面。 */
 export interface StageDigest {
   stage: number;
@@ -388,10 +377,13 @@ export interface ReportData {
   rows: ReportRow[];
   /** 这一局靠答对额外抽到的张数 */
   answerDraws: number;
-  /** 这一局拿到的增益名字 */
-  powers: string[];
+  /** 这一局拿到的增益 id；展示层按 id 查名字 / 颜色。 */
+  powers: PowerId[];
   verdict: string;
 }
+
+/** 选牌面板取消后回到哪里；不写表示直接关闭（调试入口 / 没有来源）。 */
+export type CardPickFrom = { k: 'rest' } | { k: 'event'; ev: EventDef };
 
 export type Panel =
   | { k: 'none' }
@@ -404,7 +396,7 @@ export type Panel =
   /** 精英 / Boss 掉落；只有一个 id，没有"要不要拿"。 */
   | { k: 'powerdrop'; id: PowerId }
   | { k: 'rest' }
-  | { k: 'cardpick'; mode: 'up' | 'rm' }
+  | { k: 'cardpick'; mode: 'up' | 'rm'; from?: CardPickFrom }
   | { k: 'event'; ev: EventDef }
   | { k: 'deck' }
   | { k: 'pile'; kind: 'draw' | 'discard' }
@@ -487,9 +479,14 @@ export interface GameState {
   drawCut: number;
   runOk: number;
   runBad: number;
+  /** 本章本局答对 / 答错；过幕清零、随断点存。结算页的“本章答题”只读它。 */
+  stageOk: number;
+  stageBad: number;
   floors: number;
   pending: null | 'clear' | 'win' | 'dead';
   /** 事件里"选完牌才付的血"，>0 表示有一笔待付。放 G 上是因为取消要跨层读写。 */
   pendingCost: number;
+  /** 事件里"选完牌才回的血"，和 pendingCost 同一条结算路径；取消时一起丢掉。 */
+  pendingHeal: number;
   busy: boolean;
 }

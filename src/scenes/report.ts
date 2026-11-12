@@ -44,9 +44,10 @@ export function drawReport(d: ReportData) {
 
   // 这一局捡到的增益。它们不进牌组，所以只展示名字，不和牌组张数混成一栏
   let rx = x + 48;
-  for (const name of d.powers) {
-    const p = Object.values(POWER_BY_ID).find((q) => q.name === name);
-    const col = p ? p.color : C.gold;
+  for (const id of d.powers) {
+    const p = POWER_BY_ID[id];
+    const name = p?.name ?? id;
+    const col = p?.color ?? C.gold;
     const label = `◆ ${name}`;
     g.font = font(13, 600, FONT_UI);
     const cw = g.measureText(label).width + 26;
@@ -115,5 +116,3 @@ export function drawReport(d: ReportData) {
   action(x + w - 400, y + h - 74, 170, 52, '再来一局', () => restart(), 'primary');
   action(x + w - 216, y + h - 74, 170, 52, '回到首页', () => backToTitle());
 }
-
-void VH;

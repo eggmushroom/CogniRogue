@@ -79,20 +79,13 @@ function reshuffle() {
 }
 
 export function drawTo(n: number) {
-  while (G.hand.length < n) {
-    // 只有抽牌堆见底才动弃牌堆；洗完还是没牌（两边都空）就抽不满，直接收手。
-    if (!G.draw.length) {
-      reshuffle();
-      if (!G.draw.length) break;
-    }
-    G.hand.push(G.draw.pop()!);
-    G.drawnThisTurn += 1;
-  }
+  drawCards(Math.max(0, n - G.hand.length));
 }
 
 export function drawCards(n: number) {
   let got = 0;
   while (n-- > 0) {
+    // 只有抽牌堆见底才动弃牌堆；洗完还是没牌（两边都空）就抽不满，直接收手。
     if (!G.draw.length) {
       reshuffle();
       if (!G.draw.length) break;

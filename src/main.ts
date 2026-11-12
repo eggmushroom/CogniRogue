@@ -1,29 +1,20 @@
 import './style.css';
 import { BUILTIN_MD } from './core/builtin';
 import { EFFS, POWER_BY_ID } from './core/model';
-import { beginFrame, g, initCanvas, toLogic, toScreen, VH, VW } from './gfx/canvas';
+import { beginFrame, g, initCanvas, toLogic } from './gfx/canvas';
 import { loadArt } from './gfx/assets';
 import * as FX from './gfx/fx';
-import { bindInput, beginInput, clearWheel, endInput, hitAt, hotRects, hover, keyHandler, lastClickInfo, setInputLock } from './input';
+import { bindInput, beginInput, clearWheel, endInput, hover, keyHandler, setInputLock } from './input';
 import { C } from './gfx/theme';
-import { text } from './gfx/ui';
 import { G, onFx } from './core/infra';
-import { BANK, enterStage, loadQuestionBank, stageMemOf } from './core/library';
-import { costNow, defOf, PACK } from './core/cards';
-import { liveStatOf } from './core/combat/link';
-import { FOES } from './core/model';
-import { answer, askCard, cancelPanel, canAsk, endTurn, lastFeedback } from './core/combat';
+import { loadQuestionBank } from './core/library';
+import { answer, cancelPanel, endTurn } from './core/combat';
+import { ackPower, dismissFeedback } from './core/journey';
 import {
-  EVENTS, ackPower, dismissFeedback, endRun, enterNode, openCardPick, saveRun, startRun,
-} from './core/journey';
-import { genStage } from './core/map';
-import { CURRICULUM, STAGES } from './core/model';
-import type { Feedback, Move } from './core/model';
-import {
-  drawBattle, DISCARD_TO, ENEMY, ENEMY_GROUND, fxCount, handSettled, HERO, heroHand,
+  drawBattle, DISCARD_TO, ENEMY, ENEMY_GROUND, HERO, heroHand,
   resetBattleView, syncBattle,
 } from './scenes/battle';
-import { drawMap, mapCam } from './scenes/map';
+import { drawMap } from './scenes/map';
 import { drawOverlay, quizFrame } from './scenes/overlay';
 import { drawTitle } from './scenes/title';
 import { drawAtlas } from './scenes/atlas';
@@ -167,7 +158,8 @@ keyHandler((k) => {
   if (panelHold > 0 || enemyHold > 0) return;
   if (k === 'escape') {
     if (G.screen === 'atlas') { G.screen = 'title'; return; }
-    if (p.k === 'question' || p.k === 'deck' || p.k === 'pile'
+    // cardpick 也要能按 Esc 退出：取消后回到事件 / 复习面板，账一起清掉。
+    if (p.k === 'question' || p.k === 'deck' || p.k === 'pile' || p.k === 'cardpick'
         || p.k === 'help' || p.k === 'pack' || p.k === 'boon') cancelPanel();
     return;
   }
@@ -285,10 +277,23 @@ function frame(now: number) {
   requestAnimationFrame(frame);
 }
 
-function boot() {
+async function boot() {
   // 卡面在 cards/catalog.ts 里，启动时只把内置题库灌进 BANK
   loadQuestionBank(BUILTIN_MD);
-  devJump();
+  if (import.meta.env.DEV) {
+    // 开发 / 截图入口：生产构建不会执行这个分支。
+    const { devJump } = await import('./dev/jump');
+    devJump();
+    const { installCog } = await import('./dev/cog');
+    installCog({
+      holdPanel: (s) => { panelHold = Math.max(panelHold, s); },
+      holdEnemy: (s) => { enemyHold = Math.max(enemyHold, s); },
+      setQuizHold: (s) => { quizHoldBoost = Math.max(0, s); },
+      setAutoHold: (on) => { autoHold = on; autoCancelled = on; },
+      quizClock: () => ({ settling: quizSettling, reveal: quizReveal, autoIn, autoPaused }),
+      locked: () => enemyHold > 0 || panelHold > 0,
+    });
+  }
   loadArt().then(() => {
     const el = document.querySelector('#boot');
     if (el) {
@@ -297,302 +302,6 @@ function boot() {
     }
     requestAnimationFrame((n) => { last = n; frame(n); });
   });
-}
-
-// 供控制台调试与冒烟测试：window.cog
-declare global {
-  interface Window {
-    cog: {
-      state: typeof G;
-      /** 在画面上叠一层 100px 坐标网格，手写布局时对位置用 */
-      grid: () => void;
-      hots: () => { x: number; y: number; w: number; h: number; label: string; idx?: number }[];
-      /** 这个点此刻会点到谁：冒烟测试用它确认选的位置真的属于那张牌 */
-      probe: (x: number, y: number) => { label: string; idx?: number } | null;
-      /** 手牌是不是全部落位并停稳：代替"睡一会儿再点" */
-      handReady: () => boolean;
-      /** 地图镜头：滚轮/拖动有没有真的生效（节点热区读不出这件事） */
-      mapCam: () => { cam: number; manual: boolean };
-      /** 最近一次真正被接受的点击，用来确认"这一下点的是谁" */
-      lastClick: () => { label: string; idx?: number } | null;
-      toScreen: (x: number, y: number) => { x: number; y: number };
-      /** 演示/截图用：单独放一次打击动画，不改变任何数值 */
-      strike: (kind?: FX.StrikeKind, target?: 'enemy' | 'hero') => void;
-      /** 调试用：内置卡牌库（恒定，导入题库不会变） */
-      readonly pack: typeof PACK;
-      /** 调试用：当前题库（可换）。题目挂在 Panel 快照上，测试一般不用读这里 */
-      readonly bank: typeof BANK;
-      /** 调试/自动化用：直接答题，绕过点击 */
-      pick: (i: number) => void;
-      /** 调试/自动化用：关掉增益掉落面板（它只有一个出口） */
-      ackPower: () => void;
-      /** 调试/截图用：把当前这一局写成断点（首页「继续这一局」的那条存档） */
-      save: () => void;
-      /** 调试/自动化用：还在飞的单元数（抽牌 / 弃牌 / 敌人动作），用来盯"飞行单元漏清" */
-      fx: () => { hand: number; discard: number; enemy: number };
-      /** 调试/自动化用：这张卡此刻的实际费用（X 费牌 = 当前行动力） */
-      costOf: (id: string) => number;
-      /** 冒烟测试用：单独演一次敌人动作，不改任何数值。taken=0 演"被全挡下" */
-      enemyAct: (k?: FX.EnemyActKind, taken?: number) => void;
-      /** 演示/截图用：真的走一次敌人回合，血量 / 弃牌堆 / 意图都会跟着变 */
-      endTurn: () => void;
-      /** 输入是不是正被演出锁住：冒烟测试靠它等敌人这一下演完 */
-      locked: () => boolean;
-      /** 答题面板：阶段 / 几何 / 自动推进倒计时。用来验"没有闪断、没有换框" */
-      quiz: () => {
-        phase: string; settling: boolean; drawn: boolean; reveal: number;
-        geom: { x: number; y: number; w: number; h: number };
-        autoIn: number; autoPaused: boolean;
-      };
-      /**
-       * 最近一次判定的结果。答对不再弹面板，测试要验"打了几段"只能从这里读；
-       * 没答过题时是 null。
-       */
-      lastAnswer: () => Feedback | null;
-      /** 截图 / 回归用：把判定演出拉长，好把"面板没消失"这一帧拍下来 */
-      holdQuiz: (sec: number) => void;
-      /** 截图/回归用：停掉软自动推进，否则 4.2s 后判定面板会自己收掉 */
-      pauseAuto: (on?: boolean) => void;
-      /** 联动的战场记账 + 四张联动卡此刻的攻击底数，给回归测试验因果 */
-      links: () => {
-        drawn: number; block: number; plays: Record<string, number>;
-        next: { mul: number; add: number; from: string } | null;
-        live: Record<string, number>;
-      };
-    };
-  }
-}
-window.cog = {
-  state: G,
-  hots: hotRects,
-  probe: hitAt,
-  handReady: handSettled,
-  mapCam,
-  lastClick: lastClickInfo,
-  toScreen,
-  strike: (kind = 'strike', target: 'enemy' | 'hero' = 'enemy') => {
-    FX.attack({
-      from: target === 'enemy' ? heroHand() : { x: ENEMY.x, y: ENEMY.y },
-      follow: target === 'enemy' ? heroHand : undefined,
-      to: target === 'enemy' ? { x: ENEMY.x, y: ENEMY.y } : { x: HERO.x, y: HERO.y - 10 },
-      color: target === 'enemy' ? EFFS[kind].color : C.red,
-      kind, dmg: 9, target,
-    });
-    panelHold = Math.max(panelHold, 0.6);
-  },
-  // BANK 是 let 绑定，换题库后要拿到新的那份，所以必须走 getter
-  get pack() { return PACK; },
-  get bank() { return BANK; },
-  pick: (i: number) => answer(i),
-  // 掉落面板只有一个出口。冒烟测试要能"关掉它"，不然一局推不下去。
-  ackPower: () => ackPower(),
-  // X 费牌的费用是活的，读的是"此刻"：冒烟测试断言扣了几点时用它，别去猜卡表
-  costOf: (id: string) => costNow(defOf(id)),
-  fx: () => ({ ...fxCount(), enemy: FX.enemyActCount() }),
-  enemyAct: (k: FX.EnemyActKind = 'atk', taken = 9) => {
-    // 每种动作给一个像真的数值：杂念一次塞两张，不是十二张
-    const n = k === 'jam' ? 2 : k === 'def' ? 12 : k === 'buff' ? 2 : 12;
-    const dur = FX.enemyAct({
-      k, n, times: k === 'atk' ? 2 : 1, taken, absorbed: taken === 0 ? 12 : 0,
-      from: { x: ENEMY.x, y: ENEMY.y },
-      to: { x: HERO.x, y: HERO.y },
-      discard: DISCARD_TO,
-      ground: ENEMY_GROUND,
-    });
-    enemyHold = Math.max(enemyHold, dur);
-  },
-  endTurn: () => endTurn(),
-  locked: () => enemyHold > 0 || panelHold > 0,
-  quiz: () => ({
-    phase: G.panel.k === 'feedback' ? (quizSettling ? 'settle' : 'result')
-      : G.panel.k === 'question' ? 'ask' : 'idle',
-    settling: quizSettling,
-    /** 判定面板这一帧有没有真的画在屏幕上：答对时它一帧都不该出现。 */
-    drawn: quizFrame().drawn,
-    reveal: quizReveal,
-    geom: { ...quizFrame().geom },
-    autoIn, autoPaused,
-  }),
-  // 答对不再有面板可读，这一手的结算结果（打了几段、退了几点）从这里拿。
-  lastAnswer: () => lastFeedback(),
-  holdQuiz: (sec: number) => { quizHoldBoost = Math.max(0, sec); },
-  pauseAuto: (on = true) => { autoHold = on; autoCancelled = on; },
-  links: () => ({
-    drawn: G.drawnThisTurn,
-    block: G.block,
-    plays: { ...G.cardPlays },
-    next: G.nextBoost ? { ...G.nextBoost } : null,
-    live: Object.fromEntries(['c83', 'c84', 'c85', 'c86'].map((k) => [k, liveStatOf(k).atk])),
-  }),
-  // 截图用：把当前这一局写成断点，然后刷新回首页就能拍"继续这一局"那屏。
-  // 只有"在地图上、且没有面板"时才写得进去（和真实存档同一个门槛）。
-  save: () => saveRun(),
-  grid: () => {
-    beginFrame();
-    g.strokeStyle = 'rgba(255,255,255,.06)';
-    for (let x = 0; x < VW; x += 100) {
-      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, VH); g.stroke();
-      text(String(x), x + 4, 12, { size: 10, color: 'rgba(255,255,255,.3)' });
-    }
-    for (let y = 0; y < VH; y += 100) {
-      g.beginPath(); g.moveTo(0, y); g.lineTo(VW, y); g.stroke();
-      text(String(y), 4, y + 10, { size: 10, color: 'rgba(255,255,255,.3)' });
-    }
-  },
-};
-
-/**
- * 开发用：?dev=battle 直接落到某个画面。只是入口，规则仍是同一套 core。
- */
-function devJump() {
-  const d = new URLSearchParams(location.search).get('dev');
-  if (!d || d === 'title') return;
-  // 开局选模式面板
-  if (d === 'boon') { G.panel = { k: 'boon' }; return; }
-  // 素材图集：不需要开局，是一张独立的质量检验页
-  if (d === 'atlas') { G.screen = 'atlas'; return; }
-  // 地图/战斗的截图要能指定幕：?dev=map&stage=4
-  const qs = Number(new URLSearchParams(location.search).get('stage') || 0);
-  const stageArg = Number.isInteger(qs) && qs >= 1 && qs <= STAGES.length ? qs : 0;
-  const gotoStage = (n: number) => {
-    if (!n) return;
-    G.stage = n;
-    // 截图/调试也要切当前章的题库，否则幕名和"本章"会对不上。
-    enterStage(n);
-    G.map = genStage(n);
-    G.pos = null;
-    G.seen = {};
-  };
-  if (d === 'map') { startRun(); gotoStage(stageArg); return; }
-  if (d === 'rest') { startRun(); G.panel = { k: 'rest' }; return; }
-  if (d === 'event') { startRun(); G.panel = { k: 'event', ev: EVENTS[0] }; return; }
-  if (d === 'deck') { startRun(); G.panel = { k: 'deck' }; return; }
-  // 精炼选牌面板：每份副本各一格，卡面写的是"选完之后的数值"。
-  // 专门留一个入口，是因为这张面板的版式最容易在改动里悄悄退回去
-  //（去重、格子数、预览数值），而它正好是玩家报过"看不到效果"的那一屏。
-  if (d === 'refine') { startRun(); openCardPick('up'); return; }
-  if (d === 'pack') { startRun(); G.panel = { k: 'pack', msg: '', ok: true }; return; }
-  if (d === 'help') { startRun(); G.panel = { k: 'help' }; return; }
-  // 敌人动作截图：把招式表固定成单招循环，状态牌上的意图和演出才是同一件事；
-  // 而且真的走一次 endTurn，血量 / 格挡 / 弃牌堆都会跟着变，不是只盖一层特效。
-  // 参数既可以是单招名（atk/jam/def/buff），也可以是 FOES 里的怪物 key，
-  // 后者直接把敌人整个换成那只怪：新怪的立绘 / hint / 意图才能被逐个拍到。
-  if (d.startsWith('foe:')) {
-    const arg = d.slice(4);
-    const MOVES: Record<string, Move> = {
-      atk: { k: 'atk', m: 1 },
-      jam: { k: 'jam', n: 2 },
-      def: { k: 'def', v: 12 },
-      buff: { k: 'buff', v: 2 },
-    };
-    startRun();
-    enterNode(G.map[0][0].key);
-    if (G.enemy) {
-      const tpl = FOES.find((f) => f.key === arg);
-      if (tpl) {
-        Object.assign(G.enemy, {
-          key: tpl.key, name: tpl.name, art: tpl.art, hue: tpl.hue,
-          tag: tpl.tag, mech: tpl.mech, mechV: tpl.mechV,
-          moves: tpl.moves, mv: 0,
-        });
-      } else {
-        G.enemy.moves = [MOVES[arg] ?? MOVES.atk];
-        G.enemy.mv = 0;
-        // 穿透 / 复习官这些机制会给攻击加减成，截图要可复现就先摘掉
-        G.enemy.mech = undefined;
-      }
-    }
-    return;
-  }
-  // 精英掉落的收据：一张徽记 + "知道了"。没有选择，所以这里只有一个 id。
-  // 面板出现时掉落**已经生效**（G.powers 里有它），这一屏只负责把它念出来。
-  if (d === 'powerdrop') {
-    startRun();
-    G.powers.push('hourglass', 'lamp');
-    G.panel = { k: 'powerdrop', id: 'lamp' };
-    return;
-  }
-  if (d === 'power') {
-    startRun();
-    // 顶上那一排增益是**这一局已经拿到的**，截图要能看出排布，所以先塞两个
-    G.powers.push('hourglass', 'lamp');
-    enterNode(G.map[0][0].key);
-    return;
-  }
-
-  startRun();
-  enterNode(G.map[0][0].key);
-  // 联动卡演示：四张联动卡摊在手里，用 c04 真实抽一张验证抽牌数联动
-  if (d === 'links') {
-    G.hand = ['c83', 'c84', 'c85', 'c86', 'c86', 'c04'];
-    G.ap = G.apMax = 9;
-    G.enemy!.maxHp = G.enemy!.hp = 999;
-    G.enemy!.block = 0;
-    G.busy = false;
-    return;
-  }
-  // 点开一张**能出题的知识卡**，而不是写死下标 0：手牌是洗过的，
-  // 0 号位有时是基础牌，截图就会随机拍成"没有面板的战斗画面"。
-  let askIdx = G.hand.findIndex((e) => canAsk(e));
-  if (askIdx < 0 && (d === 'question' || d === 'answer' || d === 'wrong')) {
-    // findIndex 只找**手牌里**的牌，可起手 5 张完全可能一张需答题的知识卡
-    // 都没有（约两成）。那时 ?dev=answer 会安静地拍成一张空战斗画面：
-    // 文档图就随机裂了。补一张 1 费知识卡到 0 号位，手牌数不变，
-    // 后面依旧走真人那条 askCard → answer 流程，没有任何特殊结算。
-    const seed = PACK.cards.find((c) => canAsk(c.id) && typeof c.cost === 'number' && c.cost >= 1);
-    if (seed) { G.hand[0] = seed.id; askIdx = 0; }
-  }
-  // 和真人点下去看到的东西一致：一道题，四个选项，没有前置选择
-  if (d === 'question') { if (askIdx >= 0) askCard(askIdx); }
-  else if (d === 'answer') {
-    if (askIdx >= 0) askCard(askIdx);
-    // 截图脚本也必须走本次打乱后的视图，否则「正确」那一屏会拍成答错
-    const v = G.panel.k === 'question' ? G.panel.view : null;
-    if (v) answer(v.answer);
-  } else if (d === 'wrong') {
-    if (askIdx >= 0) askCard(askIdx);
-    const v = G.panel.k === 'question' ? G.panel.view : null;
-    if (v) answer(v.answer === 0 ? 1 : 0);
-  } else if (d === 'xcard') {
-    // X 费牌：牌面上只有一个 X，得看答题面板怎么把它换算成"现在等于几"。
-    // 换一张真的 X 费知识卡进手牌，而不是靠抽牌运气。
-    const xid = PACK.cards.find((c) => c.cost === 'x')!.id;
-    G.hand[0] = xid;
-    G.ap = G.apMax;
-    askCard(0);
-  } else if (d === 'reward') {
-    // ?dev=reward&sticky=1：带着「便签」走真实的 openReward()，四选一那一屏
-    // 才能稳定复现（卡片最多、最容易贴到面板边框的就是这一屏）。
-    if (new URLSearchParams(location.search).get('sticky') === '1') G.powers.push('sticky');
-    if (G.enemy) G.enemy.hp = 0;
-    G.pending = 'clear';
-    dismissFeedback();
-  } else if (d === 'report') {
-    // 只是为了让文档截图里不是一排 0：正常游戏里这些数字全部来自真实答题。
-    // 章节掌握读的是 STAGE_MEM，所以这里造的是章节档案，不是卡牌记忆。
-    const demo: Array<[number, number]> = [[9, 2], [7, 4], [12, 6], [4, 5], [0, 0]];
-    CURRICULUM.forEach((p, i) => {
-      const e = stageMemOf(p.topic);
-      e.ok = demo[i][0];
-      e.bad = demo[i][1];
-      e.q = {};
-      for (let j = 0; j < e.bad; j++) e.q[`q_demo_${p.stage}_${j}`] = { ok: 0, bad: 1 };
-    });
-    G.answerDraws = 14;
-    G.runOk = 12;
-    G.runBad = 6;
-    G.floors = 5;
-    G.stage = 3;
-    enterStage(3);
-    // 本章答题也来自流水，不是卡牌记忆；造 18 条，12 对 6 错。
-    G.answers = Array.from({ length: 18 }, (_, i) => ({
-      qid: `q_demo_3_${i}`, topic: G.stageTopic, stageTopic: G.stageTopic, stage: G.stage,
-      right: i < 12, choice: 0, answer: 0, stem: `演示题 ${i + 1}`,
-    }));
-    // 牌组里加一张 S 级卡：起手只给 C/B，所以这张一定是新卡种
-    G.deck.push(PACK.cards.find((c) => c.cost === 3)!.id);
-    endRun(true);
-  }
 }
 
 resetBattleView();

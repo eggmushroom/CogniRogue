@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
-import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS } from '../src/core/model';
+import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS, effSummary, effSummaryOf } from '../src/core/model';
 import type { MapNode } from '../src/core/model';
 import {
   EVENTS, G, answer, askCard, canAsk, canPay, cancelPanel, chooseEventOption, clearRun, defOf,
@@ -14,10 +14,11 @@ import {
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight,
   upGain, rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
   grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
-  lastFeedback,
+  lastFeedback, onFx, applyCardBonus, resolveEff, effFace, setScheduler,
 } from '../src/core';
 
-(globalThis as unknown as { setTimeout: (fn: () => void) => void }).setTimeout = (fn) => { fn(); };
+// 结构检查用同步调度，core 的演出延时不会真的挂住测试。
+setScheduler((_, fn) => fn());
 const here = dirname(fileURLToPath(import.meta.url));
 loadQuestionBank(mergePacks(
   [readFileSync(join(here, '..', 'packs', 'words.md'), 'utf8')],
@@ -48,6 +49,24 @@ ok(m[0][0].type === 'fight', '第一层是战斗');
 ok(m[STAGE_ROWS - 2].every((n) => n.type === 'rest'), 'Boss 前一层是复习点');
 ok(m[STAGE_ROWS - 1][0].type === 'boss', '最后一层是 Boss');
 ok(floorOf(3, 0) === 41 && floorOf(5, 19) === 100, '层号连续：第 3 幕第 1 层 = 41，第 5 幕末 = 100');
+
+// 精英保底：一幕里一只精英都没有，等于这一局没有增益来源。
+// 早先是"随机挑一个节点改成精英"，挑到复习点时静默失败 —— 这里把随机钉死成
+// "永远抽不到精英"，再看保底是否补上一只、而且补在能改的那几行里。
+{
+  const realRandom = Math.random;
+  // 0.5 落在 fight + event 之内（两幕配比最高 0.60），rollType 永远走不到精英那一支。
+  Math.random = () => 0.5;
+  try {
+    const map = genStage(1);
+    const elites = map.flat().filter((nd) => nd.type === 'elite');
+    ok(elites.length === 1, `精英保底：随机一只都不给时仍然补 1 只（${elites.length}）`);
+    ok(elites.every((nd) => nd.r >= 6 && nd.r <= STAGE_ROWS - 6),
+      `精英补在第 6–${STAGE_ROWS - 6} 行（实际 ${elites.map((nd) => nd.r).join(',') || '无'}）`);
+  } finally {
+    Math.random = realRandom;
+  }
+}
 
 // ── 3. 过幕 ──
 startRun();
@@ -406,16 +425,40 @@ function missGain(eff: string) {
 }
 
 {
-  // 取消 = 不付钱。
+  // 取消 = 不付钱，并且回到事件本身；不能把节点空丢在半路。
   startRun();
   G.hp = 50;
   G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'notebook')! };
   chooseEventOption(0);
   ok(G.pendingCost === 10, '取消测试：打开面板时挂着 10 点待付');
   cancelPanel();
-  ok(panelKind() === 'none' && G.pendingCost === 0,
-    `取消测试：面板关掉、账也清了（${panelKind()} / ${G.pendingCost}）`);
+  ok(panelKind() === 'event' && G.pendingCost === 0,
+    `取消测试：回到事件、账也清了（${panelKind()} / ${G.pendingCost}）`);
   ok(G.hp === 50, `取消测试：一分血没扣（${G.hp}）`);
+}
+
+{
+  // 旧笔记本的回血要等真的删掉一张才结算；取消不能白拿 10 点生命。
+  startRun();
+  G.hp = 50;
+  G.node = { r: 1, i: 0, key: '1:0', col: 0, type: 'event', next: [] };
+  G.pos = { r: 0, i: 0 };
+  const floors0 = G.floors;
+  G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'notebook')! };
+  chooseEventOption(1);
+  ok(G.pendingHeal === 10, `旧笔记本取消测试：待回 10 点生命挂在面板上（${G.pendingHeal}）`);
+  cancelPanel();
+  ok(panelKind() === 'event' && G.pendingHeal === 0,
+    `旧笔记本取消测试：回到事件、收益也清了（${panelKind()} / ${G.pendingHeal}）`);
+  ok(G.hp === 50 && G.floors === floors0,
+    `旧笔记本取消测试：没有白回血、没有推进层数（${G.hp} / ${G.floors}）`);
+
+  chooseEventOption(1);
+  const before = G.deck.length;
+  forgetCard(0);
+  ok(G.deck.length === before - 1, `旧笔记本：真的删掉一张（${before} → ${G.deck.length}）`);
+  ok(G.hp === 60, `旧笔记本：删完才回 10 点生命（${G.hp}）`);
+  ok(G.floors === floors0 + 1, `旧笔记本：节点收尾推进一层（${G.floors}）`);
 }
 
 // ── 10a. 基础牌
@@ -733,7 +776,94 @@ function missGain(eff: string) {
       `装订线：答错格挡正好减半（${full} → ${half}）`);
   }
 
-  // 借书证：2 费答对退回 1 点。
+  {
+  // 复习点的选牌取消后回到复习面板，不能把节点空丢在半路。
+  startRun();
+  G.node = { r: 1, i: 0, key: '1:0', col: 0, type: 'rest', next: [] };
+  G.panel = { k: 'rest' };
+  openCardPick('up', { k: 'rest' });
+  ok(panelKind() === 'cardpick', `复习点：打开选牌（${panelKind()}）`);
+  cancelPanel();
+  ok(panelKind() === 'rest', `复习点：取消回到复习面板（${panelKind()}）`);
+}
+
+{
+  // 装订线答错已经有伤害，演出不能再播“焰灭”（否则画面上是“没打出去”）。
+  const e = battle(1, 'examiner');
+  const plain = PACK.cards.find((c) => c.kind === 'knowledge' && c.eff === 'strike' && c.cost === 1 && c.atk > 0)!;
+  G.powers = ['binder'];
+  G.ap = 9;
+  G.hand[0] = plain.id;
+  e.hp = 999;
+  const seen: string[] = [];
+  const off = onFx((ev) => { if (ev.t === 'dmg' || ev.t === 'fizzle') seen.push(ev.t); });
+  askCard(0);
+  if (panelKind() !== 'question') throw new Error('装订线演出测试：没弹题');
+  const view = (G.panel as unknown as { view: { answer: number; options: string[] } }).view;
+  answer((view.answer + 1) % view.options.length);
+  off();
+  if (panelKind() === 'feedback') dismissFeedback();
+  ok(seen.includes('dmg') && !seen.includes('fizzle'),
+    `装订线：半结算发光刃、不播焰灭（${seen.join('/') || '无事件'}）`);
+}
+
+{
+  // 0 伤害的知识卡（纯防御）答对不发光刃，也不该演成答错。
+  const e = battle(1, 'examiner');
+  const zero = PACK.cards.find((c) => c.id === 'c96')!;
+  G.powers = [];
+  G.ap = 9;
+  G.hand[0] = zero.id;
+  e.hp = 999;
+  e.block = 0;
+  const seen: string[] = [];
+  const off = onFx((ev) => { if (ev.t === 'dmg' || ev.t === 'fizzle') seen.push(ev.t); });
+  askCard(0);
+  if (panelKind() !== 'question') throw new Error('0 伤害测试：没弹题');
+  answer((G.panel as unknown as { view: { answer: number } }).view.answer);
+  off();
+  if (panelKind() === 'feedback') dismissFeedback();
+  ok(!seen.includes('dmg') && !seen.includes('fizzle'),
+    `纯防御知识卡：0 伤害不发光刃、不焰灭（${seen.join('/') || '无事件'}）`);
+}
+
+{
+  // 压书石必须进答题面板文案；effSummary 是裸卡面，effSummaryOf 才是带加成的版本。
+  const c = PACK.cards.find((x) => x.kind === 'knowledge' && x.cost === 1 && x.eff === 'strike' && x.atk > 0 && !x.mods?.selfHp)!;
+  G.powers = ['press'];
+  const plain = effSummary(c.eff, c.atk, c.blk, c.mods);
+  const out = applyCardBonus(resolveEff(c.eff, c.atk, c.blk, 1, c.mods));
+  const buffed = effSummaryOf(out, c.eff);
+  const plainPer = effFace(resolveEff(c.eff, c.atk, c.blk, 1, c.mods)).per;
+  ok(buffed !== plain && effFace(out).per === plainPer + BAL.pressAtk,
+    `压书石：答题面板文案 +${BAL.pressAtk}（${plainPer} → ${effFace(out).per}）`);
+  G.powers = [];
+}
+
+{
+  // 本章统计只由答题累加，和 answers 环形缓冲脱钩。
+  battle(1, 'examiner');
+  G.powers = [];
+  G.ap = 9;
+  G.charge = {};
+  G.hand[0] = 'c05';
+  askCard(0);
+  if (panelKind() !== 'question') throw new Error('本章统计测试：没弹题');
+  answer((G.panel as unknown as { view: { answer: number } }).view.answer);
+  ok(G.stageOk === 1, `本章答对计数 +1（${G.stageOk}）`);
+  if (panelKind() === 'feedback') dismissFeedback();
+
+  G.charge = {};
+  G.hand[0] = 'c06';
+  askCard(0);
+  if (panelKind() !== 'question') throw new Error('本章统计测试：第二次没弹题');
+  const v2 = (G.panel as unknown as { view: { answer: number; options: string[] } }).view;
+  answer((v2.answer + 1) % v2.options.length);
+  ok(G.stageBad === 1, `本章答错计数 +1（${G.stageBad}）`);
+  if (panelKind() === 'feedback') dismissFeedback();
+}
+
+// 借书证：2 费答对退回 1 点。
   {
     const two = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 2)!;
     const after = (powers: string[]) => {
@@ -1138,24 +1268,34 @@ function missGain(eff: string) {
   } as Storage;
 
   const base = {
-    v: 7, stage: 1, mode: null, hp: 50, maxHp: 70,
+    v: 8, stage: 1, mode: null, hp: 50, maxHp: 70,
     deck: ['base:strike'], powers: [],
     map: genStage(1), pos: null, seen: {}, topicWrong: {},
-    floors: 0, runOk: 0, runBad: 0, answerDraws: 0,
-    onceStage: [], onceRun: [], upGrade: 0,
+    floors: 0, runOk: 0, runBad: 0, stageOk: 0, stageBad: 0, answerDraws: 0,
+    qPicked: {}, onceStage: [], onceRun: [], upGrade: 0,
   };
   const put = (snap: unknown) => {
     clearRun();
-    store.set('cognirogue.run.v7', JSON.stringify(snap));
+    store.set('cognirogue.run.v8', JSON.stringify(snap));
   };
 
   put(base);
   ok(runSaveInfo()?.stage === 1, '合法存档可读');
+  put({ ...base, v: 7 });
+  ok(runSaveInfo() === null, '旧版本号存档被拒绝（v7）');
+  put({ ...base, qPicked: { q_demo: -1 } });
+  ok(runSaveInfo() === null, '题目曝光计数为负的存档被拒绝');
 
   put({ ...base, mode: 'study' });
   ok(runSaveInfo()?.stage === 1, '带模式的存档可读');
   resumeRun();
   ok(G.mode === 'study', 'mode 随断点存回来');
+
+  put({ ...base, qPicked: { q_demo: 2 }, stageOk: 3, stageBad: 1 });
+  resumeRun();
+  ok(G.qPicked.q_demo === 2, `题目曝光计数随断点存回来（${G.qPicked.q_demo}）`);
+  ok(G.stageOk === 3 && G.stageBad === 1,
+    `本章答题计数随断点存回来（${G.stageOk} / ${G.stageBad}）`);
 
   const oldId = Object.keys(LEGACY_CARD_IDS)[0];
   put({ ...base, deck: [oldId] });

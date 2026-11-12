@@ -17,8 +17,8 @@ export const G: GameState = {
   answerDraws: 0, answerDrawsThisTurn: 0,
   drawnThisTurn: 0, cardsThisTurn: 0, cardPlays: {}, nextBoost: null,
   apDown: 0, drawCut: 0,
-  runOk: 0, runBad: 0, floors: 0,
-  pending: null, pendingCost: 0, busy: false,
+  runOk: 0, runBad: 0, stageOk: 0, stageBad: 0, floors: 0,
+  pending: null, pendingCost: 0, pendingHeal: 0, busy: false,
 };
 
 /**

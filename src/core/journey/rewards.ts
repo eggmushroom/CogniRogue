@@ -59,7 +59,8 @@ export function skipReward() {
 
 /**
  * 掉一个增益并当场生效；池子空了返回 null。
- * 这是所有增益的唯一发放口，开局带的增益也走这里。
+ * 这是精英 / 幕 Boss 掉落与调试发放的唯一入口；开局模式带的增益由 `startRun`
+ * 直接写进 `G.powers`，不走这里（它没有“掉落”这件事）。
  */
 export function grantPower(): PowerId | null {
   const p = shuffle(POWERS.filter((q) => !G.powers.includes(q.id)))[0];

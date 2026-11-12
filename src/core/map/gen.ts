@@ -1,7 +1,7 @@
 import type { MapNode, NodeType } from '../model/types';
 import { STAGES, STAGE_ROWS, stageOf } from '../model/data';
 import { G } from '../infra/state';
-import { shuffle } from '../infra/util';
+import { shuffle, pick } from '../infra/util';
 
 /**
  * 一幕的分支地图与层号换算。一局 100 层，但地图一次只装 20 行，过幕换图。
@@ -48,11 +48,16 @@ export function genStage(stage = G.stage): MapNode[][] {
   rows.push([{ col: 1, type: 'boss' } as MapNode]);
 
   // 一幕里一只精英都没有会显得太平：精英是增益牌唯一的稳定来源。
-  // 补在第 6..14 行里随机一行的随机节点上（那里已经过了开局，玩家有牌可打）。
+  // 从第 6..14 行里挑一个能改成精英的节点。不能在随机位置直接改：
+  // 挑到复习点时会静默失败，整幕仍然没有精英。
   if (def.mix.elite > 0 && !elites) {
-    const r = 6 + Math.floor(Math.random() * 9);
-    const nd = rows[r][Math.floor(Math.random() * rows[r].length)];
-    if (nd.type === 'fight' || nd.type === 'event') nd.type = 'elite';
+    const candidates: MapNode[] = [];
+    for (let r = 6; r <= MAP_ROWS - 6; r++) {
+      for (const nd of rows[r]) {
+        if (nd.type === 'fight' || nd.type === 'event') candidates.push(nd);
+      }
+    }
+    if (candidates.length) pick(candidates).type = 'elite';
   }
 
   for (let r = 0; r < MAP_ROWS - 1; r++) {

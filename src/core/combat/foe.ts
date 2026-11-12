@@ -1,6 +1,7 @@
 import { BAL } from '../model/data';
 import type { Foe, FoeTpl } from '../model/types';
 import { G, checkPending, log, topTopic } from '../infra/state';
+import { after } from '../infra/schedule';
 import { emit } from '../infra/events';
 import { grantBlock, loseHp } from '../infra/write';
 import { JUNK_ID } from '../cards/registry';
@@ -192,5 +193,5 @@ export function endTurn() {
   if (!G.pending) { G.turn += 1; startTurn(handLeft); }
   G.busy = false;
 
-  if (G.pending === 'dead') setTimeout(() => { if (G.pending === 'dead') requestSettle(); }, 700);
+  if (G.pending === 'dead') after(700, () => { if (G.pending === 'dead') requestSettle(); });
 }

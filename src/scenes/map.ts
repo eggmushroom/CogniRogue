@@ -80,14 +80,6 @@ function updateCam(dt: number) {
   cam = clampCam(cam);
 }
 
-/** 换幕 / 重开一局时把镜头复位，否则会带着上一张图的滚动位置。 */
-export function resetMapCam() {
-  cam = 0;
-  camManual = false;
-  lastFocus = -1;
-  camStage = 0;
-}
-
 /**
  * 调试/冒烟用：当前镜头行号与是否被手动拨过。
  * 冒烟测试读它，因为"能不能滚"从命中矩形上看不出来。

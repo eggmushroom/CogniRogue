@@ -10,7 +10,7 @@ import { enterStage } from '../library/stage';
 import { saveStageMem } from '../library/stagemem';
 import { tickDue } from '../library/memory';
 import { availableNodes, curFloor, FLOOR_MAX, genStage } from '../map/gen';
-import { setSettleHandler, startBattle } from '../combat';
+import { setSettleHandler, startBattle, resetBattleFields } from '../combat';
 import { EVENTS } from './events';
 import { openReward, openPowerDrop } from './rewards';
 import { endRun } from './report';
@@ -43,8 +43,8 @@ export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []
     answerDraws: 0, syllabusTurn: 0,
     onceUsed: {},
     apDown: 0, drawCut: 0, carryBlock: 0, upGrade: 0,
-    runOk: 0, runBad: 0, floors: 0,
-    pending: null, pendingCost: 0, busy: false,
+    runOk: 0, runBad: 0, stageOk: 0, stageBad: 0, floors: 0,
+    pending: null, pendingCost: 0, pendingHeal: 0, busy: false,
   } satisfies Partial<GameState>);
   resetTurnState();
   clearRunOnce();
@@ -95,17 +95,14 @@ function nextStage() {
   saveStageMem();
   G.stage = next;
   enterStage(next);
+  // 新的一章，本局“本章答题”重新计数；整局统计不动。
+  G.stageOk = 0;
+  G.stageBad = 0;
   G.pos = null;
   G.node = null;
   G.seen = {};
   G.map = genStage(next);
-  G.enemy = null;
-  G.pending = null;
-  G.hand = [];
-  G.draw = [];
-  G.discard = [];
-  G.apDown = 0;
-  G.drawCut = 0;
+  resetBattleFields();
   G.carryBlock = 0;
   clearStageOnce();
   const grown = rulesOf().stageMaxHp;

@@ -1,4 +1,5 @@
 import type { Question, QView } from '../model/types';
+import { shuffle } from '../infra/util';
 
 /**
  * library/question：出题视图。
@@ -23,11 +24,7 @@ export function shuffleOptions(q: Question): QView {
     return { options, answer };
   }
 
-  const idx = options.map((_, i) => i);
-  // Fisher-Yates：每个排列等概率，不做「随机交换一遍」那种有偏写法
-  for (let i = idx.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [idx[i], idx[j]] = [idx[j], idx[i]];
-  }
+  // 洗的是下标，答案索引跟着一起换算；和 `infra/util.shuffle` 共用一份 Fisher-Yates。
+  const idx = shuffle(options.map((_, i) => i));
   return { options: idx.map((i) => options[i]), answer: idx.indexOf(answer) };
 }

@@ -176,6 +176,14 @@ async function clickLabel(label, nth = 0) {
   if (got.label !== label) throw new Error(`「${label}」点歪了，落到「${got.label}」`);
 }
 
+/** 发一次真实的按键：Escape 关面板、空格结束回合，键盘能做的事不该只有鼠标能测。 */
+async function pressKey(key, code, vk) {
+  const base = { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk };
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', ...base });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+  await sleep(120);
+}
+
 /** 等手牌全部飞完并停稳。抽牌是按 dt 推的，慢机器上固定 sleep 一定不够。 */
 async function waitHand(ms = 15000) {
   const t0 = Date.now();
@@ -1028,6 +1036,38 @@ await boot(URL_ + '?dev=event');
 await step('事件 → 选一个选项', () => clickLabel('eventopt', 0), async () =>
   (await S('cog.state.panel.k')) !== 'event');
 
+// 选牌类事件（旧笔记本：精炼一张，失去 10 点生命）打开面板后取消，
+// 必须回到事件本身、一分血不扣、也不白拿收益 —— 这条路径以前会把节点空丢在半路。
+await boot(URL_ + '?dev=event&ev=notebook');
+await step('事件选牌 → 取消回到事件，代价一起清掉', async () => {
+  const before = await S('cog.state.hp');
+  globalThis.__hpBefore = before;
+  await clickLabel('eventopt', 0);
+  if ((await S('cog.state.panel.k')) !== 'cardpick') throw new Error('没有打开选牌面板');
+  if ((await S('cog.state.pendingCost')) !== 10) throw new Error('待付代价没挂上');
+  await clickLabel('×');
+}, async () => {
+  const st = await S(`({
+    panel: cog.state.panel.k, cost: cog.state.pendingCost,
+    heal: cog.state.pendingHeal, hp: cog.state.hp,
+  })`);
+  const ok = st.panel === 'event' && st.cost === 0 && st.heal === 0 && st.hp === globalThis.__hpBefore;
+  if (!ok) throw new Error('实际状态：' + JSON.stringify(st));
+  return true;
+});
+
+// 同一个面板再走一次键盘出口：Esc 和右上角的 × 必须等价。
+await step('事件选牌 → Esc 也能取消，回到事件', async () => {
+  await clickLabel('eventopt', 0);
+  if ((await S('cog.state.panel.k')) !== 'cardpick') throw new Error('第二次没打开选牌面板');
+  await pressKey('Escape', 'Escape', 27);
+}, async () => {
+  const st = await S(`({ panel: cog.state.panel.k, cost: cog.state.pendingCost, hp: cog.state.hp })`);
+  const ok = st.panel === 'event' && st.cost === 0 && st.hp === globalThis.__hpBefore;
+  if (!ok) throw new Error('实际状态：' + JSON.stringify(st));
+  return true;
+});
+
 // ── 断点 ───────────────────────────────────────────────────
 // 100 层的一局接近一小时，存档不是附加功能，是"这局能不能玩完"的一部分。
 // 这里走完整条路：写一份断点 → 真的刷新一次 → 首页出现「继续这一局」
@@ -1042,7 +1082,7 @@ globalThis.__snap = await evalJs(`(() => {
   s.floors = 6;
   s.hp = 41;
   cog.save();
-  const raw = localStorage.getItem('cognirogue.run.v7');
+  const raw = localStorage.getItem('cognirogue.run.v8');
   return { len: raw ? raw.length : 0, deck: s.deck.length, hp: s.hp };
 })()`);
 await boot(URL_);

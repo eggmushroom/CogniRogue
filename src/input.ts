@@ -1,5 +1,3 @@
-import { resize } from './gfx/canvas';
-
 interface Hot {
   x: number; y: number; w: number; h: number;
   fn: () => void;
@@ -200,8 +198,6 @@ export function bindInput(el: HTMLCanvasElement, toLogic: (cx: number, cy: numbe
     },
     { passive: false },
   );
-
-  window.addEventListener('resize', () => resize());
 }
 
 export function keyHandler(fn: (k: string) => void) {

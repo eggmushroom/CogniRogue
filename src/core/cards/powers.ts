@@ -1,6 +1,6 @@
-import { BAL, POWER_BY_ID } from '../model/data';
+import { BAL } from '../model/data';
 import type { EffOut } from '../model/effects';
-import type { CardId, PowerId, PowerScope } from '../model/types';
+import type { CardId, PowerId } from '../model/types';
 import { G, log, setDeathGuard } from '../infra/state';
 import { grantBlock, healHp, raiseMaxHp, reviveHp } from '../infra/write';
 import { shuffle } from '../infra/util';
@@ -136,9 +136,6 @@ export function clearStageOnce() {
 export function clearRunOnce() {
   G.onceRun = {};
 }
-
-/** 一张牌的作用域。数据表是唯一来源，这里只是给消费点一个短名字。 */
-export const scopeOf = (id: PowerId): PowerScope => POWER_BY_ID[id]?.scope ?? 'always';
 
 /** 拾取即结算：拿到时把效果落到这一局，之后不挂时机。
  * 返回写进日志的一句话；拿不到效果时返回空串。 */

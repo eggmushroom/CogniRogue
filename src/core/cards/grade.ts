@@ -1,5 +1,6 @@
 import type { CardDef, CardGrade, CardId } from '../model/types';
 import { defOf } from './registry';
+import { costOf } from './cost';
 import { cardKind } from './kinds';
 
 /**
@@ -19,7 +20,7 @@ export const GRADE_META: Record<CardGrade, { color: string; label: string }> = {
 export function cardGrade(card: CardDef | null | undefined): CardGrade {
   if (!card) return 'C';
   if (cardKind(card) !== 'knowledge') return 'C';
-  const c = card.cost ?? 1;
+  const c = costOf(card);
   if (c === 'x') return 'S';
   if (c >= 3) return 'S';
   if (c === 2) return 'A';

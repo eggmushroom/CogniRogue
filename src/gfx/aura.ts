@@ -1,5 +1,6 @@
 import { g } from './canvas';
 import { C, withAlpha } from './theme';
+import { clamp01 } from './geom';
 
 /**
  * 脚下光与护盾光，双方共用一套。
@@ -16,7 +17,6 @@ import { C, withAlpha } from './theme';
  */
 
 const TAU = Math.PI * 2;
-const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 export interface GroundOpts {
   x: number;

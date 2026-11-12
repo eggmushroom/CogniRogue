@@ -12,8 +12,11 @@ import {
   G, PACK, answer, availableNodes, bankQuestionCount, canPay, cardAskState, chooseEventOption, defOf, dismissFeedback,
   endTurn, enterNode, forgetCard, loadQuestionBank, openCardPick, playBasic, playFree, resetMemory, restHeal,
   skipReward, startRun, takeCard, ackPower, askCard, mergePacks, upgradeCard, cardKind, cardGrade,
-  moveOf, cancelPanel, isUpgraded, JUNK_ID,
+  moveOf, cancelPanel, isUpgraded, JUNK_ID, setScheduler,
 } from '../src/core';
+
+// 无头模拟用同步调度：core 的 200ms 输入锁在这里不需要真的等。
+setScheduler((_, fn) => fn());
 
 /**
  * 参数可覆盖，扫参不用改源码：
@@ -94,8 +97,7 @@ for (const arg of process.argv.slice(2)) {
 if (OLD_PATH) TAKE = false;
 
 // 让"死亡后延迟结算"在模拟里同步发生，不然几千局会跑成几分钟
-(globalThis as unknown as { setTimeout: (fn: () => void) => void }).setTimeout = (fn) => { fn(); };
-
+// 无头模拟用同步调度：core 的 200ms 输入锁在这里不需要真的等。
 const here = dirname(fileURLToPath(import.meta.url));
 // 和浏览器里的内置题库完全相同：同一个 mergePacks 读同一份单词表，数值才可比
 const md = mergePacks(
@@ -253,7 +255,10 @@ function runOne(p: number, st: Stat) {
         if (rm >= 0) { forgetCard(rm); continue; }
         // 没有可删的知识卡（牌组只有基础牌）时取消：取消会把事件挂着的
         // 待付款项一起丢掉，不白扣血（见 combat/play.ts 的 cancelPanel）。
+        // 取消后事件面板会恢复；机器人不能立刻再选同一项，否则会在
+        // “打开选牌 → 取消 → 再打开”之间空转到 guard 上限，直接走“离开”收尾。
         cancelPanel();
+        if (G.panel.k === 'event') chooseEventOption(G.panel.ev.opts.length - 1);
         continue;
       }
       let upg = -1;
@@ -264,7 +269,12 @@ function runOne(p: number, st: Stat) {
         const s = cardScore(defOf(id));
         if (s > best) { best = s; upg = i; }
       });
-      if (upg >= 0) upgradeCard(upg); else cancelPanel();
+      if (upg >= 0) upgradeCard(upg);
+      else {
+        cancelPanel();
+        // 同 rm：取消恢复事件面板时，机器人直接选“离开”，不空转。
+        if (G.panel.k === 'event') chooseEventOption(G.panel.ev.opts.length - 1);
+      }
       continue;
     }
     if (panel.k === 'event') {
