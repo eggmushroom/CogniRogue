@@ -1,4 +1,4 @@
-﻿import { g, roundRect, wrapText } from './canvas';
+import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
 import { C, font, FONT_UI, FONT_TITLE, withAlpha } from './theme';
 import { EFFS, effFace, resolveEff } from '../core/model';
@@ -197,8 +197,6 @@ export interface CardOpts {
   note?: string;
   /** 联动规则：和「造成 X 点伤害」一样，写在效果行下面 */
   rule?: string;
-  /** 卡面内部底部的状态徽条（手牌用）：联动规则 / 免答，不占卡外空间 */
-  badge?: string;
   /**
    * 现在付不付得起这张牌的费用。只有手牌会传 false —— 牌组、奖励、牌堆列表里
    * 不存在"此刻能不能打"这个问题，传了反而是噪音。
@@ -620,27 +618,10 @@ export function drawCard(
     g.fillRect(x + pad, fy, w - pad * 2, Math.max(1, 0.8 * s));
   }
 
-  // 手牌上的联动/免答说明画在**卡面里**。以前借 note 画在卡外下方，
-  // 五张牌排开时那一排小字会贴到屏幕底边，还和邻居的注脚连成一片。
-  if (opts.badge) {
-    const by = y + h - 36 * s;
-    const bh = 20 * s;
-    roundRect(x + 10 * s, by, w - 20 * s, bh, 6 * s);
-    g.fillStyle = 'rgba(9,12,19,.86)';
-    g.fill();
-    g.strokeStyle = withAlpha(C.gold, 0.42);
-    g.lineWidth = 1;
-    g.stroke();
-    text(opts.badge, x + w / 2, by + bh / 2 + 4 * s, {
-      size: Math.round(11 * s), align: 'center', color: C.gold, weight: 700,
-      maxW: w - 26 * s,
-    });
-  }
-
-  // 说明也画在卡内：以前画在卡外下方，字号和字重都跟牌面不是一套，
+  // 说明画在卡内：以前画在卡外下方，字号和字重都跟牌面不是一套，
   // 五张牌排开时像一排贴在牌底的 UI 标签。现在它是卡面最底下的一条注脚，
   // 和效果行共用 FONT_UI；只用一层向下压暗的渐变托底，不再套一个外来的胶囊。
-  if (opts.note && !opts.badge) {
+  if (opts.note) {
     g.save();
     roundRect(x, y, w, h, r);
     g.clip();

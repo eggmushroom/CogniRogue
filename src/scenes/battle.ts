@@ -9,7 +9,7 @@ import { BAL, EFFS, MODE_BY_ID, POWER_BY_ID, stageOf } from '../core/model';
 import { G } from '../core/infra';
 import { linkStatus, liveStatOf } from '../core/combat/link';
 import { curFloor } from '../core/map';
-import { canPay, cardKind, costOf, defOf, gradeNeed, isUpgraded, isXCost, statOf } from '../core/cards';
+import { canPay, cardKind, costOf, defOf, isUpgraded, isXCost, statOf } from '../core/cards';
 import {
   askCard, cardAskState, endTurn, intentText, playBasic, playFree,
 } from '../core/combat';
@@ -1012,10 +1012,8 @@ function drawHand(t: number, dt: number) {
       up: isUpgraded(id), glow: hv, hovered: hv,
       // 付不起的牌费用数字转红：这一手现在打不出去，得在点之前就看得出来
       afford: isJunk || canPay(card),
-      // 只有“原本要答题、这一场攒够了”的牌才标「免答」。
-      // 0 费 C 级牌本来就不答题（`gradeNeed === 0`），再标一次只是噪音。
-      // 联动说明走卡内注脚，和牌面共用同一套字。
-      badge: askState === 'free' && gradeNeed(card) > 0 ? '免答' : undefined,
+      // 免答不单独做徽记：它已经由卡面等级和点击后的直接结算表达，
+      // 再贴一条「免答」只会和牌名、效果行抢位置。
       rule: card.link?.note,
     });
     g.restore();
