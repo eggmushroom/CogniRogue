@@ -69,6 +69,7 @@ export function startBattle(nd: MapNode) {
   G.cardPlays = {};
   G.nextBoost = null;
   G.drawnThisTurn = 0;
+  G.cardsThisTurn = 0;
   drawBattleQuestions();
   // 蠹蛾这类怪不封牌，它只是让你少看见一张：本场每回合的抽牌数 -1。
   // 记在场上而不是临时减 —— 手牌上限、抽牌动画、日志都得读同一个数。
@@ -144,6 +145,7 @@ export function playFree(idx: number) {
   const shape = r.out.hits.length > 1 ? `${r.out.hits.join('+')} 伤害` : `${r.dmg} 伤害`;
   log(
     `「${card.name}」${r.dmg ? shape : ''}${r.blk ? `${r.dmg ? '，' : ''}${r.blk} 格挡` : ''}` +
+      `${r.selfHp ? `，失去 ${r.selfHp} 生命` : ''}` +
       `（${cardGrade(card)} 级，这一场已免答${back ? `；反伤 ${back}` : ''}）` +
       `${r.nextNote ? `　·　${r.nextNote}` : ''}`,
     'hi',
@@ -261,6 +263,8 @@ function damageEnemy(raw: number, pierce = false) {
  */
 function strikeWith(id: CardId, mult: number, repeat = 1) {
   const card = defOf(id);
+  // 这一回合第几张真正生效的牌。答错不增加，所以墨水瓶/节拍器只数打出去的牌。
+  G.cardsThisTurn += 1;
   // 读的是**此刻**的联动底数，不是卡面印死的那个数。手牌、答题面板、
   // 结算三处都调 liveStatOf，所以「卡面写 10」和「实际打 10」是同一个数。
   const st = liveStatOf(id);
@@ -280,6 +284,7 @@ function strikeWith(id: CardId, mult: number, repeat = 1) {
   grantBlock(out.blk);
   let heal = 0;
   let drawn = 0;
+  let selfHp = 0;
   // 按**实际打进去的伤害**回血。0 伤害不该回 1 点 —— 那是卡面上没有的保底。
   // `heal` 记的是血量真的涨了多少：满血时是 0（`healHp` 返回实际值），
   // 反馈和飘字才不会凭空多报一个 +N。
@@ -287,10 +292,35 @@ function strikeWith(id: CardId, mult: number, repeat = 1) {
     heal = healHp(Math.max(1, Math.round(dmg * out.healRatio)));
   }
   if (out.draw > 0) drawn = drawCards(out.draw);
+  // 自伤是这张牌打出后的一次性代价；卡面写了多少，这里就扣多少。
+  if (out.selfHp > 0) {
+    selfHp = out.selfHp;
+    loseHp(selfHp);
+    log(`「${card.name}」反噬：你失去 ${selfHp} 点生命`, 'bad');
+    emit({ t: 'hurt', n: selfHp });
+  }
+  // ── 节奏型增益：全部按“真正生效的牌”计数，答错不触发 ──
+  const R = rulesOf();
+  if (R.inkDraw > 0 && G.cardsThisTurn % 3 === 0) {
+    const got = drawCards(R.inkDraw);
+    if (got) log(`墨水瓶：本回合第 ${G.cardsThisTurn} 张牌，抽 ${got} 张`, 'hi');
+  }
+  if (G.cardsThisTurn === 3 && onceThisFight('pulse')) {
+    gainAp(BAL.pulseRefund);
+    log(`节拍器：这一场第一次三连，退回 ${BAL.pulseRefund} 点行动力`, 'hi');
+  }
+  if (!isXCost(card) && costNow(card) === 0 && onceThisFight('varnish')) {
+    const got = drawCards(BAL.varnishDraw);
+    if (got) log(`亮油：这一场第一张 0 费牌，抽 ${got} 张`, 'hi');
+  }
+  if (out.hits.some((h) => h > 0) && onceThisFight('seed')) {
+    grantBlock(BAL.seedBlock);
+    log(`种纸：这一场第一张攻击牌，补 ${BAL.seedBlock} 点格挡`, 'hi');
+  }
   // 只有真的走完这一下才记账：答错这一手作废，上一张留的倍率继续留着。
   const nextNote = commitLink(id);
   return {
-    out, dmg, absorbed, blk: out.blk, heal, drawn, parts,
+    out, dmg, absorbed, blk: out.blk, heal, drawn, selfHp, parts,
     linkNote: st.reasons.join(' · '), boosted: st.boosted, nextNote,
   };
 }
@@ -355,6 +385,7 @@ export function answer(choice: number) {
   let absorbed = 0;
   let heal = 0;
   let drawn = 0;
+  let selfHp = 0;
   let hits: number[] = [];
   let parts: { d: number; a: number }[] = [];
   let apNote = '';
@@ -377,8 +408,10 @@ export function answer(choice: number) {
     blkGain = r.blk;
     heal = r.heal;
     drawn = r.drawn;
+    selfHp = r.selfHp;
     parts = r.parts;
     linkNote = r.linkNote;
+    if (r.selfHp) apNote = join(apNote, `反噬：失去 ${r.selfHp} 点生命。`);
     if (r.nextNote) apNote = join(apNote, `${r.nextNote}。`);
     if (xcost) apNote = join(apNote, `耗尽 ${spent} 点行动力，效果结算 ${repeat} 次。`);
     if (drawn) apNote = join(apNote, `专注：抽 ${drawn} 张。`);
@@ -632,6 +665,7 @@ export function answer(choice: number) {
       (right
         ? `，${shape}${absorbed ? `（${absorbed} 被挡）` : ''}` +
           (blkGain ? `，${blkGain} 格挡` : '') +
+          (selfHp ? `，失去 ${selfHp} 生命` : '') +
           (heal ? `，回 ${heal}` : '') +
           (drawn ? `，抽 ${drawn}` : '')
         : `，效果作废${blkGain ? `，${blkGain} 格挡`

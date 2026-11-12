@@ -19,7 +19,7 @@ export const G: GameState = {
   onceUsed: {}, onceStage: {}, onceRun: {},
   carryBlock: 0, upGrade: 0,
   answerDraws: 0, answerDrawsThisTurn: 0, missDrawsThisTurn: 0,
-  drawnThisTurn: 0, cardPlays: {}, nextBoost: null,
+  drawnThisTurn: 0, cardsThisTurn: 0, cardPlays: {}, nextBoost: null,
   apDown: 0, drawCut: 0,
   runOk: 0, runBad: 0, floors: 0,
   pending: null, pendingCost: 0, busy: false,
@@ -49,6 +49,7 @@ export function resetTurnState() {
   // 本回合看过几张牌，每回合重新数。nextBoost 故意不清：
   // 它说的是"下一张牌"，不是"这一回合的下一张"，跨回合仍该兑现。
   G.drawnThisTurn = 0;
+  G.cardsThisTurn = 0;
 }
 
 /** 本局错得最多的主题。敌人机制、事件、结算页都要问同一个问题，只在这里算一次。 */

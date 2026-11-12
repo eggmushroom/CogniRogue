@@ -56,6 +56,8 @@ export interface EffOut {
   blk: number;
   healRatio: number;
   draw: number;
+  /** 打出后自伤；卡面和结算共用 */
+  selfHp: number;
   pierce: boolean;
 }
 
@@ -83,6 +85,8 @@ export function resolveEff(
     blk: Math.round(blk * (mods?.blkMul ?? d.blk) * mult) * n,
     healRatio: mods?.heal ?? d.heal ?? 0,
     draw: (mods?.draw ?? d.draw ?? 0) * n,
+    // 自伤是这张牌的一次性代价，不随 X 费的 repeat 翻倍。
+    selfHp: mods?.selfHp ?? 0,
     pierce: !!d.pierce,
   };
 }
@@ -102,6 +106,8 @@ export interface EffFace {
   healMax: number;
   /** 抽牌上限（X 费按每点算） */
   drawMax: number;
+  /** 打出后失去的生命 */
+  selfHp: number;
 }
 
 export function effFace(out: EffOut): EffFace {
@@ -115,6 +121,7 @@ export function effFace(out: EffOut): EffFace {
       ? Math.max(1, Math.round(per * out.hits.length * out.healRatio))
       : 0,
     drawMax: out.draw,
+    selfHp: out.selfHp,
   };
 }
 
@@ -128,11 +135,13 @@ export function effSummary(key: Eff, atk: number, blk: number, mods?: EffMods, x
   const o = resolveEff(key, atk, blk, 1, mods);
   const f = effFace(o);
   const dmg = f.hits > 1 ? `${f.per}×${f.hits} 伤害` : `${f.per} 伤害`;
-  const tail = f.pierce ? '无视格挡'
-    : f.blk > 0 ? `${f.blk} 格挡`
-    : f.healMax > 0 ? `最多回血 ${f.healMax}`
-    : f.drawMax > 0 ? `最多抽 ${f.drawMax} 张`
-    : '';
+  const tail = [
+    f.pierce ? '无视格挡' : '',
+    f.blk > 0 ? `${f.blk} 格挡` : '',
+    f.healMax > 0 ? `最多回血 ${f.healMax}` : '',
+    f.drawMax > 0 ? `最多抽 ${f.drawMax} 张` : '',
+    f.selfHp > 0 ? `失去 ${f.selfHp} 生命` : '',
+  ].filter(Boolean).join(' · ');
   const body = dmg + (tail ? ' · ' + tail : '');
   return x ? `${EFFS[key].name}：每点行动力 ${body}` : `${EFFS[key].name}：${body}`;
 }

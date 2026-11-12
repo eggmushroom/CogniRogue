@@ -76,6 +76,12 @@ export interface Rules {
   dmgCut: number;
   /** 回合结束保留几点格挡到下一回合（索引贴） */
   carryBlock: number;
+  /** 回合结束时若没有格挡，补几点（羽毛） */
+  endBlock: number;
+  /** 每回合第 N 张牌补抽几张（墨水瓶） */
+  inkDraw: number;
+  /** 每次洗牌补几点格挡（档案盒） */
+  reshuffleBlock: number;
   /** 击杀时回复几点（藏书印） */
   healOnKill: number;
   /** 过幕时最大生命额外加几点（茶），叠在 `BAL.stageMaxHp` 上 */
@@ -128,6 +134,9 @@ export function rulesOf(ctx: RulesCtx = {}): Rules {
     blkBonus: hasPower('code') ? BAL.codeBlk : 0,
     dmgCut: hasPower('nightlight') ? BAL.nightCut : 0,
     carryBlock: hasPower('tab') ? BAL.tabCarry : 0,
+    endBlock: hasPower('feather') ? BAL.featherBlock : 0,
+    inkDraw: hasPower('ink') ? BAL.inkDraw : 0,
+    reshuffleBlock: hasPower('archive') ? BAL.archiveBlock : 0,
     healOnKill: hasPower('stamp') ? BAL.stampHeal : 0,
     stageMaxHp: BAL.stageMaxHp + (hasPower('tea') ? BAL.teaMaxHp : 0),
     maxCopies: BAL.maxCopies + (hasPower('shelf') ? BAL.shelfCopies : 0),

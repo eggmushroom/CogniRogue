@@ -1,10 +1,10 @@
-import { G } from '../core/infra';
+﻿import { G } from '../core/infra';
 import { loadQuestionBank } from '../core/library';
 
 /**
  * 载入题库：文件选择器 + 剪贴板，两条路都不需要玩家碰控制台。
  *
- * 这里只换题目。卡面（83 张）在 cards/catalog.ts 里写死，导入文件碰不到；
+ * 这里只换题目。卡面（101 张）在 cards/catalog.ts 里写死，导入文件碰不到；
  * 格式校验由 loadQuestionBank 负责：主题不限，格式不合规会整体拒绝并列出第几行。
  */
 export function requestPackFile() {

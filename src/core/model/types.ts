@@ -168,6 +168,11 @@ export interface EffMods {
   heal?: number;
   /** 覆盖抽牌数（专注默认 1） */
   draw?: number;
+  /**
+   * 打出后自己失去多少生命。它不是费用，费用栏只写行动力；
+   * 卡面单独写一行「失去 X 生命」，结算也走同一条 `loseHp`。
+   */
+  selfHp?: number;
 }
 
 /**
@@ -216,7 +221,11 @@ export type PowerId =
   //   · 拾取即结算（spine/exlibris/slim/resin）
   | 'press' | 'code' | 'nightlight' | 'board' | 'tab' | 'stamp' | 'tea'
   | 'shelf' | 'polish' | 'gluepot' | 'seal' | 'clip' | 'whistle' | 'felt'
-  | 'brush' | 'ledger' | 'atlas' | 'wish' | 'spine' | 'exlibris' | 'slim' | 'resin';
+  | 'brush' | 'ledger' | 'atlas' | 'wish' | 'spine' | 'exlibris' | 'slim' | 'resin'
+  // ── 第四批：把“打牌的顺序/节奏”拆成新的触发点 ──
+  // 前三批的触发点集中在“答对 / 答错 / 每回合开始 / 每场开始”，
+  // 这一批补的是**局内节奏**：回合结束时、每第 3 张、洗牌时、第一张 0 费 / 攻击牌。
+  | 'feather' | 'ink' | 'archive' | 'pulse' | 'varnish' | 'seed';
 
 /**
  * 一张能力牌的**作用域** —— 它多久兑现一次。
@@ -766,6 +775,11 @@ export interface GameState {
    * 是「这一回合已经看过多少张」—— 抽得越多，那张卡越重。
    */
   drawnThisTurn: number;
+  /**
+   * 本回合真正生效的牌数（答错不计）。墨水瓶数第 3 张，节拍器看第一次三连；
+   * 每回合由 `resetTurnState` 清零。
+   */
+  cardsThisTurn: number;
   /**
    * 本场每张卡打出过几次（card id → 次数）。`grow` 的卡读它，`startBattle` 清零。
    * 按**牌种**（剥掉精炼后缀）记：同名两张副本共用"这张牌被打了几次"。

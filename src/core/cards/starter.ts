@@ -32,7 +32,10 @@ export function startDeck(): CardId[] {
   // 两张里**保底一张联动卡**。不然这四张要等十几层之后的战后奖励随机掉，
   // 大多数人第一局根本摸不到「前一张牌改变后一张牌」这件事，等于没做。
   // 保底只保证"有一种"，具体是哪一种仍然随机，构筑的偶然性没被拿走。
-  const pool = starterPool();
+  // 起手不塞自伤牌：第一次进战斗时血量只有 70，玩家还没学会“用血换节奏”，
+  // 一张焚稿/透支斩会直接把开局变成一次赌博。自伤牌仍然在奖励池里，
+  // 等玩家有牌组厚度和复习点回血之后再决定要不要拿。
+  const pool = starterPool().filter((c) => !c.mods?.selfHp);
   const linked = shuffle(pool.filter((c) => c.link)).slice(0, 1);
   const rest = shuffle(pool.filter((c) => !c.link)).slice(0, STARTER_KNOWLEDGE - linked.length);
   return [...linked, ...rest].map((c) => c.id);

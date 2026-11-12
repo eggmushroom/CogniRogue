@@ -9,7 +9,7 @@ import type { CardDef } from '../model/types';
  * 换题库不会动它分毫。
  *
  * 这么做有三个直接后果：
- *   1. 卡池恒定 87 张 / 16 主题，「开局固定卡组」和「奖励随机抽」才有稳定底座；
+ *   1. 卡池恒定 101 张 / 16 主题，「开局固定卡组」和「奖励随机抽」才有稳定底座；
  *   2. card id 与题干解耦：id 是固定短键（`c00`…），换题库不会让复习记忆失效、
  *      也不会把旧牌变成杂念；旧题干 id 的迁移表在 `cards/legacy.ts`，不在这里；
  *   3. 外部 md 里写不出 % 攻挡、@ 卡名，写题人改不了数值平衡。
@@ -129,5 +129,46 @@ export const CATALOG: CardDef[] = [
     link: { nextMul: 2, note: '下一张牌伤害 ×2' } },
   { id: "c86", topic: "联动", name: "叠章", atk: 4, blk: 4, cost: 1, eff: "strike", kind: 'knowledge',
     link: { grow: 3, note: '本场每打出一次，下次 +3 伤' } },
+
+  /* ── 自伤与节奏卡 ──────────────────────────────────────────────
+   * 这一批不往上堆“更大的数字”，而是给每张牌加一个**要不要现在付**的问题：
+   *
+   *   · 自伤（`mods.selfHp`）：伤害/格挡高于同费，但打出后自己掉血。血是
+   *     这一局的血，不是这一场的资源，所以它逼玩家判断“这一下值不值得换”。
+   *   · 0 费过牌：不花行动力，但占一次答题机会；它把“这回合还能不能继续”
+   *     变成抽牌顺序问题，而不是费用问题。
+   *   · 多段 / 低费高挡：给“先打哪张、留哪张”多一个排序理由。
+   *
+   * 自伤不是费用：费用栏仍然只写行动力，卡面效果区单独写「失去 X 点生命」，
+   * 结算和卡面共用 `resolveEff().selfHp`，不会出现“卡面写 3、实际扣 5”。
+   * ──────────────────────────────────────────────────────────── */
+  { id: "c87", topic: "复杂度", name: "焚稿", atk: 12, blk: 5, cost: 1, eff: "strike",
+    mods: { atkMul: 1.15, selfHp: 3 }, kind: 'knowledge' },
+  { id: "c88", topic: "数据结构", name: "透支斩", atk: 10, blk: 4, cost: 0, eff: "strike",
+    mods: { atkMul: 1.1, selfHp: 4 }, kind: 'knowledge' },
+  { id: "c89", topic: "排序与查找", name: "血墨", atk: 10, blk: 6, cost: 1, eff: "drain",
+    mods: { heal: 0.65, selfHp: 2 }, kind: 'knowledge' },
+  { id: "c90", topic: "树与堆", name: "断章", atk: 20, blk: 8, cost: 2, eff: "strike",
+    mods: { atkMul: 1.1, selfHp: 5 }, kind: 'knowledge' },
+  { id: "c91", topic: "图论", name: "以伤换页", atk: 0, blk: 4, cost: 0, eff: "focus",
+    mods: { draw: 2, selfHp: 2 }, kind: 'knowledge' },
+  { id: "c92", topic: "递归与分治", name: "翻页", atk: 2, blk: 0, cost: 0, eff: "focus",
+    mods: { draw: 1 }, kind: 'knowledge' },
+  { id: "c93", topic: "动态规划", name: "合页", atk: 0, blk: 1, cost: 0, eff: "guard",
+    mods: { blkMul: 2.2 }, kind: 'knowledge' },
+  { id: "c94", topic: "贪心策略", name: "双页连斩", atk: 10, blk: 5, cost: 1, eff: "chain",
+    mods: { times: 3, atkMul: 0.55 }, kind: 'knowledge' },
+  { id: "c95", topic: "字符串匹配", name: "回潮", atk: 8, blk: 6, cost: 1, eff: "drain",
+    mods: { heal: 0.8 }, kind: 'knowledge' },
+  { id: "c96", topic: "回溯与搜索", name: "缓冲页", atk: 0, blk: 3, cost: 1, eff: "guard",
+    mods: { blkMul: 2.2 }, kind: 'knowledge' },
+  { id: "c97", topic: "随机化与概率", name: "抽样回响", atk: 3, blk: 0, cost: 0, eff: "focus",
+    mods: { draw: 1, atkMul: 1.4 }, kind: 'knowledge' },
+  { id: "c98", topic: "操作系统", name: "并行三线", atk: 18, blk: 4, cost: 2, eff: "chain",
+    mods: { times: 3, atkMul: 0.45 }, kind: 'knowledge' },
+  { id: "c99", topic: "计算机网络", name: "最后一行", atk: 22, blk: 10, cost: 3, eff: "pierce",
+    mods: { atkMul: 1.2, selfHp: 4 }, kind: 'knowledge' },
+  { id: "c100", topic: "数据库", name: "归零点", atk: 0, blk: 2, cost: 0, eff: "guard",
+    mods: { blkMul: 1.7 }, kind: 'knowledge' },
 ];
 

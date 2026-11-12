@@ -1,4 +1,4 @@
-import { g, roundRect, wrapText } from './canvas';
+﻿import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
 import { C, font, FONT_UI, FONT_TITLE, withAlpha } from './theme';
 import { EFFS, effFace, resolveEff } from '../core/model';
@@ -345,7 +345,7 @@ export function drawCard(
   g.fillRect(x, y + h - lowH, w, lowH);
   g.restore();
 
-  // 雕版底纹：83 张卡除了名字和数字，下半部原本都是同一块近黑。
+  // 雕版底纹：101 张卡除了名字和数字，下半部原本都是同一块近黑。
   // 按 id 定相位铺一层放射刻线 + 纸纹，每张卡有自己的底纹，
   // 卡面也从「玻璃面板」拉回「档案馆里的一张卡片」。alpha 压到不抢字。
   g.save();
@@ -378,7 +378,7 @@ export function drawCard(
   g.restore();
 
   // ── 费用：左上角，一个数字，没有圈 ──────────────────────────
-  // 以前 83 张牌全是 1 点，这个角落空着是对的（印 83 遍同一个数不是信息）。
+  // 以前 101 张牌全是 1 点，这个角落空着是对的（印 101 遍同一个数不是信息）。
   // 现在 0/1/2/3/X 并存，价格成了每张牌最该先读到的一个数。
   // 纵向和右上角的类别徽章同一条中心线（徽章占 21s–39s，中线 30s）：
   // 顶部那一行于是读成"几点 · 什么类别"一整条，而不是两个高度不一的小件。
@@ -471,6 +471,7 @@ export function drawCard(
   }
   const rows = (per > 0 ? 1 : 0)
     + (out.blk > 0 || out.pierce || out.healRatio > 0 || out.draw > 0 ? 1 : 0)
+    + (out.selfHp > 0 ? 1 : 0)
     + (xc ? 0.75 : 0)
     + ruleLines.length;
   const textBot = by0 + nameLines.length * lh + 9 * s + rows * eh;
@@ -581,6 +582,11 @@ export function drawCard(
     } else if (face.drawMax > 0) {
       // 同理：抽牌堆和弃牌堆都空时抽不满，牌面写的是上限。
       effLine('最多抽 ', face.drawMax, ' 张牌', ly, eff.color);
+      ly += eh;
+    }
+    if (face.selfHp > 0) {
+      // 自伤不是费用，不能塞进左上角的行动力数字；它在效果区单独一行。
+      effLine('失去 ', face.selfHp, ' 点生命', ly, C.red);
       ly += eh;
     }
     // X 费牌必须自己说清"X 是多少" —— 牌面上只有一个 X 字形，不写这一句，

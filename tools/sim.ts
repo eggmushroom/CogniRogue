@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 无头模拟：用同一套 core 规则跑几千局，把"手感"变成数字。
  *
  *   npm run sim
@@ -198,6 +198,9 @@ function cardScore(c: CardDef): number {
   if (c.eff === 'focus') score += 1;
   if (c.eff === 'guard') score += 0.8;
   if (c.eff === 'chain') score += 0.5;
+  // 自伤是真的会进下一场的血量账；机器人如果只按攻/挡评分，会把
+  // 焚稿/断章当成无条件大牌，模拟就会替玩家做出一个人类不会做的选择。
+  score -= (c.mods?.selfHp ?? 0) * 5;
   return score - cost * 1.2;
 }
 

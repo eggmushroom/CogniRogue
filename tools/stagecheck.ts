@@ -18,7 +18,7 @@ import {
   cardGrade, gradeNeed, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight,
   upGain, rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
-  grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp,
+  grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards,
 } from '../src/core';
 
 (globalThis as unknown as { setTimeout: (fn: () => void) => void }).setTimeout = (fn) => { fn(); };
@@ -1207,7 +1207,7 @@ function missGain(eff: string) {
 
   // card id 与题干解耦：id 是稳定短键，旧题干前缀只出现在迁移表里
   const ids = PACK.cards.map((c) => c.id);
-  ok(ids.length === 87 && ids.every((id) => /^c\d{2}$/.test(id)), 'card id 是稳定短键，不含题干');
+  ok(ids.length === 101 && ids.every((id) => /^c\d{2,3}$/.test(id)), 'card id 是稳定短键，不含题干');
   ok(new Set(ids).size === ids.length, 'card id 不重复');
   const [oldId, newId] = Object.entries(LEGACY_CARD_IDS)[0];
   const migrated = parseMem(JSON.stringify({
@@ -1428,7 +1428,7 @@ C) 3
   const p = G.panel as unknown as { k: string; q?: { q: string } };
   ok(p.k === 'question' && p.q?.q === '1+1=?', '题目来自新题库');
   ok(G.deck.join('|') === before, '换题库不改变牌组/card id');
-  ok(PACK.cards.length === 87, 'PACK 仍是 87 张固定卡（83 张卡池 + 4 张联动卡）');
+  ok(PACK.cards.length === 101, 'PACK 仍是 101 张固定卡（83 张卡池 + 4 张联动卡 + 14 张扩充卡）');
 }
 
 // ── 19. v0.5 四条新规则 ────────────────────────────────────
@@ -1575,6 +1575,125 @@ C) 3
 
   startRun('test');
   ok(G.mode === 'test' && G.powers.length === 0, '测试：没有初始能力');
+}
+
+// ── 14b. 自伤卡与第四批节奏增益 ─────────────────────────────
+// 这组测试不靠日志：自伤看真实血量，节拍器看真实行动力，亮油/墨水瓶看真实手牌，
+// 档案盒看洗牌后的真实格挡。卡面数字和结算必须走同一条路，所以这里直接读 G。
+{
+  startRun('test');
+  G.stage = 1;
+  enterStage(1);
+  const node: MapNode = { r: 0, i: 0, key: '0:0', col: 1, type: 'fight', next: [] };
+  startBattle(node);
+  // 固定一只没有反伤/回复机制的木桩，避免敌人机制污染“这张牌自己扣了多少”。
+  G.enemy = { ...FOES.find((f) => f.key === 'shard')!, maxHp: 999, hp: 999, block: 0, mv: 0, stage: 1 };
+  G.powers = [];
+  G.onceUsed = {};
+  G.charge = {};
+  G.panel = { k: 'none' };
+  G.busy = false;
+  G.ap = 3;
+  G.apMax = 3;
+  G.block = 0;
+  G.hp = 60;
+  G.maxHp = 70;
+  G.cardsThisTurn = 0;
+  G.hand = [];
+  G.draw = [];
+  G.discard = [];
+
+  const hurt = PACK.cards.find((c) => c.id === 'c87')!;
+  G.hand = [hurt.id];
+  G.charge[hurt.id] = gradeNeed(hurt);
+  playFree(0);
+  ok(G.hp === 57, `焚稿的自伤落到血量上（60 → ${G.hp}，应 57）`);
+
+  // 节拍器：三张真正生效的牌之后退 1 点；三张都用 0 费，避免行动力本身干扰读数。
+  G.powers = ['pulse'];
+  G.onceUsed = {};
+  G.hand = ['c93', 'c93', 'c93'];
+  G.draw = [];
+  G.discard = [];
+  G.cardsThisTurn = 0;
+  G.ap = 3;
+  G.apMax = 3;
+  G.block = 0;
+  playFree(0);
+  playFree(0);
+  playFree(0);
+  ok(G.ap === 4, `节拍器：第一次三连后退回 1 点（3 → ${G.ap}）`);
+
+  // 亮油：第一张 0 费牌把下一张带出来。
+  G.powers = ['varnish'];
+  G.onceUsed = {};
+  G.hand = ['c93'];
+  G.draw = ['c04'];
+  G.discard = [];
+  G.cardsThisTurn = 0;
+  G.ap = 3;
+  G.apMax = 3;
+  playFree(0);
+  ok(G.hand.includes('c04'), '亮油：第一张 0 费牌抽到了下一张');
+
+  // 墨水瓶：每回合第 3 张才抽，前两张不抽。
+  G.powers = ['ink'];
+  G.onceUsed = {};
+  G.hand = ['c93', 'c93', 'c93'];
+  G.draw = ['c04'];
+  G.discard = [];
+  G.cardsThisTurn = 0;
+  G.ap = 3;
+  G.apMax = 3;
+  playFree(0);
+  playFree(0);
+  playFree(0);
+  ok(G.hand.includes('c04'), '墨水瓶：第 3 张牌把下一张摸上来');
+
+  // 档案盒：洗牌时补 2 点格挡。直接制造“抽牌堆空、弃牌堆有牌”的洗牌条件。
+  G.powers = ['archive'];
+  G.onceUsed = {};
+  G.hand = [];
+  G.draw = [];
+  G.discard = ['c04'];
+  G.block = 0;
+  const got = drawCards(1);
+  ok(got === 1 && G.block === 2, `档案盒：洗牌后补 2 点格挡（抽到 ${got} 张 / ${G.block} 挡）`);
+
+  // 羽毛：空手结束回合先补 2 挡，再看敌人这一下。用致死攻击留下 G.block 的读数，
+  // 因为正常结束回合会进入下一回合并把格挡清掉。
+  G.powers = ['feather'];
+  G.onceUsed = {};
+  G.hand = [];
+  G.draw = [];
+  G.discard = [];
+  G.block = 0;
+  G.hp = 1;
+  G.turn = 2;
+  G.pending = null;
+  G.panel = { k: 'none' };
+  G.busy = false;
+  G.enemy = { ...FOES.find((f) => f.key === 'shard')!, hp: 999, maxHp: 999, block: 0, mv: 0, dmg: 100, stage: 1 };
+  endTurn();
+  ok(G.block === 2 && G.hp === 0, `羽毛：空手结束回合补 2 挡（${G.block} 挡 / ${G.hp} 血）`);
+
+  // 种纸：第一张攻击牌补 2 点格挡；c05 自身 4 挡，所以应该是 6。
+  G.powers = ['seed'];
+  G.onceUsed = {};
+  G.pending = null;
+  G.panel = { k: 'none' };
+  G.busy = false;
+  G.screen = 'battle';
+  G.hp = 60;
+  const atk = PACK.cards.find((c) => c.id === 'c05')!;
+  G.hand = [atk.id];
+  G.charge[atk.id] = gradeNeed(atk);
+  G.draw = [];
+  G.discard = [];
+  G.block = 0;
+  G.cardsThisTurn = 0;
+  playFree(0);
+  ok(G.block === 6, `种纸：第一张攻击牌补 2 点格挡（4 + 2 = ${G.block}）`);
 }
 
 // ── 14. 资源写入只有一条通道 ───────────────────────────────

@@ -2,7 +2,7 @@ import { BAL } from '../model/data';
 import type { Foe, FoeTpl } from '../model/types';
 import { G, checkPending, log, topTopic } from '../infra/state';
 import { emit } from '../infra/events';
-import { loseHp } from '../infra/write';
+import { grantBlock, loseHp } from '../infra/write';
 import { JUNK_ID } from '../cards/registry';
 import { onceThisFight, rulesOf } from '../cards/powers';
 import { FLOOR_MAX } from '../map/gen';
@@ -149,6 +149,14 @@ export function endTurn() {
   if (G.panel.k !== 'none' || G.pending || !G.enemy || G.busy) return;
   const e = G.enemy;
   e.block = 0;
+  // 羽毛：回合结束是**最后**一次看格挡的时机 —— 先看它，再看敌人出招。
+  // 它不改变这一回合已经打出的牌，只奖励"把行动力花在别处"的顺序。
+  const R = rulesOf();
+  if (R.endBlock > 0 && G.block === 0) {
+    grantBlock(R.endBlock);
+    log(`羽毛：空手结束回合，补 ${R.endBlock} 点格挡`, 'hi');
+    emit({ t: 'blk', n: R.endBlock });
+  }
   const m = moveOf(e);
 
   if (m.k === 'atk' && G.turn === 1 && (BAL.calmFirstTurn || onceThisFight('whistle'))) {

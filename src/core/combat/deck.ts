@@ -1,6 +1,6 @@
 import { BAL } from '../model/data';
 import { G, log, resetTurnState } from '../infra/state';
-import { resetAp, setBlock, spendAp } from '../infra/write';
+import { grantBlock, resetAp, setBlock, spendAp } from '../infra/write';
 import { shuffle } from '../infra/util';
 import { JUNK_ID } from '../cards/registry';
 import { onceThisFight, rulesOf } from '../cards/powers';
@@ -76,6 +76,12 @@ function reshuffle() {
   G.draw = shuffle(G.discard);
   G.discard = [];
   log('弃牌堆重新洗入牌堆', 'turn');
+  // 档案盒：洗牌是牌组循环的低谷，它只在这个低谷补一次格挡。
+  const n = rulesOf().reshuffleBlock;
+  if (n > 0) {
+    grantBlock(n);
+    log(`档案盒：洗牌后补 ${n} 点格挡`, 'hi');
+  }
 }
 
 /** 把手牌补到 n 张。牌堆与弃牌堆都空了就停，不会死循环。 */
