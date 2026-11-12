@@ -10,7 +10,7 @@ import { floorOf } from '../map/gen';
 import { recordAnswer } from '../library/stagemem';
 import { memOf, saveMem } from '../library/memory';
 import { shuffleOptions } from '../library/question';
-import { defOf, statOf } from '../cards/registry';
+import { defOf } from '../cards/registry';
 import { applyCardBonus, clearOnceUsed, onceThisFight, rulesOf, syllabusBasicBlock } from '../cards/powers';
 import { canPay, costNow, isXCost, refundOf } from '../cards/cost';
 import { cardGrade, gradeNeed, needsAsk } from '../cards/grade';
@@ -56,8 +56,6 @@ export function startBattle(nd: MapNode) {
   G.draw = shuffle(G.deck);
   G.discard = [];
   G.hand = [];
-  // "刚回抽牌堆的那一张"是给表现层的一次性提示，不能跨场带过来
-  G.returned = null;
 
   // 本场要清的是免答计数和题池。答错不扣行动力、也不封牌：
   // 代价落在"本场新题少一道"上，新题用完后进入复用（见 combat/questions.ts）。
@@ -82,11 +80,11 @@ export function startBattle(nd: MapNode) {
   // 行动力上限不在这里设：`startTurn` 会按 `rulesOf()` 重算（沙漏跟着回合数走）。
   clearOnceUsed();
 
-  // 模式已经在顶栏标了一次，这一行不再复读。"卡是锁着的"只在第一次战斗里说：
+  // 模式已经在顶栏标了一次，这一行不再复读。考场提示只在第一次战斗里说：
   // 那是教学，不是战报 —— 打到第八层还在播同一句，就是把日志的位置浪费掉了。
   log(`── ${e.name} 出现了 ──`, 'turn');
   if ((G.node?.r ?? 0) === 0) {
-    log(`这一场准备了 ${G.qLeft.length} 道新题；C 牌免答，B/A/S 各要答对 1/2/3 次。新题用完会复用问得最少的题`, 'turn');
+    log(`这一场准备了 ${G.qLeft.length} 道新题；C 牌直接打，B/A/S 各要答对 1/2/3 次。新题用完会复用问得最少的题`, 'turn');
   }
   // 开局格挡在 startTurn 里给（那里才知道是不是第一回合）—— 写在这里会被 startTurn 清零
   startTurn();
@@ -363,12 +361,11 @@ export function answer(choice: number) {
   // 判定只看本次打乱后的视图。回头读 t.answer 会「点对了却算错」。
   const right = choice === view.answer;
   const m = memOf(card.id);
-  const st = statOf(id);
   /**
    * 唯一的一套答错价码（`MISS_RULE`）。
    *
    * 它曾经是开局选的三档模式之一，现在固定 —— 想让一局宽容一点，
-   * 靠的是带进来的能力卡，不是开局菜单上少勾一个勾。
+   * 靠的是开局带的增益，不是开局菜单上少勾一个勾。
    */
   /**
    * 这一手的价格。X 费牌按"此刻剩下的全部行动力"算，所以必须在一开局就定下来：
@@ -380,8 +377,6 @@ export function answer(choice: number) {
 
   let dmg = 0;
   let blkGain = 0;
-  /** 这张牌自己会给出多少格挡（答错时用来区分"模式没给"和"这张牌本来就没有"） */
-  let ownBlk = 0;
   let absorbed = 0;
   let heal = 0;
   let drawn = 0;
@@ -391,8 +386,6 @@ export function answer(choice: number) {
   let apNote = '';
   /** 这一手伤害里来自前序出牌的那部分，判定面板要把因果写出来 */
   let linkNote = '';
-  /** 学习模式答错的牌退回抽牌堆而不是进弃牌堆 */
-  let backToDraw = false;
   /** 胶水壶：这张牌留在手里（既不进弃牌堆，也不回抽牌堆） */
   let backToHand = false;
 
@@ -423,8 +416,8 @@ export function answer(choice: number) {
     // 所以卡面数值才能保持 1:1，不用再靠全局血量去补偿。
     //
     // 这条**默认关闭**，只有双面镜在场才开：实测把它做成常驻规则时，
-    // 每回合白抽一张会把熟练档从 55% 抬到 66%、精通档抬到 95%（800 局），
-    // 顶格没有余量。做成一张增益牌提供的规则之后，它便成了"这一场我选择多看见一点"
+    // 早期 800 局里，每回合白抽一张会把熟练档从 55% 抬到 66%、精通档抬到 95%，
+    // 顶格没有余量。做成一个增益提供的规则之后，它便成了"这一场我选择多看见一点"
     // 的构筑决定，而不是人人都吃的隐形补强。
     const cap = rulesOf().answerDraw;
     if (G.answerDrawsThisTurn < cap && drawCards(BAL.answerDraw)) {
@@ -485,27 +478,7 @@ export function answer(choice: number) {
   } else {
     // 答错的价码固定一套：这一手作废、不补格挡、不补抽、牌进弃牌堆。
     // 三条都不碰血量：扣血会让人不敢碰不会的知识，正好和目的相反。
-    // 补偿只给"这张牌自己就会给格挡"的那些，而且读的是 `resolveEff` 算出来的格挡，
-    // 不是 `statOf` 那个纸面数值：**每张卡都挂着一个 blk 档位**（它是同价位牌的格挡
-    // 底数），可 strike / pierce / chain / focus 这些效果里根本没有格挡。
-    // 照着 statOf 补，一张纯攻杀牌答错就会凭空长出一层甲 —— 于是"答错"和"挡一下"
-    // 被解绑，垫子变成人人有份的白送，卡面上还看不出它是哪来的。
-    ownBlk = applyCardBonus(resolveEff(card.eff, st.atk, st.blk, 1, card.mods, repeat)).blk;
-    blkGain = Math.max(0, Math.round(ownBlk * MISS_RULE.block));
-    if (blkGain) {
-      grantBlock(blkGain);
-      apNote = join(apNote, `答错也挡住了 ${blkGain} 点。`);
-    } else if (ownBlk > 0) {
-      // 这张牌本来能挡，但答错这一手作废 —— 格挡也跟着不生效。
-      // 写规则本身，不写"某个模式"：模式已经没有了。
-      apNote = join(apNote, '这张牌本来能挡，但这一手作废，格挡也不生效。');
-    }
-
-    if (MISS_RULE.dest === 'draw') {
-      // 规则允许某张能力卡把错牌送回牌堆（`MISS_RULE.dest === 'draw'` 时走这条）。
-      backToDraw = true;
-      apNote = join(apNote, '这张牌回到牌堆，下一回合会再抽到它。');
-    } else if (onceThisFight('gluepot')) {
+    if (onceThisFight('gluepot')) {
       // 胶水壶：这一场第一次答错，那张牌**留在手里**。补的是牌位，不是那一手 ——
       // 错的代价仍然是"这一手作废、本场少一道新题"，只是这张牌没有离开。
       backToHand = true;
@@ -515,22 +488,8 @@ export function answer(choice: number) {
       apNote = join(apNote, '它进了弃牌堆，要等洗牌才回来。');
     }
 
-    // 补抽一张：答错的那张牌要离开手牌，不补位的话，一个中等正确率的人两回合就把手牌
-    // 打空了 —— 那时他不是"答不对"，是"没牌可答"。补的是位置，不是奖励：
-    // 这一手照样作废、行动力照样不退。学习模式不补：练的是牌感，手牌少了就少了。
-    if (MISS_RULE.draw && BAL.missDraw && G.missDrawsThisTurn < BAL.missDrawCap) {
-      const got = drawCards(BAL.missDraw);
-      if (got) {
-        G.missDrawsThisTurn += got;
-        drawn += got;
-        apNote = join(apNote, `补抽 ${got} 张 —— 位置不空着。`);
-      }
-    }
-
-    // 草稿纸：这一场**第一次**答错补一张。它和上面那条规则补抽是两回事 ——
-    // 规则补抽默认关着（答错就该让手牌真的少一张），这张牌是自己把那条缝补上，
-    // 一场一次。特意不走 `missDrawsThisTurn` 那个计数：那是给"每回合最多补几次"
-    // 用的上限，而这张牌的上限就是"一场一次"，两套账混在一起谁也算不清。
+    // 草稿纸：这一场**第一次**答错补一张。它是单独的一张增益，不是“答错规则”
+    // 的常驻补偿；一场一次，和上面“不补抽”的默认价码分开算。
     if (onceThisFight('scratch')) {
       const got = drawCards(BAL.scratchDraw);
       if (got) {
@@ -629,17 +588,9 @@ export function answer(choice: number) {
   }
 
   G.busy = true;
-  // 学习模式答错的牌回抽牌堆（push 到尾部 = 下一张抽到的就是它）；其余都进弃牌堆。
-  // 顺手把"这一张去了抽牌堆"记在 G 上：手牌只存 id，表现层没法靠 id 分辨
-  // "这一张回去了"和"同名的另一份本来就在牌堆里"（见 GameState.returned）。
-  G.returned = backToDraw ? id : null;
-  // 三条去向，互斥：
-  //   · backToHand（胶水壶）—— 牌留在手里，什么都不做；
-  //   · backToDraw（规则允许时的"回牌堆"）—— 推到抽牌堆尾部，下一张就是它；
-  //   · 其余（默认）—— 进弃牌堆。
+  // 两条去向，互斥：胶水壶把牌留在手里；其余都进弃牌堆，要等洗牌才回来。
   if (!backToHand) {
-    if (backToDraw) G.draw.push(id);
-    else G.discard.push(id);
+    G.discard.push(id);
     G.hand.splice(idx, 1);
   }
   saveMem();
@@ -656,7 +607,7 @@ export function answer(choice: number) {
 
   const effName = EFFS[card.eff].name;
   const shape = hits.length > 1 ? `${hits.join('+')} 伤害` : `${dmg} 伤害`;
-  const missNote = backToHand ? '，牌留在手里' : backToDraw ? '，牌回牌堆' : '，进弃牌堆';
+  const missNote = backToHand ? '，牌留在手里' : '，进弃牌堆';
   const leftNote = G.qLeft.length
     ? `本场还剩 ${G.qLeft.length} 道新题`
     : '本场新题已用完，开始复用';
@@ -668,8 +619,7 @@ export function answer(choice: number) {
           (selfHp ? `，失去 ${selfHp} 生命` : '') +
           (heal ? `，回 ${heal}` : '') +
           (drawn ? `，抽 ${drawn}` : '')
-        : `，效果作废${blkGain ? `，${blkGain} 格挡`
-          : ownBlk > 0 ? '，这一手没补格挡' : '，这张牌本身没有格挡'}${missNote}`) +
+        : `，效果作废${blkGain ? `，${blkGain} 格挡` : '，这张牌本身没有格挡'}${missNote}`) +
       `　·　${leftNote}`,
     right ? 'hi' : 'bad',
   );

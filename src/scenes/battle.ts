@@ -769,11 +769,9 @@ interface DiscardFx {
   /**
    * 这张牌离手之后去哪。
    *  - discard：飞向左下角的弃牌堆，落地时计数 +1
-   *  - return：学习模式答错的牌 **退回抽牌堆** —— 它没离开循环，下一回合就回来，
-   *    所以不能飞进弃牌堆（那个动作读出来是"被收走了"）
    *  - junk：杂念原地化掉（它根本不进取牌堆）
    */
-  mode: 'discard' | 'return' | 'junk';
+  mode: 'discard' | 'junk';
 }
 
 /**
@@ -884,12 +882,7 @@ function drawHand(t: number, dt: number) {
   // 离手的牌：上一帧在、这一帧没被保留下来的那些。拿它最后画到的位置当起点 ——
   // 玩家看到的就是那张牌自己飞走的，不是一张新的。
   //
-  // 去处只在一种情况下不是弃牌堆：学习模式答错，那一张被放回抽牌堆。逻辑层把这件事
-  // 记在 `G.returned` 上，这里一次性读走 —— 以前是拿 `G.draw.includes(id)` 猜，
-  // 而 id 是牌种不是副本：四张基础斩击里只要还有一张躺在抽牌堆，刚进弃牌堆的那张
-  // 也会被画成飞回牌堆，读起来就是"这一轮没打出的牌没有回到弃牌堆"。
-  const backToDraw = G.returned;
-  G.returned = null;
+  // 弃牌堆是唯一的去处；杂念只在原地化掉。答错不再有“回抽牌堆”的分支。
   let laneOut = 0;
   for (let pi = 0; pi < prevHand.length; pi++) {
     if (kept.has(pi)) continue;
@@ -899,8 +892,7 @@ function drawHand(t: number, dt: number) {
     const card = defOf(id);
     // 依据是"逻辑层把这一张放哪了"，表现层不重复算一遍规则。
     const kind = cardKind(card);
-    const mode: DiscardFx['mode'] = kind === 'junk' ? 'junk'
-      : backToDraw === id ? 'return' : 'discard';
+    const mode: DiscardFx['mode'] = kind === 'junk' ? 'junk' : 'discard';
     const st = statOf(id);
     discardFx.push({
       card, atk: st.atk, blk: st.blk, up: isUpgraded(id),
@@ -909,7 +901,7 @@ function drawHand(t: number, dt: number) {
       age: mode === 'junk' ? 0 : -laneOut * DISCARD_GAP,
       mode,
     });
-    if (mode === 'discard' || mode === 'return') laneOut += 1;
+    if (mode === 'discard') laneOut += 1;
   }
 
   // 新进手的牌：排一个队，一张接一张从牌堆起飞
@@ -1125,19 +1117,6 @@ function drawDiscards(dt: number) {
       scale = 1 - 0.3 * e;
       alpha = 1 - e;
       rot = f.rot + e * 0.2;
-    } else if (f.mode === 'return') {
-      // 退回牌堆：同一段距离，但往上走、走蓝色 —— 这张牌没有离开循环，
-      // 它是"下一次还会再来"，不是"被收走了"。颜色是这里唯一的语义。
-      const e = p * p;
-      const cx = (f.x + DRAW_FROM.x) / 2;
-      const cy = Math.min(f.y, DRAW_FROM.y) - 150;
-      const iu = 1 - e;
-      px = iu * iu * f.x + 2 * iu * e * cx + e * e * DRAW_FROM.x;
-      py = iu * iu * f.y + 2 * iu * e * cy + e * e * DRAW_FROM.y;
-      rot = f.rot * (1 - e);
-      scale = 1 - 0.66 * e;
-      alpha = 1 - Math.max(0, (p - 0.7) / 0.3) * 0.9;
-      if (p >= 1) landing = true;
     } else {
       // 加速而不是匀速：被收走的牌是"掉"进牌堆的，不是平移过去的
       const e = p * p;
@@ -1154,13 +1133,11 @@ function drawDiscards(dt: number) {
 
     if (p >= 1 || landing) {
       discardFx.splice(i, 1);
-      if (landing && (f.mode === 'discard' || f.mode === 'return')) {
-        // 落地这一帧才算"进了牌堆"：计数跳一下、牌堆扬一点灰（退回牌堆不动弃牌堆的计数）
-        const back = f.mode === 'return';
-        if (!back) discardPulse = 1;
-        const at = back ? DRAW_FROM : DISCARD_TO;
-        FX.burst(at.x, at.y - 6, back ? C.blue : C.orange, back ? 5 : 3, {
-          speed: back ? 110 : 90, size: 3, grav: back ? -120 : 320, life: 0.3,
+      if (landing && f.mode === 'discard') {
+        // 落地这一帧才算"进了牌堆"：计数跳一下、牌堆扬一点灰。
+        discardPulse = 1;
+        FX.burst(DISCARD_TO.x, DISCARD_TO.y - 6, C.orange, 3, {
+          speed: 90, size: 3, grav: 320, life: 0.3,
         });
       }
       continue;
@@ -1235,8 +1212,9 @@ export function fxCount() {
     /**
      * 正在飞出去的每一张牌"去了哪"。
      *
-     * 冒烟测试用它盯"回合结束时上一轮没打出的牌会不会被画成飞回抽牌堆"：
+     * 冒烟测试用它盯"回合结束时上一轮没打出的牌会不会飞错方向"：
      * 这件事看 `G.discard` 是看不出来的 —— 牌堆内容一直是对的，错的是它飞的方向。
+     * 现在只可能是 discard / junk；答错不再有回抽牌堆的分支。
      */
     discardModes: discardFx.map((f) => f.mode),
   };

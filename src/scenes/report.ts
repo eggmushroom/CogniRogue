@@ -42,7 +42,7 @@ export function drawReport(d: ReportData) {
     text(k, sx, y + 192, { size: 12, color: C.dim });
   });
 
-  // 牌组里的增益牌。它们是构筑的一部分，所以和牌组张数摆在同一个高度
+  // 这一局捡到的增益。它们不进牌组，所以只展示名字，不和牌组张数混成一栏
   let rx = x + 48;
   for (const name of d.powers) {
     const p = Object.values(POWER_BY_ID).find((q) => q.name === name);
@@ -80,7 +80,7 @@ export function drawReport(d: ReportData) {
   const tail: Array<[string, string, string]> = [
     ['答题出牌', `${total2} 次`, `正确 ${acc}%`],
     ['答对抽牌', `${d.answerDraws} 张`, '想起来的越多，看到的牌越多'],
-    // 答错的价码现在由本局模式决定，不再是"学习期 / 复习期"两档
+    // 答错的价码全模式统一，不再按"学习期 / 复习期"分档
     ['答错的牌', `${d.runBad} 次`, '这一手作废，牌进弃牌堆'],
     ['牌组', `${d.deckSize} 张`, `${d.kinds} 种卡`],
   ];

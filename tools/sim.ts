@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 无头模拟：用同一套 core 规则跑几千局，把"手感"变成数字。
  *
  *   npm run sim
@@ -24,7 +24,7 @@ import {
  * 参数可覆盖，方便扫参：
  *   npm run sim -- --hp=1.2 --dmg=1.3 --ap=5 --hand=6
  *   npm run sim -- --mode=study          // 学习 / 复习 / 测试
- *   npm run sim -- --boon=syllabus       // 额外 A/B 一张能力牌
+ *   npm run sim -- --boon=syllabus       // 额外一张开局增益（调试用）
  * 试一个数值不该改源码。
  */
 
@@ -53,7 +53,7 @@ if (SEED) {
  *
  * 这个数由**验收断言**倒推，不是拍出来的：断言要能分辨"精通比新手强"，
  * 而单格胜率的标准误是 48/sqrt(n) 个百分点。300 局时一格 2.8 个点，
- * 学习模式的真实跨度只有 9 个点上下，10 次里会误报 3 次（实测）。
+ * 最低档到最高档的真实跨度只有 9 个点上下，10 次里会误报 3 次（实测）。
  * 800 局把单格误差压到 1.7 个点，断言改成"上两档 vs 下两档"（见文件末尾），
  * 每边 1600 个样本、噪声 1.1 个点，对 8 个点的真实差距是 5 倍信噪比。
  * 跑一遍约 50 秒。
@@ -133,7 +133,6 @@ for (const arg of process.argv.slice(2)) {
   else if (m[1] === 'hand') BAL.drawPerTurn = v;
   else if (m[1] === 'ad') BAL.answerDraw = v;
   else if (m[1] === 'cap') BAL.answerDrawCap = v;
-  else if (m[1] === 'md') { BAL.missDraw = v; if (!v) BAL.missDrawCap = 0; }
   else if (m[1] === 'start') BAL.startBlock = v;
   else if (m[1] === 'calm') BAL.calmFirstTurn = v > 0;
   else if (m[1] === 'rf') BAL.refund = v > 0 ? 1 : 0;
@@ -163,7 +162,7 @@ if (!loaded.ok) {
 function bestNode(): string | null {
   const opts = availableNodes();
   if (!opts.length) return null;
-  // 真实玩家不会永远绕开精英：血线够时精英是增益牌的主要来源；
+  // 真实玩家不会永远绕开精英：血线够时精英是增益的主要来源；
   // 血线低了才把复习点排到最前。旧路径对照保留原排序。
   const hp = G.hp / G.maxHp;
   const rank: Record<string, number> = OLD_PATH
@@ -215,10 +214,9 @@ interface Stat {
   /** 战斗场数与总回合数 —— 一场打几个回合，决定"解锁节奏"有没有地方展开 */
   battles: number;
   turns: number;
-  /** 一局里打出增益牌的次数，以及结局牌组里有几张增益牌 */
   /** 一局结束时的增益个数（掉落即生效，不进牌组） */
   powers: number;
-  /** 答错了几次。价码由这一局的模式决定，不再按卡片阶段分两档 */
+  /** 答错了几次。价码固定，所有模式共用 */
   misses: number;
   /** 一局里打出几张基础牌。它衡量"地板"被用得多不多 */
   basics: number;
@@ -270,9 +268,8 @@ function runOne(p: number, st: Stat) {
     }
     if (panel.k === 'feedback') { dismissFeedback(); continue; }
     if (panel.k === 'reward') {
-      // 真实玩家会拿牌，但不会每场都拿：给还没到手的增益牌留出牌位，
-      // 拿的时候也不瞎点第一张，挑一张对当前牌组最划算的。
-      // 增益不再进牌组，所以"牌位上要给它留位置"这条旧账没了：整副牌都拿来答题用
+      // 真实玩家会拿牌，但不会每场都拿：拿的时候也不瞎点第一张，
+      // 挑一张对当前牌组最划算的。增益不进牌组，所以整副牌都拿来答题用。
       if (TAKE && G.deck.length < DECK_MAX && panel.cards.length) {
         const best = panel.cards.reduce((a, b) => (cardScore(b) > cardScore(a) ? b : a));
         takeCard(panel.cards.indexOf(best));
@@ -392,7 +389,7 @@ function runOne(p: number, st: Stat) {
         // 它是这一局的地板，模拟不打出它，会把低水平的胜率算得比实际更狠。
         const bas = G.hand.findIndex((id) => id !== JUNK_ID && defOf(id).kind === 'basic' && pay(id));
         if (bas >= 0) { basics += 1; playBasic(bas); continue; }
-        // 手里只剩打不出的牌（答错锁住的、测试模式作废的、付不起的）→ 结束回合。
+        // 手里只剩打不出的牌（付不起的、没有可答题的、只能等洗牌的）→ 结束回合。
         // 快攻取消之后，剩下的行动力就是扔掉的，这是这一版的正常代价。
       }
       endTurn();
@@ -506,7 +503,7 @@ if (mid) {
 //
 // 三个模式现在都随水平上升，但底部不一样：
 //   · 复习 / 测试：四档单调，容差 = 2 倍标准误。
-//   · 学习：取消了答错垫子和补抽，低水平基本通关不了（800 局实测 13 / 25 / 31 / 35），
+//   · 学习：取消了答错垫子和补抽，低水平基本通关不了（400 局实测 7 / 29 / 53 / 66），
 //     但它仍然随水平上升。这一档放宽到 3 倍标准误 —— 练习场允许更宽的波动，
 //     不是靠断言把它判成"平"。
 const sePct = 48 / Math.sqrt(RUNS);

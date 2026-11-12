@@ -11,14 +11,14 @@ import type { GameState, LogLine } from '../model/types';
 export const G: GameState = {
   screen: 'title', mode: null, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck: [], powers: [],
   hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0, ap: BAL.baseAp, apMax: BAL.baseAp,
-  turn: 1, enemy: null, draw: [], discard: [], hand: [], returned: null,
+  turn: 1, enemy: null, draw: [], discard: [], hand: [],
   map: [], pos: null, node: null, seen: {},
   charge: {}, qLeft: [], qPicked: {}, answers: [],
   topicWrong: {}, okThisTurn: 0, topOkTopic: null,
   markerRefund: 0, qFresh: false, syllabusTurn: 0,
   onceUsed: {}, onceStage: {}, onceRun: {},
   carryBlock: 0, upGrade: 0,
-  answerDraws: 0, answerDrawsThisTurn: 0, missDrawsThisTurn: 0,
+  answerDraws: 0, answerDrawsThisTurn: 0,
   drawnThisTurn: 0, cardsThisTurn: 0, cardPlays: {}, nextBoost: null,
   apDown: 0, drawCut: 0,
   runOk: 0, runBad: 0, floors: 0,
@@ -41,11 +41,10 @@ export function resetTurnState() {
   G.okThisTurn = 0;
   G.topOkTopic = null;
   // 增益的"第一次"全部按**场**清（`startBattle`），不按回合：
-  // 一局在 100 层里要打七十来场，每回合都给一次的话，这些"一次"加起来
+  // 一局在 100 层里要打四十来场，每回合都给一次的话，这些"一次"加起来
   // 就是一整条额外的血条 —— 技巧曲线会被它磨平（见 BAL 里 hp/dmg 的说明）。
   G.markerRefund = 0;
   G.answerDrawsThisTurn = 0;
-  G.missDrawsThisTurn = 0;
   // 本回合看过几张牌，每回合重新数。nextBoost 故意不清：
   // 它说的是"下一张牌"，不是"这一回合的下一张"，跨回合仍该兑现。
   G.drawnThisTurn = 0;

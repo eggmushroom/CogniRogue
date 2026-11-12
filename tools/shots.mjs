@@ -172,7 +172,7 @@ const SHOTS = [
   // prep 里停掉软自动推进：它是「没人动就 4.2s 自己走」，截图脚本正好是"没人动"，
   // 不等这一下，两张文档图会拍成判定面板已经收掉的空战斗画面。
   ['feedback', '?dev=answer', 'cog.pauseAuto()', 1400],
-  // 答错那一屏：学习模式的价码写在反馈面板里
+  // 答错那一屏：统一价码写在反馈面板里
   ['wrong', '?dev=wrong', 'cog.pauseAuto()', 1400],
   // 光刃飞出去的那一瞬：0.18s 左右正好在半路
   ['strike', '?dev=battle', 'cog.strike()', 180],

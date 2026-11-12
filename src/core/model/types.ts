@@ -19,12 +19,6 @@ export type QLevel = 'recall' | 'understand' | 'transfer';
  * 会在战斗里被看见、被记住，而不是一个选完就再也想不起来的开关。
  */
 export interface MissRule {
-  /** 答错时按这张牌自己的格挡补多少比例（0 = 不补） */
-  block: number;
-  /** 答错后是否补抽 */
-  draw: boolean;
-  /** 答错的牌去哪 */
-  dest: 'draw' | 'discard';
   /** 答错时稳固度乘数 */
   stabDrop: number;
   /** 答对时稳固度系数 */
@@ -652,17 +646,6 @@ export interface GameState {
   draw: CardId[];
   discard: CardId[];
   hand: CardId[];
-  /**
-   * 刚刚离开手牌、被放回**抽牌堆**的那一张（只有学习模式答错会这样）。
-   *
-   * 表现层要靠它决定这张牌飞向哪边：进弃牌堆的牌是"被收走了"，回抽牌堆的是
-   * "下一次还会再来"。以前表现层拿 `G.draw.includes(id)` 猜，而 id 是**牌种**不是**副本** ——
-   * 四张基础斩击里只要还有一张躺在抽牌堆，刚被丢进弃牌堆的那张也会被画成飞回牌堆，
-   * 玩家看到的就是"这一轮没打出的牌没有回到弃牌堆"。
-   *
-   * 只描述"刚刚那一张"，表现层读完就清（见 `scenes/battle.ts` 的 `drawHand`）。
-   */
-  returned: CardId | null;
   map: MapNode[][];
   pos: { r: number; i: number } | null;
   node: MapNode | null;
@@ -767,8 +750,6 @@ export interface GameState {
   answerDraws: number;
   /** 本回合靠答对抽了几张，受 `BAL.answerDrawCap` 限制，`startTurn` 清零 */
   answerDrawsThisTurn: number;
-  /** 本回合靠答错补抽了几张，受 `BAL.missDrawCap` 限制，`startTurn` 清零 */
-  missDrawsThisTurn: number;
   /**
    * 本回合**实际抽到手**的牌数：起手抽、专注抽、答对抽、补抽都算。
    * `atkFrom:'drawn'` 的卡读它，`startTurn` 清零。不是「还剩几张」，

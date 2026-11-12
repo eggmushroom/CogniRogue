@@ -798,7 +798,7 @@ function missGain(eff: string) {
       `装订线：答错格挡正好减半（${full} → ${half}）`);
   }
 
-  // 借书证：把答对退款从全局规则改成能力牌。没有它时 2 费牌净花 2；
+  // 借书证：把答对退款从全局规则改成一张增益。没有它时 2 费牌净花 2；
   // 有它时退回 1 点，净花 1。
   {
     const two = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 2)!;

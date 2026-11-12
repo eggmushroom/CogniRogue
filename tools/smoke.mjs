@@ -725,8 +725,8 @@ await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一
 // 弃牌动画：牌离手后要飞向牌堆，然后自己清掉。清不掉的话画面左下角会永远
 // 停着一张牌，而且每出一张牌就多留一张 —— 是那种"看起来没事、玩十分钟才花屏"的漏。
 //
-// 顺带钉住去处：答错的牌进**弃牌堆**，不回抽牌堆。三档合并之后没有
-// "回牌堆"那条分支了 —— 谁把它加回来，这里的动画方向断言会立刻红。
+// 顺带钉住去处：答错的牌进**弃牌堆**，不回抽牌堆。这里只允许 discard / junk，
+// 谁把“回牌堆”的动画加回来，方向断言会立刻红。
 await step('答错的牌飞进弃牌堆，不回抽牌堆', async () => {
   await sleep(900); // 飞行 0.3s + 落地淡出，留一倍余量
 }, async () => {
@@ -737,8 +737,8 @@ await step('答错的牌飞进弃牌堆，不回抽牌堆', async () => {
     hand: cog.state.hand.length,
   })`);
   const modes = await evalJs('(window.__stop = true, window.__modes)');
-  if (modes.includes('return')) {
-    throw new Error('答错的牌被画成了飞回牌堆：' + modes.join(','));
+  if (modes.some((m) => m !== 'discard' && m !== 'junk')) {
+    throw new Error('答错的牌被画成了不该有的方向：' + modes.join(','));
   }
   return st.fx === 0 && st.dc >= 1 && st.back === false
     && st.hand === globalThis.__learnMissHand - 1;
@@ -1001,7 +1001,9 @@ await step('结束回合 → 上一轮没打出的牌飞进弃牌堆（同名牌
 }, async () => {
   const m = globalThis.__turnModes ?? [];
   if (!m.includes('discard')) throw new Error('结束回合后一张牌都没飞进弃牌堆：' + m.join(','));
-  if (m.includes('return')) throw new Error('有牌被画成飞回抽牌堆：' + m.join(','));
+  if (m.some((x) => x !== 'discard' && x !== 'junk')) {
+    throw new Error('有牌被画成不该有的方向：' + m.join(','));
+  }
   return true;
 });
 

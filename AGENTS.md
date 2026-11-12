@@ -54,7 +54,7 @@
   在那之前不要用调字号的方式局部打补丁 —— 会把版式调乱，还治不好。
 - 内置题库当前是**临时单词表** `packs/words.md`（400 题 / 5 个题池）；课程表
   `CURRICULUM` 取其中五章对应五幕，每一幕从来源题库切出自己的 BANK（`library/stage.ts`）。
-  卡池恒定 101 张（83 张基础 + 4 张联动 + 14 张扩充），固化在 `cards/catalog.ts`；原来的 CS 三份 md（algorithms / advanced /
+  卡池恒定 101 张（83 张常规卡 + 4 张联动卡 + 14 张扩充卡），固化在 `cards/catalog.ts`；原来的 CS 三份 md（algorithms / advanced /
   systems）保留在 `packs/` 里可导入。加题改 `packs/words.md`（或导入新题库），加卡改 catalog，
   调整课程只改 `CURRICULUM`，三件事互不牵连。
 - `packs/words.md` 是生成物，别手改：源表（单词 → 释义）在 `tools/words.mjs`，

@@ -255,7 +255,7 @@ function drawCostMark(
  * 手牌、奖励、牌组列表共用同一种卡面。
  *
  * **牌面只讲机械，不讲知识。** 卡面上没有题干、没有主题名、没有知识点名、没有记忆度 ——
- * 颜色按四类（攻击橙 / 防御蓝 / 技能紫 / 能力金）而不是按主题，所以同主题的两张牌
+ * 颜色按三类（攻击橙 / 防御蓝 / 技能紫）而不是按主题，所以同主题的两张牌
  * 不会因为"长得像"而被联想。知识只在你点开牌、看到那一道题的时候才出现。
  */
 export function drawCard(
@@ -267,7 +267,7 @@ export function drawCard(
   const kind = cardKind(card);
 
   // 牌面色 = 类别色，不是主题色。主题色会泄露"这张牌对应哪个知识点"，
-  // 而且同一主题的牌看起来像一套 —— 颜色改用四类之后，扫一眼读的是"它干什么"。
+  // 而且同一主题的牌看起来像一套 —— 颜色改用三类之后，扫一眼读的是"它干什么"。
   const typeMeta = CARD_TYPE_META[cardType(card)];
   const tc = kind === 'junk' ? C.faint : typeMeta.color;
   const eff = EFFS[card.eff] ?? EFFS.strike;
@@ -686,7 +686,7 @@ export function drawPowerEmblem(
   g.fillStyle = grd;
   g.fill();
 
-  // 斜纹：只在增益牌上出现，扫一眼手牌就能定位到它
+  // 斜纹：只出现在增益徽记上，和知识卡/基础牌拉开读法
   g.save();
   roundRect(x, y, w, h, r);
   g.clip();
@@ -774,7 +774,7 @@ export function drawPowerEmblem(
     g.fillText(ln, x + pad, bodyTop + off + 14 * s + i * lineH);
   });
 
-  // 底部：它什么时候生效 —— 这一句是增益牌和知识卡最大的行为差别
+  // 底部：它什么时候生效 —— 这一句是增益徽记和知识卡最大的行为差别
   const py = y + h - 30 * s;
   g.beginPath();
   g.moveTo(x + pad, py - 14 * s);
