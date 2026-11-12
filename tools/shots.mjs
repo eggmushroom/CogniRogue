@@ -3,7 +3,7 @@
  *
  *   npm run shots
  *
- * 为什么要有这个脚本：README 里的截图一旦和界面脱节，比没有截图更糟 ——
+ * 为什么要有这个脚本：README 里的截图一旦和界面脱节，比没有截图更糟：
  * 读者会照着图里的文案去找一个已经不存在的东西（"答题解锁"改成两档之后就是这样）。
  * 拍图和冒烟测试共用同一套 CDP 管道，只是这里点击少、等待多。
  */
@@ -128,7 +128,7 @@ await send('Emulation.setDeviceMetricsOverride', {
 const SHOTS = [
   ['title', '', null, 400],
   // 有断点时的首页：多一条「继续这一局」，下面才是"开始新的一局"。
-  // 存档不是手写的 JSON —— 先在第三幕里走几行，让 cog.save() 真的写一份，
+  // 存档不是手写的 JSON：先在第三幕里走几行，让 cog.save() 真的写一份，
   // 刷新之后拍的才是真实存档能长出来的那一屏。
   ['titlesave', '?dev=map&stage=3', `(() => {
     const s = cog.state;
@@ -141,7 +141,7 @@ const SHOTS = [
     cog.save();
     setTimeout(() => location.replace(location.origin + '/'), 30);
   })()`, 2600],
-  // 开局三个模式。文件名沿用 mode.jpg —— README 里那张图的位置没变，内容换了。
+  // 开局三个模式。文件名沿用 mode.jpg：README 里那张图的位置没变，内容换了。
   ['mode', '?dev=boon', null, 600],
   // 五幕各有自己的色相与物种：同一张地图换一幕，光柱、幕名和节点底色都跟着换。
   // （map3 / map5 两张图删了：README 只用到第一幕那张，多拍的没人看，还会被当成文档签入。）

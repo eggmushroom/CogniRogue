@@ -2,17 +2,8 @@ import type { AnswerRecord, StageDigest } from '../model/types';
 import { readStore, storeAvailable, writeStore } from '../infra/storage';
 
 /**
- * library/stagemem —— 按**章节**记的学习档案。
- *
- * 它和 `memory.ts` 的 `MEM` 不是一回事：
- *   - `MEM` 按 card id 记"这张牌你答对过几次"，给卡面熟练度和起手用；
- *   - `STAGE_MEM` 按 topic / qid 记"这一章你哪道题错了"，给阶段摘要、
- *     结算页和以后 agent 生成下一章题库用。
- *
- * 卡题解耦之后这两层必须分开：同一张卡在五章里抽到五章的题，`MEM[card.id]`
- * 会把五章混成一个数，而阶段记忆只认题号和章节。
- *
- * 它**不参与战斗结算**，只在答题后记账、结算/过幕时落盘。
+ * 按章节记的学习档案：`MEM` 记卡，这里记章节 + 题号。
+ * 不参与战斗结算，只在答题后记账、结算 / 过幕时落盘。
  */
 
 const KEY = 'cognirogue.stage.v1';

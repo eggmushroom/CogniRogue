@@ -5,7 +5,7 @@ import { EFFS } from '../core/model';
 import { drawArtIcon, type ArtIconName } from '../gfx/art/icons';
 
 /**
- * scenes/atlas —— 素材图集（开发用，?dev=atlas）。
+ * scenes/atlas：素材图集（开发用，?dev=atlas）。
  *
  * 自建素材库的质检台：所有图标按"实际使用的颜色 + 大小两档"铺在一屏里，
  * 改任何一枚 path 立刻能看到全局协调度。新素材先来这里过目，再上卡面。

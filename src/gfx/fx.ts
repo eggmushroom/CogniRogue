@@ -94,11 +94,8 @@ export function slash(x: number, y: number, angle: number, color = '#fff6e0', le
   slashes.push({ x, y, angle, life: 0.26, max: 0.26, len, color, width: 10 });
 }
 
-/* ── 打击 ─────────────────────────────────────────────────────
-   出牌不是"数字变了"，是"你打了他一下"。所以这里做的不是特效，
-   而是一小段演出：蓄力 → 冲出去 → 一道光刃飞过去 → 命中 → 击退。
-   逻辑层早就结算完了，这段时间只是让玩家看见它发生过。
-   ──────────────────────────────────────────────────────────── */
+/* ── 打击 ── */
+/* 蓄力 → 冲出 → 光刃 → 命中 → 击退。逻辑已结算完，这里只补演出。 */
 
 export type StrikeKind = 'strike' | 'pierce' | 'guard' | 'drain' | 'chain' | 'focus';
 
@@ -188,7 +185,7 @@ export const enemyFlash = () => eFlash;
 export const heroFlash = () => hFlash;
 
 /**
- * 一次打击。dmg 只用于飘字，敌人的血量在逻辑层已经扣过了 ——
+ * 一次打击。dmg 只用于飘字，敌人的血量在逻辑层已经扣过了：
  * 这里绝不碰任何数值，只负责让这一下"看得见"。
  */
 export function attack(o: {
@@ -229,16 +226,7 @@ export function attack(o: {
   if (target === 'enemy') lungeT = 0; else eLungeT = 0;
 }
 
-/**
- * 打不出去的那一手。
- *
- * 关键决定：**不朝敌人飞任何东西**。上一版是"光刃飞到大半程散掉"，出发点是
- * "抬手了但没成形"，可画面上一条亮弧冲向敌人，读到的永远是"打了，只是没伤害"——
- * 那是另一件事，而且是错的：答错这一手根本没有打出去。
- *
- * 所以反馈改在**出手的地方**：提灯的火苗暗一下，一小撮屑在原地散开。
- * 朝敌人的方向必须是空的——"什么都没飞过去"本身就是最重要的那条信息。
- */
+/** 答错的那一手：不朝敌人飞任何东西，反馈只落在出手的地方。 */
 export function fizzle(o: { at: () => Vec; color?: string }) {
   const p = o.at();
   const col = o.color ?? C.red;
@@ -313,15 +301,8 @@ export function heal(x: number, y: number, n: number) {
   floatText(x, y - 50, `+${n}`, C.green, 42, { vy: -80, weight: 700 });
 }
 
-/* ── 敌人动作 ───────────────────────────────────────────────
-   敌人回合以前几乎是静默的：只有真的掉血才有一条光刃飞过来，
-   被全挡下 / 举盾 / 塞杂念 / 变强 / 观察，画面上什么都不动，
-   玩家只能从左侧日志里倒推"它刚才是不是动过"。
-
-   这里把五种意图各编排成一小段演出：身体姿态由 battle.ts 读 enemyPose()
-   配合，飞行物和落地反馈在这里。坐标全部由调用方注入 —— 这一层不认识
-   ENEMY / HERO / 牌堆常量，免得表现层反向依赖场景。
-   ──────────────────────────────────────────────────────────── */
+/* ── 敌人动作 ── */
+/* 五种意图各一小段演出；坐标由调用方注入，这一层不认识场景常量。 */
 
 export type EnemyActKind = 'atk' | 'def' | 'jam' | 'buff' | 'calm';
 
@@ -348,9 +329,7 @@ export function enemyPose(): { k: EnemyActKind; p: number } | null {
 }
 
 /**
- * 敌人还在不在出手。core 的 endTurn 是同步的，事件发出来时下一回合的手牌
- * 已经抽好了；不压住抽牌动画，两拨飞行物会叠成一团，玩家分不清谁在动。
- * 等这一下演完，新手牌再依次从牌堆飞进来。
+ * 敌人还在出手。core 的 endTurn 是同步的，不压住抽牌动画两拨飞行物会叠成一团。
  */
 export const enemyBusy = () => poseT < POSE_DUR;
 
@@ -619,7 +598,7 @@ function drawEnemyMotion() {
       g.arc(0, 0, 120 + 130 * pose.p, 0, Math.PI * 2);
       g.stroke();
     } else {
-      // 观察期：一圈慢慢转的虚线 —— 它在盯着你，但还不动
+      // 观察期：一圈慢慢转的虚线：它在盯着你，但还不动
       g.setLineDash([10, 12]);
       g.rotate(pose.p * 0.8);
       g.strokeStyle = withAlpha(C.cyan, 0.45 * pulse);

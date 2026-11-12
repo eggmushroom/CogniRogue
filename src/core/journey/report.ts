@@ -8,17 +8,12 @@ import { curFloor } from '../map/gen';
 import { clearRun } from './save';
 
 /**
- * journey/report —— 一局的结算。
- *
- * 只读记忆与 G 的统计，不改规则、不驱动战斗。它不 import combat，
- * 所以 combat/foe.ts 可以在死亡延迟里安全地调用 endRun。
- *
- * 掌握度按**章节**算，不按卡牌：卡题解耦后，同一张卡在五章里抽到五章的题，
- * 拿卡牌统计当"学习进度"会串。卡牌熟练度仍然在卡面/牌组里显示，那是另一层。
+ * 一局的结算：只读记忆与统计，不改规则、不驱动战斗。
+ * 掌握度按章节算，不按卡牌。
  */
 export function endRun(win: boolean) {
   saveMem();
-  // 一局结束就没有断点了：首页那个「继续」不该继续到一个已经结算的局
+  // 一局结束就没有断点了
   clearRun();
   const rows: ReportRow[] = CURRICULUM.map((plan) => {
     const d = stageDigest(plan.stage, plan.topic);
@@ -29,7 +24,7 @@ export function endRun(win: boolean) {
   // 否则刚建的空条目要等下一次结算才写进去。
   saveStageMem();
 
-  // 押注没了，结算页也就不再有"你押的档准不准"—— 现在只剩一个问题：
+  // 押注没了，结算页也就不再有"你押的档准不准"：现在只剩一个问题：
   // 这一局的伤害里，多少是你记住的，多少是你当时蒙对的那一下。
   const asks = G.runOk + G.runBad;
   const acc = asks ? G.runOk / asks : 0;
@@ -48,7 +43,7 @@ export function endRun(win: boolean) {
   }
 
   G.screen = 'report';
-  // 本章本局的答题数：从流水里数，而不是从卡牌记忆里推 —— 同一张卡可能
+  // 本章本局的答题数：从流水里数，而不是从卡牌记忆里推：同一张卡可能
   // 在前几章问过别的题。流水只留最近若干条，所以它是"这一章打到现在"的下限。
   const stageAs = G.answers.filter((a) => a.stage === G.stage && a.stageTopic === G.stageTopic);
   G.panel = {

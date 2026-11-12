@@ -3,20 +3,9 @@ import { baseIdOf, defOf, statOf } from '../cards/registry';
 import type { CardId } from '../model/types';
 
 /**
- * combat/link —— 卡与卡之间的**机制**联动。
- *
- * 这里没有连线、没有连击计数、没有横幅：只有一条规则 ——
- * 一张牌的攻击底数，可以由前几张牌留下的战场状态算出来。
- *
- *   · 本回合抽了几张牌      （抽牌 / 答对补抽 / 专注 → 喂给 atkFrom:'drawn'）
- *   · 现在堆了多少格挡      （格挡牌 → 喂给 atkFrom:'block'）
- *   · 这张牌本场打过几次    （它自己 → grow）
- *   · 上一张牌留下的倍率    （nextMul / nextAdd → 喂给**任意**下一张牌）
- *
- * `liveStatOf` 是纯读，卡面、答题面板、`strikeWith` 结算都调它 ——
- * 所以「卡面写 10」和「实际打 10」永远是同一个数。写状态只在
- * `commitLink` 里发生，且只由真正执行了的 `strikeWith` 调用：答错这一手
- * 作废，加成不会凭空蒸发。
+ * 卡与卡的机制联动：攻击底数可由本回合抽牌数、当前格挡、本场打出次数换算，
+ * 也可给下一张牌留倍率 / 加数。
+ * `liveStatOf` 是纯读，卡面、答题面板、结算都读它；写只发生在 `commitLink`。
  */
 
 export interface LiveStat {

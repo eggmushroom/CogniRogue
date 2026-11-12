@@ -1,10 +1,10 @@
 /**
- * 依赖方向守卫 —— 把「左边不 import 右边」从注释变成一次检查。
+ * 依赖方向守卫：把「左边不 import 右边」从注释变成一次检查。
  *
  *   node tools/deps.mjs          （包含在 npm run check / npm run build 里）
  *
  * 它只做一件事：读 src 下每个 .ts 的 import 说明符，按包归类，然后拒绝
- * 「右边的包 import 了左边的包」。没有依赖、没有配置文件、没有缓存 ——
+ * 「右边的包 import 了左边的包」。没有依赖、没有配置文件、没有缓存：
  * 因为这张图只有十来个节点，不值得为它装一个 dependency-cruiser，
  * 但也不能继续靠人记着。
  *
@@ -26,7 +26,7 @@ const LAYERS = ['model', 'infra', 'cards', 'library', 'map', 'combat', 'journey'
 
 /**
  * 已知违规的显式豁免（只警告、不失败）。每一条都要写清楚它为什么存在、
- * 什么时候该删 —— 豁免表一旦长起来，守卫就退化成装饰品。
+ * 什么时候该删：豁免表一旦长起来，守卫就退化成装饰品。
  *
  * 现在是空的：combat → journey 的 settlePending 已经改成由 journey 注册回调，
  * 战斗层不再反向 import journey。

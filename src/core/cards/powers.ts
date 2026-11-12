@@ -9,105 +9,40 @@ import { isBasicId } from './basics';
 import { baseIdOf, hasPower, isUpgraded, upgradedId } from './registry';
 
 /**
- * cards/powers —— 能力牌的**唯一读取入口**。
- *
- * ## 为什么需要这一层
- *
- * 加一张能力牌的旧流程是：改 `data.ts`（定义）→ 改 `types.ts`（`PowerId` 联合）
- * → 在 6 个结算文件里找一个合适的分支 → 手写 `hasPower('xxx') ? 数字 : 0`。
- * 十八张牌的时候，`hasPower` 散成了 25 处，横跨 deck / play / questions /
- * events / rewards 五个文件。想知道"这张牌到底在哪生效"，只能全文搜。
- *
- * ## 四十一张牌，四种作用域
- *
- * 牌一多，真正的问题不再是"有没有唯一通道"，而是**"这张牌多久兑现一次"**。
- * 十八张的时候一半的牌都挂在"每场第一次答对/答错"上，一局捡到八九张，
- * 同一个瞬间会有两三张抢着响。所以 41 张按 `PowerScope` 分四条通道：
- *
- *   · `always`  常驻数值 —— `rulesOf()` 把它折成一组数字（`Rules`）。
- *     结算层读数字，不读牌名。加一张同类牌只改 `rulesOf` 的一行。
- *   · `fight`   每场一次 —— `onceThisFight(id)`，调用即消耗，`startBattle` 清账。
- *   · `stage`   每幕一次 —— `onceThisStage(id)`，过幕清账。
- *   · `run`     整局一次 —— `onceThisRun(id)`，开局清账。
- *   · `instant` 拾取即结算 —— `applyInstant(id)`，不挂时机，直接改这一局的底盘。
- *
- * 四种作用域共用一张 `G.onceUsed` / `G.onceStage` / `G.onceRun` 记账表，
- * 都是一张 `Partial<Record<PowerId, boolean>>` —— 加第 41 张牌不用碰状态定义。
- *
- * ## 为什么不直接上状态空间 / ECS
- *
- * 那套东西解决的是"实体数量上万、组件自由组合"的问题。这里只有 41 张
- * 单例增益，玩家就一个，怪物是"模板 + 实例"。为它铺一层组件表，代价是
- * core 里六十来个文件全部改读写方式，换来的是把 15 个字段变成一张表 ——
- * 而这一层用一百来行就做到了。**先要唯一通道，再要抽象。**
+ * 增益的唯一读取入口：always 由 `rulesOf()` 折成数字，fight / stage / run
+ * 由 `onceThisFight` / `onceThisStage` / `onceThisRun` 兑现，instant 由 `applyInstant` 兑现。
  */
 
-/**
- * 这一局当前生效的所有常驻数值。
- *
- * 名字都是**结算层要问的问题**，不是牌名：`turnBlock` 而不是 `lamp`。
- * 这样以后再来一张"每回合给格挡"的牌，只是往同一个字段里加数，
- * 消费它的那一行不用知道牌叫什么。
- */
+/** 结算层只读数字，不读牌名；字段名都是结算层要问的问题。 */
 export interface Rules {
-  /** 每回合行动力上限（沙漏：第一回合 +1） */
   apMax: number;
-  /** 答对后最多退回几点（借书证）。没有它时为 0 */
   refund: number;
-  /** 这一回合能看几张牌（索引卡 / 折角 / 板书）。**不含**敌人砍掉的 `G.drawCut` */
   draw: number;
-  /** 回合开始的保底格挡（长明灯）—— 不是"额外"，它就是这一回合的起点 */
   turnBlock: number;
-  /** 第一回合的开局格挡（镇纸 / 护角）。非第一回合恒为 0 */
   startBlock: number;
-  /** 答对之后最多补抽几张（双面镜），也用作每回合的补抽上限 */
   answerDraw: number;
-  /** 每回合第一次打出基础牌补几点格挡（课表）。不读题目池 */
   basicBlock: number;
-  /** 奖励屏给几个选项（便签）。`BAL.rewardPicks` 是底数 */
   rewardPicks: number;
-  /** 复习点的回复比例（修书胶）。`BAL.restPct` 是底数 */
   restPct: number;
-  /** 每张牌的伤害加成（压书石）—— 加在 `resolveEff` 算出的每一段上 */
   atkBonus: number;
-  /** 每张牌的格挡加成（校规）—— 只加在本来就有格挡的牌上 */
   blkBonus: number;
-  /** 每次挨打少受几点（夜灯） */
   dmgCut: number;
-  /** 回合结束保留几点格挡到下一回合（索引贴） */
   carryBlock: number;
-  /** 回合结束时若没有格挡，补几点（羽毛） */
   endBlock: number;
-  /** 每回合第 N 张牌补抽几张（墨水瓶） */
   inkDraw: number;
-  /** 每次洗牌补几点格挡（档案盒） */
   reshuffleBlock: number;
-  /** 击杀时回复几点（藏书印） */
   healOnKill: number;
-  /** 过幕时最大生命额外加几点（茶），叠在 `BAL.stageMaxHp` 上 */
   stageMaxHp: number;
-  /** 同种卡的张数上限加成（书挡），叠在 `BAL.maxCopies` 上 */
   maxCopies: number;
 }
 
+/** 回合开始时的上一手牌数；默认读当前手牌，那个时机不准。 */
 export interface RulesCtx {
-  /**
-   * 上一回合剩了几张手牌（索引卡看这个）。
-   *
-   * 必须由调用方传：`startTurn` 会先清空手牌，等它进 `rulesOf` 时
-   * 那个数已经没了。默认读当前手牌数，只在"回合开始时"这个时机不准。
-   */
   handLeft?: number;
-  /** 是不是精英 / 幕首领那几场（护角只看这个）。默认读当前敌人 */
   hard?: boolean;
 }
 
-/**
- * 把 `G.powers` 翻译成一组数字。**纯读，不写 G**。
- *
- * 只在这里读 `G.turn` / `G.enemy`，是因为这两个是"什么时候"与"打谁"，
- * 属于同一层上下文；卡牌本身不关心它们。
- */
+/** 把 `G.powers` 折成一组数字。纯读，不写 G。 */
 export function rulesOf(ctx: RulesCtx = {}): Rules {
   const first = G.turn === 1;
   const handLeft = ctx.handLeft ?? G.hand.length;
@@ -143,17 +78,7 @@ export function rulesOf(ctx: RulesCtx = {}): Rules {
   };
 }
 
-/**
- * 把规则表里的"每张牌加成"贴到一次结算结果上。
- *
- * **卡面与结算必须共用它**（`gfx/ui.ts`、`scenes/overlay.ts`、`combat/play.ts`
- * 三处都调），否则「压书石」会让卡面写 5 而实际打 6 —— 那正是这一版最想
- * 避免的"两张皮"。
- *
- * 加在 `resolveEff` 的**结果**上而不是它的入参上，是因为效果表的倍率会缩放
- * 底数：把 +1 加进 `atk` 再乘 0.52（串联）会变成 +0.52，四舍五入之后有时是
- * 0、有时是 1。压在结果上是"每段 +1"，和卡面写的话一致。
- */
+/** 卡面与结算共用；加在结算结果上，避免倍率把 +1 缩放成 0 或 1。 */
 export function applyCardBonus(out: EffOut, R: Rules = rulesOf()): EffOut {
   if (!R.atkBonus && !R.blkBonus) return out;
   return {
@@ -163,16 +88,7 @@ export function applyCardBonus(out: EffOut, R: Rules = rulesOf()): EffOut {
   };
 }
 
-/**
- * 课表：每回合第一次打出基础牌，补 `rulesOf().basicBlock` 点格挡。
- *
- * 这条效果**不读题目池**：不读新题/复用，也不改本场题量。题目只是嵌在
- * 知识卡上的一层；基础牌不答题也能打，所以课表在没有题、题库很小、
- * 或者玩家完全不答题的局里都照常生效。
- *
- * 用 `G.syllabusTurn` 记"这一回合已经给过"，值就是 `G.turn`，换回合直接比较；
- * `startBattle` 清零，避免上一场的回合号碰巧相同。
- */
+/** 每回合第一次打基础牌补格挡，不读题目池。 */
 export function syllabusBasicBlock(): number {
   const n = rulesOf().basicBlock;
   if (!n || G.syllabusTurn === G.turn) return 0;
@@ -181,7 +97,7 @@ export function syllabusBasicBlock(): number {
   return n;
 }
 
-/** 四条作用域共用的记账。`table` 是 G 上那三张表里的一张。 */
+/** fight / stage / run 共用的记账。`table` 是 G 上那三张表里的一张。 */
 function spend(
   table: Partial<Record<PowerId, boolean>>, id: PowerId,
 ): boolean {
@@ -191,10 +107,7 @@ function spend(
   return true;
 }
 
-/**
- * 这张「一场一次」的能力牌**现在**还能不能用。能用返回 true 并当场记账，
- * 不能用返回 false。**调用即消耗** —— 不要拿它当查询。
- */
+/** 调用即消耗，不是查询；由 `startBattle` 清账。 */
 export function onceThisFight(id: PowerId): boolean {
   return spend(G.onceUsed, id);
 }
@@ -227,19 +140,13 @@ export function clearRunOnce() {
 /** 一张牌的作用域。数据表是唯一来源，这里只是给消费点一个短名字。 */
 export const scopeOf = (id: PowerId): PowerScope => POWER_BY_ID[id]?.scope ?? 'always';
 
-/**
- * 「拾取即结算」的牌：拿到的那一刻就把效果落到这一局上，之后不再挂任何时机。
- *
- * 返回一句要写进日志的话（拿不到效果时返回空串，比如牌组里已经没有基础牌）。
- * 由 `rewards.ts` 的 `grantPower` 在入池之后调用 —— 那里是**所有**增益的
- * 唯一发放入口，所以开局带进来的那张走的也是这里。
- */
+/** 拾取即结算：拿到时把效果落到这一局，之后不挂时机。
+ * 返回写进日志的一句话；拿不到效果时返回空串。 */
 export function applyInstant(id: PowerId): string {
   if (!hasPower(id)) return '';
   switch (id) {
     case 'spine': {
-      // 上限和当前值一起抬：只加上限会留下一个"要回血才看得见"的空洞，
-      // 而这张牌说的是"立刻变厚"。
+      // 上限和当前值一起抬，只加上限要等回血才看得见。
       raiseMaxHp(BAL.spineHp);
       const got = healHp(BAL.spineHp);
       return `最大生命 +${BAL.spineHp}，回复 ${got} 点（现在 ${G.hp}/${G.maxHp}）`;
@@ -257,7 +164,7 @@ export function applyInstant(id: PowerId): string {
       return n ? `${n} 张基础牌全部精炼` : '牌组里的基础牌已经全是精炼版';
     }
     case 'polish': {
-      // 精炼的加成写在 `G.upGrade` 上，`statOf` 读它 —— 见 `GameState.upGrade`。
+      // 精炼加成写在 `G.upGrade` 上，`statOf` 读它。
       G.upGrade = BAL.polishUp;
       return `以后每次精炼额外 +${BAL.polishUp}（攻/挡底数 +${3 + BAL.polishUp}）`;
     }
@@ -266,13 +173,7 @@ export function applyInstant(id: PowerId): string {
   }
 }
 
-/**
- * 往牌组里塞 n 张**不重复**的随机知识卡，每种卡受 `rulesOf().maxCopies` 限制。
- *
- * 和 `journey/events.ts` 的 `grantCard` 是同一条规则，但那一份在 journey 层、
- * 这份在 cards 层 —— 复制 20 行比让 cards 反向依赖 journey 便宜。两处都读
- * `rulesOf().maxCopies`，所以「书挡」同时作用于事件和藏书票，不会漏一边。
- */
+/** 塞 n 张不重复的随机知识卡，每种受 `rulesOf().maxCopies` 限制。 */
 function grantKnowledge(n: number): string[] {
   const cap = rulesOf().maxCopies;
   const copies: Record<string, number> = {};
@@ -312,13 +213,8 @@ function upgradeBasics(): number {
   return n;
 }
 
-/**
- * 许愿条：致死的那一下把它接住。返回 true 表示"这一下没死"。
- *
- * 由 `infra/state.ts` 的 `checkPending` 通过 `setDeathGuard` 调用 ——
- * 判定点只能有一个（出牌、敌人回合、事件扣血都改血量），而 infra 不能
- * 反向 import cards。注册在这里，是因为**这条规则属于这张牌**。
- */
+/** 致死的那一下把它接住，返回 true 表示这一下没死。
+ * 由 `checkPending` 通过 `setDeathGuard` 调用；判定点只有一个。 */
 export function wishGuard(): boolean {
   if (!onceThisRun('wish')) return false;
   G.pending = null;
@@ -328,6 +224,5 @@ export function wishGuard(): boolean {
   return true;
 }
 
-// 注册免死钩子。放在模块底部而不是某个 init 函数里：这张牌的规则属于这个文件，
-// 而 `setDeathGuard` 的语义就是"注册即生效"（和 `setSettleHandler` 同一手法）。
+// 注册免死钩子：这张牌的规则属于这个文件，注册即生效。
 setDeathGuard(wishGuard);

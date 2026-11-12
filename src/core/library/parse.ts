@@ -1,32 +1,21 @@
 import type { QLevel, Question, QuestionBank } from '../model/types';
 
 /**
- * 题库 DSL —— 纯文本，因为写题的人不该被迫碰 JSON，更不该被迫碰卡牌数值。
+ * 题库 DSL：纯文本。
  *
- *   # 题库名               ← 可选
- *   ## 任意主题            ← 可选；只是个题池名，不校验、不设白名单
- *   ### 一道题的题干
- *   A) 选项
- *   B) 选项
- *   = B
- *   + 解析                 ← 可选
- *   ? 同一池的另一道题（? 理解: / ? 迁移: 前缀存成 Question.level）
+ *   # 题库名                 可选
+ *   ## 任意主题              可选，题池名不校验
+ *   ### 题干
+ *   A) 选项 / B) 选项
+ *   = B                      答案字母
+ *   + 解析                   可选
+ *   ? 同一池的另一道题        `? 理解:` 前缀存成 `level`
  *
- * **主题不限，格式要过。** 不写 `##` 的题进 `未分类`；主题名可以是任何字符串，
- * 不必和内置卡牌库对得上。课程表（`model/data.ts` 的 `CURRICULUM`）按主题
- * 把来源题库切成每一幕的 BANK；某一章的主题不存在时回退到全部题目。
- * 所以只写一种主题、甚至不写主题的题库也能玩。
- *
- * 解析时给每道题生成稳定题号 `qid`（主题 + 规范化题干的 hash）：换题库、
- * 换阶段之后，答题流水和章节记忆仍然指得回同一道题。
- *
- * 格式规则见 `QUESTION_FORMAT`：题干非空、2–4 个选项、答案字母合法且不越界。
- * 解析层把违规的题收集到 `QuestionBank.issues`，由 `loadQuestionBank` 整体拒绝
- * 并原样报给写题人 —— 静默丢题比拒绝更难查。
- *
- * **这里没有卡牌。** 卡面（87 张、攻挡、效果、主题）在 `cards/catalog.ts`，
- * 玩家从标题页导入的 md 只能换题目，换不掉卡池。`@ 卡名` 与 `% 攻 挡 效果`
- * 是旧知识包的遗留行，解析器直接忽略，方便手上的老题库继续导入。
+ * 主题不限，格式要过：题干非空、2–4 个选项、答案在范围内。
+ * 违规题进 `issues`，由 `loadQuestionBank` 整体拒绝。
+ * 每题生成稳定题号 `qid`（主题 + 规范化题干的 hash）。
+ * `@ 卡名` / `% 攻 挡 效果` 是旧包遗留行，解析时忽略。
+ * 卡面在 `cards/catalog.ts`，导入题库换不掉卡池。
  */
 
 /** 写题人用的中文标签 → 认知层级。没写标签的旧题保持 undefined。 */
@@ -45,8 +34,7 @@ export const QUESTION_FORMAT = `每道题要有非空题干、${MIN_OPTIONS}–$
 const normStem = (s: string) => s.trim().replace(/\s+/g, ' ');
 
 /**
- * 32 位 FNV-1a。题号只需要「同题同号、异题大概率不同号」，
- * 不需要加密强度；用 crypto 反而让 Node 和浏览器多一条异步依赖。
+ * FNV-1a。题号只要「同题同号、异题不同号」，不需要加密强度。
  */
 function hash32(s: string): string {
   let h = 0x811c9dc5;
@@ -63,11 +51,7 @@ export const questionId = (topic: string, stem: string): string =>
 
 const newQ = (s: string): Question => ({ qid: '', topic: '', q: s, options: [], answer: -1, explain: '' });
 
-/**
- * 一道题合不合格，返回 null 表示合格。
- * 只检查**格式**：题干、选项数、选项非空、答案存在且落在范围内。
- * 不检查主题名，也不检查题目内容是否与某张卡对应。
- */
+/** 一道题合不合格（只看格式），返回 null 表示合格。 */
 function diagnose(q: Question | null, lineNo: number): string | null {
   if (!q) return null;
   const tag = `第 ${lineNo} 行「${(q.q.trim() || '(无题干)').slice(0, 16)}」`;

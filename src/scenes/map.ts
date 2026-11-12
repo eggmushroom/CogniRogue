@@ -15,10 +15,7 @@ const BOT_Y = 788;
 const X0 = 540;
 const DX = 260;
 /**
- * 一行 92px。这个数是从**节点本身的大小**反推的，不是凑出来的：
- * 普通节点半径 30（直径 60），留 32px 的空才读得清"这是两个节点、不是一条珠链"。
- * 以前是 74px + 半径 32 → 间距只有 10px，一整屏看下去 9 个图标糊成一条竖线，
- * 这就是"所有图标挤在一起"的来源。
+ * 一行 92px，由节点大小反推：半径 30 的节点之间要留 32px 才读得清是两个点。
  */
 const ROW_GAP = 92;
 const VISIBLE = Math.floor((BOT_Y - TOP_Y) / ROW_GAP) + 1;
@@ -27,15 +24,8 @@ const NODE_R = 30;
 const BOSS_R = 38;
 
 /**
- * 纵向镜头。**地图一次只显示 8 行**（一幕 20 层），但玩家可以自己滚。
- *
- * 以前这里只有 `camRow()`：镜头永远贴在第 `r - 2` 行，玩家**没有任何办法**
- * 往上或往下看一眼 —— 20 层的地图只露出 8 层，剩下的全靠"↑ 上面还有 12 层"
- * 这一行字脑补。想规划路线（上面那层是不是精英？）就只能一层一层走过去。
- *
- * 现在有三条输入：滚轮、按住拖动、以及"进入下一个节点后自动回到跟随"。
- * 自动跟随只在玩家还没手动动过镜头时生效（`camManual`）——否则玩家刚翻到
- * 顶上看看 Boss，一进节点就被拽回来，那等于没得看。
+ * 纵向镜头：一幕 20 行，一次只显示 8 行，可以滚轮、按住拖动。
+ * 玩家手动调过镜头之后（`camManual`）不再自动跟随当前层。
  */
 let cam = 0;
 /** 玩家手动调过镜头之后，就不再自动跟随当前层。 */
@@ -51,10 +41,7 @@ const clampCam = (v: number) => Math.max(0, Math.min(STAGE_ROWS - VISIBLE, v));
 const followRow = (r: number) => clampCam(r - 2);
 
 /**
- * 每帧更新镜头。
- *
- * 平滑是必要的：拖动的路径是像素级的，直接把它当行号会让节点在手指下打滑；
- * 而"自动跟随"是一步跳两行，硬切会在画面上读成闪烁。两者都收敛到 `target`。
+ * 每帧更新镜头：拖动是像素级的，直接当行号会打滑；自动跟随是一步跳两行，硬切会闪。
  */
 function updateCam(dt: number) {
   // 换幕 / 重开一局：镜头复位，否则新地图会带着上一张图的滚动位置打开。
@@ -72,12 +59,8 @@ function updateCam(dt: number) {
     camManual = false;
   }
 
-  // 有面板盖在地图上时不吃滚轮/拖动：那一下属于面板里的列表（`scrollArea`）。
-  //
-  // 但这里**不能把滚轮增量取走**（早先是取走的）。`drawOverlay` 在这一帧之后才画，
-  // 取走等于面板再也看不到这一格 —— 而精炼 / 遗忘、牌组、帮助这三张面板全都
-  // 长在地图上，于是它们的列表一律滚不动。那正是"精炼时滚轮卡住"。
-  // 关掉面板时要防的"攒下的那一格落到地图上"，改由 main 在面板关闭时清掉。
+  // 有面板盖在地图上时不取滚轮：面板长在地图上，取走等于它的列表滚不动。
+  // 关掉面板时要防的那一格由 main 负责清掉。
   if (G.panel.k !== 'none') {
     consumeDragY(); // 拖动只有地图认，面板不用，留着反而会在关掉后拽一下镜头
     return;
@@ -85,15 +68,14 @@ function updateCam(dt: number) {
   const wheel0 = consumeWheel();
   const dy0 = consumeDragY();
 
-  // 滚轮：一格（约 100px）接近一行。滚轮向下 = 往塔底看。
+  // 滚轮：一格接近一行；向下滚 = 往塔底看
   if (wheel0) { cam -= wheel0 / (ROW_GAP * 1.2); camManual = true; }
 
-  // 拖动：把地图当成一张纸往下拽。纸往下走，露出来的就是**上面那几层**（行号更大），
-  // 所以 `dy0`（向下为正）和 cam 同向。除以行距，拖动才会"跟手"。
+  // 拖动：纸往下走，露出的是上面那几层
   if (dy0) { cam += dy0 / ROW_GAP; camManual = true; }
 
   const target = camManual ? clampCam(cam) : followRow(focus);
-  // 手动时 target 就是 cam 本身（已经夹住），这里只把浮点尾巴收敛掉
+  // 手动时 target 就是 cam，只需收敛浮点尾巴
   cam += (target - cam) * (camManual ? 1 : 1 - Math.exp(-dt * 9));
   cam = clampCam(cam);
 }
@@ -107,10 +89,8 @@ export function resetMapCam() {
 }
 
 /**
- * 调试/冒烟用：当前镜头在哪一行、是不是被玩家手动拨过。
- *
- * 冒烟测试需要它，因为"地图能不能滚"**没法**从命中矩形上读：
- * 只有可选的节点才注册热区，而镜头一离开当前层，屏幕上就一个可点节点都没有了。
+ * 调试/冒烟用：当前镜头行号与是否被手动拨过。
+ * 冒烟测试读它，因为"能不能滚"从命中矩形上看不出来。
  */
 export function mapCam() {
   return { cam, manual: camManual };
@@ -127,7 +107,7 @@ export function drawMap(t: number, dt = 1 / 60) {
   const st = stageOf(G.stage);
 
   // 每一幕给整屏加一层自己的色：换幕时最先察觉的不是新怪，是"这里的光变了"。
-  // 只压 8% 的透明度 —— 再多，节点类型色（战斗橙/精英红）就会被染得认不出来。
+  // 只压 8% 的透明度：再多，节点类型色（战斗橙/精英红）就会被染得认不出来。
   g.save();
   const amb = g.createRadialGradient(X0 + DX, VH * 0.42, 60, X0 + DX, VH * 0.42, 820);
   amb.addColorStop(0, withAlpha(st.color, 0.09));
@@ -185,7 +165,7 @@ export function drawMap(t: number, dt = 1 / 60) {
     }
   }
 
-  // 层号刻度：每 5 层一支，画在地图左缘 —— 挂在节点旁边会读成"这个节点叫 10"
+  // 层号刻度：每 5 层一支，画在地图左缘：挂在节点旁边会读成"这个节点叫 10"
   for (let r = lo; r <= hi; r++) {
     if (r !== 0 && (r + 1) % 5 !== 0 && r !== STAGE_ROWS - 1) continue;
     text(`${floorOf(G.stage, r)}`, X0 - 70, yOf(r) + 4, {
@@ -198,11 +178,7 @@ export function drawMap(t: number, dt = 1 / 60) {
 }
 
 /**
- * 右侧滚动条：把"这是 20 层里的第几层"画出来。
- *
- * 只有文字（"上面还有 12 层"）回答不了"我现在看到的是整张图的哪一段"，
- * 而地图最需要的判断恰恰是"再往上两行就是精英，要不要绕"。条子只有 4px 宽，
- * 但它是这一屏唯一能把"看到的部分"和"整张图"对上的东西。
+ * 右侧滚动条：回答"我现在看到的是 20 层里的哪一段"。
  */
 function scrollBar() {
   const x = VW - 60;
@@ -237,12 +213,8 @@ function hint(hasAvail: boolean) {
 }
 
 /**
- * 节点底盘形状：**先把类型分开，颜色只是第二层**。
- *
- * 以前五种节点是同一个圆，只换颜色 —— 而战斗 `#c9744a` 和精英 `#d9534f`
- * 两个色几乎一样，缩到 32px 只能靠读图标才分得出，读图标就得停下来。
- * 现在轮廓本身就是信息：圆 = 战斗，六边 = 精英，圆角方 = 复习，虚线圆 = 事件，
- * 大双环 = 首领。颜色退化成"确认"，不再是唯一线索。
+ * 节点底盘形状：先用轮廓区分类型，颜色只是第二层。
+ * 圆 = 战斗，六边 = 精英，圆角方 = 复习，虚线圆 = 事件，大双环 = 首领。
  */
 function platePath(type: MapNode['type'], x: number, y: number, r: number) {
   if (type === 'elite') {
@@ -258,7 +230,7 @@ function platePath(type: MapNode['type'], x: number, y: number, r: number) {
     return;
   }
   if (type === 'rest') {
-    // 圆角方：全场唯一的"方"——安全点不该长得像一场战斗
+    // 圆角方：全场唯一的"方"：安全点不该长得像一场战斗
     roundRect(x - r, y - r, r * 2, r * 2, r * 0.42);
     return;
   }
@@ -272,7 +244,7 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   const meta = NODE_META[nd.type];
   const seen = !!G.seen[nd.key];
   const baseR = nd.type === 'boss' ? BOSS_R : NODE_R;
-  // 可前往的节点呼吸着长大一点点。满屏都在发光的时候，尺寸变化比亮度更抗噪 ——
+  // 可前往的节点呼吸着长大一点点。满屏都在发光的时候，尺寸变化比亮度更抗噪：
   // "亮"在这张图上已经很廉价了，光柱、浮纸、走过的路全都在发亮。
   const p = 0.5 + 0.5 * Math.sin(t * 3 + nd.r * 0.8);
   const r = baseR * (avail ? 1 + 0.06 * p : 1);
@@ -351,7 +323,7 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
 
   if (isCur) {
     // 当前位置做成胶囊：原来是一行 12px 裸字，和 hover 时才出现的地名混在一起。
-    // 贴着底盘下沿 6px —— 行距 92、半径 30 之后，"这里"和下一行节点只剩 2px 的余量，
+    // 贴着底盘下沿 6px：行距 92、半径 30 之后，"这里"和下一行节点只剩 2px 的余量，
     // 放到 10px 就会和下面那个节点咬在一起。
     const tw = 52;
     roundRect(x - tw / 2, y + baseR + 6, tw, 19, 9.5);
@@ -530,7 +502,7 @@ function leftPanel() {
       g.restore();
     }
   } else {
-    // 池子从十二个涨到四十七个之后，这里不能再按"两列六行"排 ——
+    // 池子从十二个涨到四十七个之后，这里不能再按"两列六行"排：
     // 一局捡到十几张时最后一行会压到「全塔」那一块上。改成三列，
     // 并且**有上限**：超出部分只报一个数字，而不是继续往下长、
     // 把下面的进度条挤出去。玩家真正关心的是"我这一局会了什么"，
@@ -554,7 +526,7 @@ function leftPanel() {
 
   // ── 五幕进度 ─────────────────────────────────────────────
   // 这是 100 层唯一能一眼看懂的刻度：五条横杠，每条代表 20 层。
-  // 逐层画 100 个点没有意义 —— 玩家记不住 100 个位置，但记得住"我在第几幕"。
+  // 逐层画 100 个点没有意义：玩家记不住 100 个位置，但记得住"我在第几幕"。
   const sy = y + 250;
   text('全塔', x + 20, sy, { size: 13, color: C.dim, weight: 600 });
   STAGES.forEach((s, i) => {
@@ -595,7 +567,7 @@ function leftPanel() {
   kinds.forEach((k, i) => {
     const cx = x + 32 + (i % 3) * 96;
     const cy = ly + 52 + Math.floor(i / 3) * 30;
-    // 图例必须和地图上用同一套轮廓 —— 否则"六边形是精英"这件事在图上认得出，
+    // 图例必须和地图上用同一套轮廓：否则"六边形是精英"这件事在图上认得出，
     // 在图例里查不到。形状先于颜色，图例是它唯一的说明书。
     platePath(k, cx, cy, 12);
     g.fillStyle = 'rgba(10,12,18,.9)';

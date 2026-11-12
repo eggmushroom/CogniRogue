@@ -1,9 +1,4 @@
-/**
- * 旧 card id（题干前缀）→ 新稳定 id（`c00`…）的迁移表。
- *
- * 只用于读旧存档和旧记忆；新代码只认 `CardDef.id`。
- * 这个文件不参与卡面/出题，迁移完成后可以删。
- */
+/** 旧 card id → 稳定 id，只用于读旧存档和旧记忆。 */
 export const LEGACY_CARD_IDS: Record<string, string> = {
   "0:二分查找在 n 个有序元素上的最坏时": "c00",
   "1:递归式 T(n) = 2T(n/2)": "c01",

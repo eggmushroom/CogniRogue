@@ -1,7 +1,7 @@
 import type { Question, QView } from '../model/types';
 
 /**
- * library/question —— 出题视图。
+ * library/question：出题视图。
  *
  * 题库里的 `= B` 是作者写的固定答案位置。直接照着摆，玩家几局之后背下来的
  * 就是「这题选 A」，而不是知识点本身（内置包原始分布里 A 甚至超过一半）。

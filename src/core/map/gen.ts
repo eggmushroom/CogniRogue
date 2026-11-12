@@ -4,14 +4,8 @@ import { G } from '../infra/state';
 import { shuffle } from '../infra/util';
 
 /**
- * map —— 一幕的分支地图，以及 100 层的层号换算。
- *
- * **一局 100 层，但地图一次只装 20 层。** 这不是偷懒：把 100 行画在一屏里，
- * 每个点只有几个像素，地图就不再是"能提前规划的分支"，而是一张花纹。
- * 所以一幕一张图，过幕换图 —— 玩家记住的是"这一幕我怎么走上去"，不是 100 个点。
- *
- * 只负责生成拓扑和回答「现在能往哪走」。节点类型的图标 / 颜色在
- * model/data.ts 的 NODE_META，怎么画是 scenes/map.ts 的事。
+ * 一幕的分支地图与层号换算。一局 100 层，但地图一次只装 20 行，过幕换图。
+ * 只负责拓扑和可达性；节点颜色与图标在 `NODE_META`，怎么画在 `scenes/map.ts`。
  */
 export const MAP_ROWS = STAGE_ROWS;
 /** 全流程层数。UI 上的「第 37 / 100 层」用的就是它 */
@@ -27,14 +21,8 @@ export function curFloor(): number {
 }
 
 /**
- * 生成一幕的地图。
- *
- * 20 行里三行是固定的：入口（第 0 行，一场普通战斗）、幕末复习点（第 18 行）、
- * Boss（第 19 行）。中间 17 行按这一幕的 `mix` 抽类型 —— 所以第二幕事件多、
- * 第四幕精英多，是**配比**上的差异，不是随机数的差异。
- *
- * 另外两条硬约束：精英不出现在前 5 行（一开幕就撞精英只会让人重开），
- * 复习点不连着出（连着两点等于白送一管血）。
+ * 生成一幕地图。固定三行：入口战斗（0）、复习点（18）、Boss（19）；
+ * 中间 17 行按本幕 `mix` 抽类型。精英不在前 5 行，复习点不连着出。
  */
 export function genStage(stage = G.stage): MapNode[][] {
   const def = stageOf(stage);
@@ -59,7 +47,7 @@ export function genStage(stage = G.stage): MapNode[][] {
   }
   rows.push([{ col: 1, type: 'boss' } as MapNode]);
 
-  // 一幕里一只精英都没有会显得太平 —— 精英是增益牌唯一的稳定来源。
+  // 一幕里一只精英都没有会显得太平：精英是增益牌唯一的稳定来源。
   // 补在第 6..14 行里随机一行的随机节点上（那里已经过了开局，玩家有牌可打）。
   if (def.mix.elite > 0 && !elites) {
     const r = 6 + Math.floor(Math.random() * 9);

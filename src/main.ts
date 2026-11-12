@@ -34,25 +34,17 @@ initCanvas(canvas);
 bindInput(canvas, toLogic);
 
 // 逻辑层只发事件，表现层在这里翻译成"看得见的后果"
-// 面板真的画出来了（而不是"状态里有个面板"）才算挡住 —— 打击演出期间面板是推迟绘制的，
+// 面板真的画出来了（而不是"状态里有个面板"）才算挡住：打击演出期间面板是推迟绘制的，
 // 这时候玩家侧的格挡/回血数字应该照常弹出来。
 const modalOpen = () => G.panel.k !== 'none';
 const panelShown = () => modalOpen() && panelHold <= 0;
 
-/**
- * 反馈面板的推迟时间。答对之后先让这一下打完（光刃飞过去、命中、击退），
- * 再把面板弹出来；否则 0.5 屏的暗色遮罩会把整段演出盖掉，
- * 玩家只会看到"血少了，然后弹了个框"。
- */
+/** 反馈面板的推迟时间：先让这一下打完，再弹面板。 */
 let panelHold = 0;
 
 /**
- * 答题 → 判定 → 结算现在是**同一块面板**。
- *
- * `settling` 是"判定已经出来、打击演出还在飞"的那一小段：以前这段时间
- * 屏幕上什么面板都没有（答案那一屏瞬间消失，等 0.66s 再弹一个更暗的新框），
- * 一局要经历几十次这种闪断。现在面板原地不走，选项当帧就亮起判定，
- * 演出在它周围继续播；`reveal` 只驱动结果区逐层淡入。
+ * 答题、判定、结算共用同一块面板。
+ * `settling` 是"判定已出、打击还在飞"的那一小段，此时面板原地不走，只推进 `reveal`。
  */
 let quizSettling = false;
 let quizReveal = 0;
@@ -61,19 +53,7 @@ let wasSettling = false;
 /** 调试用：下一块判定面板要停在"答案已出、结果未展开"多久。 */
 let quizHoldBoost = 0;
 
-/**
- * 结算面板的软自动推进。
- *
- * 鼠标停在面板上时一律暂停 —— 有释义要读，把人赶走是最糟的"优化"；
- * 键盘 / 触屏外操作的玩家则不必再为了一个"继续"多抬一次手。
- * 面板上有一条进度条把这件事讲明白，点面板任意处随时可以立刻走。
- * 用墙钟而不是 dt：渲染被节流时游戏时间会变慢，玩家不该因此被多晾几秒。
- *
- * 只记「还剩多少毫秒」，按相邻两帧的墙钟差递减。以前存起点时间戳再减去
- * 累计暂停时长，暂停段在判定演出里就已经开始了、却没记起点，第一次解除
- * 暂停时会把「页面启动至今」整段当成暂停扣掉，倒计时反而被拉长到 10 秒。
- * 现在演出、展开、悬停这些不该计时的帧直接不扣，语义一眼看得完。
- */
+/** 结算面板的软自动推进：指针停在面板上时暂停，用墙钟而不是 dt 计时。 */
 const AUTO_MS = 4200;
 let autoRemain = AUTO_MS;
 let autoLast = 0;
@@ -92,19 +72,12 @@ function resetAuto() {
 }
 
 /**
- * 上一帧面板是否开着。
- *
- * 面板开着时滚轮归面板（`scrollArea`）；地图不再替它把增量取走（见 `map.ts` 的
- * `updateCam`），代价是"这一屏没有列表"的时候没人消费它。所以关掉面板的那一帧
- * 要把剩下的增量清掉，否则它会落在刚从面板底下露出来的地图上。
+ * 上一帧面板是否开着。面板开着时滚轮归面板，关掉那一帧要把剩余增量清掉，
+ * 否则它会落到刚从面板底下露出来的地图上。
  */
 let panelWasOpen = false;
 
-/**
- * 敌人动作演出剩余时间。core 的 endTurn 是同步的：事件发出来的时候，
- * 血已经扣了、下一回合的手牌也已经抽好。这段时间只是补演"它刚才做了什么"，
- * 不锁输入的话玩家能在光刃还在飞的时候点开下一张牌，画面就乱了。
- */
+/** 敌人动作演出剩余时间，用来锁输入：core 的 endTurn 是同步的。 */
 let enemyHold = 0;
 
 onFx((e) => {
@@ -128,23 +101,18 @@ onFx((e) => {
         dmg: e.n,
         absorbed: e.absorbed,
       });
-      // 判定面板不再等整段打击演完：答案当帧就亮在原地，光刃在它周围飞。
-      // 只留够第一下命中的时间，多段按段错开一点，别让"又弹了一个框"变成一拍停顿。
+      // 判定面板不等打击演完：答案当帧亮起，光刃在它周围飞。
       panelHold = Math.max(panelHold, fly + 0.18 + (e.seq ?? 0) * 0.1);
       break;
     }
     case 'fizzle': {
-      // 答错 = 这一手根本没打出去。所以**不朝敌人飞任何东西**：
-      // 光刃、光斑、抛物线一律不要 —— 只要画面上有东西冲向敌人，读到的就是"打了"。
-      // 反馈落在出手的地方：提灯的焰暗一下，一小撮屑在原地散掉。
+      // 答错不朝敌人飞任何东西，反馈落在出手的地方。
       FX.fizzle({ at: heroHand, color: EFFS[e.eff ?? 'strike'].color });
-      // 面板还是等这一下演完再展开结果，但答案本身当帧可见。
       panelHold = Math.max(panelHold, 0.2);
       break;
     }
     case 'hurt':
-      // 事件选项扣血：这时候根本没有敌人，不能画一条从敌人坐标飞过来的光刃。
-      // 敌人打的那一下已经统一走 enemyAct，这里只做"自己受伤"的反馈。
+      // 事件扣血：这时候没有敌人，只做自身受伤的反馈。
       FX.flash(C.red, 0.12);
       FX.shake(8);
       FX.floatText(HERO.x, HERO.y - 40, `-${e.n}`, C.red, 52, { vy: -80 });
@@ -166,18 +134,16 @@ onFx((e) => {
       if (!panelShown()) FX.heal(HERO.x, HERO.y - 40, e.n);
       break;
     case 'foeHeal':
-      // 落在它自己身上：和"玩家回血"共用绿色，位置说明是谁在回。
-      // 不落在血条上 —— 那会盖住 `n / max` 那行字，正好把该看的数字糊掉。
+      // 敌人回血落在它自己身上，不压在血条文字上。
       if (!panelShown()) FX.heal(ENEMY.x, ENEMY.y + 180, e.n);
       break;
     case 'shake':
       FX.shake(e.power);
       break;
     case 'power': {
-      // 捡到增益的那一下：顶上飘一行字。它没有伤害数字，所以必须另给一个反馈，
-      // 否则玩家只能靠"下回合多了一点行动力"倒推刚才捡到了什么。
+      // 捡到增益：画面上方飘一行字，否则玩家只能靠数值倒推。
       const pw = POWER_BY_ID[e.id];
-      // 落在画面中央上方：敌人头顶是意图气泡，飘在那里会糊成一句
+      // 落在画面中央上方：敌人头顶是意图气泡。
       if (pw) FX.floatText(760, 150, `${pw.name} 生效`, pw.color, 30, { vy: -42 });
       break;
     }
@@ -187,7 +153,7 @@ onFx((e) => {
 });
 
 keyHandler((k) => {
-  // 玩家一旦用键盘接管，就把自动推进交还给他 —— 这是"可打断的便利"，不是倒计时。
+  // 玩家一旦用键盘接管，就把自动推进交还给他
   autoCancelled = true;
   const p = G.panel;
   if (panelHold > 0 || enemyHold > 0) return;
@@ -201,8 +167,7 @@ keyHandler((k) => {
     if (p.k === 'feedback') dismissFeedback();
     // 掉落面板只有一个出口，回车就是"知道了"
     else if (p.k === 'powerdrop') ackPower();
-    // 没有面板时，空格/回车就是结束回合。键盘能做的事不该只有鼠标能做 ——
-    // 这也是"某个按钮热区被漏注册"时唯一还能把一局推下去的逃生口。
+    // 没有面板时，空格/回车结束回合：键盘能做的事不该只有鼠标能做。
     else if (p.k === 'none' && G.screen === 'battle') endTurn();
     return;
   }
@@ -224,16 +189,16 @@ function frame(now: number) {
   beginFrame();
   beginInput();
 
-  // 面板刚关掉：把面板期间攒下的滚轮增量丢掉，别让它一次性落到地图镜头上。
+  // 面板刚关掉：把面板期间攒下的滚轮增量丢掉
   if (panelWasOpen && !modalOpen()) clearWheel();
   panelWasOpen = modalOpen();
 
-  // 面板推迟：只在"刚打完这一下"的反馈面板上生效，别把奖励/休息这些面板一起按住
+  // 面板推迟只对反馈面板生效
   if (G.panel.k === 'feedback' && panelHold > 0) panelHold = Math.max(0, panelHold - dt);
   else if (G.panel.k !== 'feedback') panelHold = 0;
   if (enemyHold > 0) enemyHold = Math.max(0, enemyHold - dt);
 
-  // 面板换屏要重置答题面板的三段时钟；同一块面板只推进 reveal，不重新开始。
+  // 面板换屏时重置答题面板的时钟；同一块面板只推进 reveal
   if (G.panel.k !== lastPanelKind) {
     if (G.panel.k === 'feedback') {
       quizReveal = 0;
@@ -243,7 +208,7 @@ function frame(now: number) {
     lastPanelKind = G.panel.k;
   }
   quizSettling = G.panel.k === 'feedback' && panelHold > 0;
-  // 倒计时从"结果真的展开"那一刻起算，不把打击演出的时间算进去。
+  // 倒计时从结果真的展开那一刻起算
   if (wasSettling && !quizSettling && G.panel.k === 'feedback') {
     autoRemain = AUTO_MS;
     autoLast = performance.now();
@@ -253,7 +218,7 @@ function frame(now: number) {
   }
   wasSettling = quizSettling;
   if (G.panel.k === 'feedback' && !quizSettling) quizReveal += dt;
-  // 放在 boost 之后：调试拉长判定时那一帧也必须是锁输入的。
+  // 放在 boost 之后：调试拉长判定时那一帧也必须锁输入
   setInputLock(panelHold > 0 || enemyHold > 0);
 
   const sh = FX.shakeOffset();
@@ -271,28 +236,22 @@ function frame(now: number) {
     drawBattle(t, dt);
   }
 
-  // 特效和战场必须在同一层：光刃端点用的是 HERO/ENEMY 的逻辑坐标，
-  // 场景跟着震动位移、特效却不跟着走，命中那一瞬光刃会脱离角色。
+  // 特效和战场在同一层：光刃端点用 HERO/ENEMY 坐标，场景震动时它得跟着走。
   FX.draw();
   g.restore();
 
   FX.drawFlash();
-  // 面板最后画。以前 FX.draw 排在这里之后，伤害飘字和粒子会压在弹窗上面，
-  // 看起来像渲染残留；同时面板也别跟着震动位移走 —— 画在位移里时按钮会抖，
-  // 而命中热区是逻辑坐标，两者会错开几像素。
+  // 面板最后画，别跟着震动位移走：按钮会抖，和逻辑坐标的热区错开。
   if (G.panel.k !== 'none') {
     drawOverlay(t, {
       settling: quizSettling, reveal: quizReveal,
       autoProgress: 1 - autoIn / (AUTO_MS / 1000), autoPaused, autoCancelled,
     });
   }
-  // 面板已经盖住战场时，还在飘的伤害数字和粒子会透过遮罩变成几块脏影子
-  // （反馈页上那个孤零零的 "6"）。按 4 倍速散掉，比直接 clearFx 柔和 ——
-  // 突然清空看起来像掉帧。判定演出那一小段不加速：光刃本来就该看得见。
+  // 面板盖住战场时，残留的飘字和粒子按 4 倍速散掉，比直接清空柔和
   FX.update(dt * (panelShown() ? 4 : 1));
 
-  // 自动推进只在"结果已经展开、指针不在面板上、玩家没按过键"时走。
-  // 面板几何由刚才那一帧的绘制给出，所以暂停判据和玩家看到的是同一块区域。
+  // 自动推进只在结果展开、指针不在面板上、玩家没按过键时走
   if (G.panel.k === 'feedback' && !quizSettling && quizReveal > 0.3) {
     const box = quizFrame().geom;
     const nowMs = performance.now();
@@ -304,7 +263,7 @@ function frame(now: number) {
     autoIn = autoRemain / 1000;
     if (!paused && autoRemain <= 0) dismissFeedback();
   } else if (G.panel.k === 'feedback') {
-    // 打击演出 / 结果刚展开这几帧不计时，否则慢机器上玩家还没看清就走了。
+    // 演出 / 展开这几帧不计时
     autoLast = performance.now();
     autoPaused = true;
   }
@@ -409,7 +368,7 @@ window.cog = {
   pick: (i: number) => answer(i),
   // 掉落面板只有一个出口。冒烟测试要能"关掉它"，不然一局推不下去。
   ackPower: () => ackPower(),
-  // X 费牌的费用是活的，读的是"此刻"——冒烟测试断言扣了几点时用它，别去猜卡表
+  // X 费牌的费用是活的，读的是"此刻"：冒烟测试断言扣了几点时用它，别去猜卡表
   costOf: (id: string) => costNow(defOf(id)),
   fx: () => ({ ...fxCount(), enemy: FX.enemyActCount() }),
   enemyAct: (k: FX.EnemyActKind = 'atk', taken = 9) => {
@@ -460,13 +419,12 @@ window.cog = {
 };
 
 /**
- * 开发用：?dev=battle 直接落在某个画面，省得每次都点进去。
- * 这只是入口，规则仍然是同一套 core。
+ * 开发用：?dev=battle 直接落到某个画面。只是入口，规则仍是同一套 core。
  */
 function devJump() {
   const d = new URLSearchParams(location.search).get('dev');
   if (!d || d === 'title') return;
-  // 开局能力卡面板本身（首页点"开始新的一局"会到这里）
+  // 开局选模式面板
   if (d === 'boon') { G.panel = { k: 'boon' }; return; }
   // 素材图集：不需要开局，是一张独立的质量检验页
   if (d === 'atlas') { G.screen = 'atlas'; return; }
@@ -495,7 +453,7 @@ function devJump() {
   // 敌人动作截图：把招式表固定成单招循环，头顶意图和演出才是同一件事；
   // 而且真的走一次 endTurn，血量 / 格挡 / 弃牌堆都会跟着变，不是只盖一层特效。
   // 参数既可以是单招名（atk/jam/def/buff），也可以是 FOES 里的怪物 key，
-  // 后者直接把敌人整个换成那只怪 —— 新怪的立绘 / hint / 意图才能被逐个拍到。
+  // 后者直接把敌人整个换成那只怪：新怪的立绘 / hint / 意图才能被逐个拍到。
   if (d.startsWith('foe:')) {
     const arg = d.slice(4);
     const MOVES: Record<string, Move> = {
@@ -541,10 +499,8 @@ function devJump() {
 
   startRun();
   enterNode(G.map[0][0].key);
-  // 体验/截图入口：四张联动卡一次摊在手里，配一张基础格挡喂「铸甲为刃」。
-  // 走的是真实战斗与真实出牌路径，只是替玩家把抽牌运气拿掉。
+  // 联动卡演示：四张联动卡摊在手里，用 c04 真实抽一张验证抽牌数联动
   if (d === 'links') {
-    // c04「扩容远见」是 0 费免答的抽牌卡，用它真实抽一张来验证抽牌数联动。
     G.hand = ['c83', 'c84', 'c85', 'c86', 'c86', 'c04'];
     G.ap = G.apMax = 9;
     G.enemy!.maxHp = G.enemy!.hp = 999;
@@ -557,7 +513,7 @@ function devJump() {
   let askIdx = G.hand.findIndex((e) => canAsk(e));
   if (askIdx < 0 && (d === 'question' || d === 'answer' || d === 'wrong')) {
     // findIndex 只找**手牌里**的牌，可起手 5 张完全可能一张需答题的知识卡
-    // 都没有（约两成）。那时 ?dev=answer 会安静地拍成一张空战斗画面 ——
+    // 都没有（约两成）。那时 ?dev=answer 会安静地拍成一张空战斗画面：
     // 文档图就随机裂了。补一张 1 费知识卡到 0 号位，手牌数不变，
     // 后面依旧走真人那条 askCard → answer 流程，没有任何特殊结算。
     const seed = PACK.cards.find((c) => canAsk(c.id) && typeof c.cost === 'number' && c.cost >= 1);
@@ -589,7 +545,7 @@ function devJump() {
     G.pending = 'clear';
     dismissFeedback();
   } else if (d === 'report') {
-    // 只是为了让文档截图里不是一排 0 —— 正常游戏里这些数字全部来自真实答题。
+    // 只是为了让文档截图里不是一排 0：正常游戏里这些数字全部来自真实答题。
     // 章节掌握读的是 STAGE_MEM，所以这里造的是章节档案，不是卡牌记忆。
     const demo: Array<[number, number]> = [[9, 2], [7, 4], [12, 6], [4, 5], [0, 0]];
     CURRICULUM.forEach((p, i) => {

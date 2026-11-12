@@ -3,33 +3,18 @@ import type { Question, QuestionBank } from '../model/types';
 import { QUESTION_FORMAT, parseAnyQuestionBank } from './parse';
 
 /**
- * library/bank —— 当前阶段题库，也是**唯一允许外部替换的东西**。
+ * 当前阶段题库，也是唯一允许外部替换的东西。
+ * 卡池在 `cards/catalog.ts` 写死，换题库只换题目。
  *
- * 卡牌库在 `cards/catalog.ts` 里写死；这里只持有题目。导入一份 md
- * 会换掉整份来源题库，但 PACK（卡池）一个字节都不会变 —— 卡数、卡名、
- * 攻挡、效果、card id 全部保持，玩家的复习进度因此也不会失效。
- *
- * 两个层次必须分清：
- *   - `sourceBank()` 是**载入的完整题库**（内置 400 道临时单词题，或玩家导入的那份）；
- *   - `BANK` 是**当前阶段正在用的题库**，由 `library/stage.ts` 从来源题库切出来。
- * 战斗中只读 `BANK`，所以换阶段不会把整座塔的题一起换掉；换题库只改来源，
- * 下一次进阶段时才会重新切。
- *
- * `BANK` 是 let 绑定：ESM live binding 保证所有工具包读到的都是当前题库，
- * 调试入口必须用 getter 读它，不能快照（和以前 PACK 的坑一样）。
- *
- * 主题**不设白名单**：`byTopic` 的键只是写题人自己起的分组名。
- * 校验只看格式（见 `QUESTION_FORMAT`），不要求覆盖内置卡牌库的 16 个主题，
- * 也不要求主题名和卡面一致。
+ * `sourceBank()` 是载入的完整题库，`BANK` 是当前阶段从它切出来的那份。
+ * `BANK` 是 let 绑定，调试入口必须用 getter 读。
+ * `byTopic` 的键只是分组名，不设白名单。
  */
 export let BANK: QuestionBank = { name: '（尚未载入题库）', byTopic: {}, issues: [] };
 
 /** 载入的完整题库。切阶段、换题库都从它出发，而不是从上一阶段的切片出发。 */
 let SOURCE: QuestionBank | null = null;
-/**
- * 来源题库的版本号。`loadQuestionBank` 换一次就 +1；阶段层靠它判断
- * "手上这份 BANK 还是不是从当前来源切的"。
- */
+/** 来源题库版本号：`loadQuestionBank` 换一次 +1，阶段层据此判断要不要重切。 */
 let GEN = 0;
 
 export const bankGeneration = (): number => GEN;
@@ -39,10 +24,7 @@ export const countQuestions = (bank: QuestionBank): number =>
   Object.values(bank.byTopic).reduce((n, pool) => n + pool.length, 0);
 export const bankQuestionCount = (): number => countQuestions(BANK);
 
-/**
- * 把题库摊平成一个池，按题号去重。顺序只取决于 `byTopic` 的键顺序与池内顺序，
- * 同一次载入里是稳定的。以前按题干去重，现在按 `qid` —— 题号已经包含主题。
- */
+/** 把题库摊平成一个池，按题号去重；同一次载入里顺序稳定。 */
 export function flattenBank(bank: QuestionBank): Question[] {
   const out: Question[] = [];
   const seen = new Set<string>();
@@ -66,7 +48,7 @@ export function allQuestions(): Question[] {
  *
  * `parseQuestionBank` 遇到 `# ` 会先把这一行当题库名，所以多份直接拼接时
  * 只会留下最后一个名字。这里剥掉每份的一级标题（不动 `## 主题`），
- * 在最前面挂一个合集名。单份现在也能单独导入 —— 只是题池会薄一些。
+ * 在最前面挂一个合集名。单份现在也能单独导入：只是题池会薄一些。
  */
 export function mergePacks(texts: string[], name = '合集题库'): string {
   const body = texts

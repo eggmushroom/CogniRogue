@@ -15,7 +15,7 @@ import heroUrl from '../../assets/hero.jpg';
 
 /**
  * 立绘都是"纯黑底 + 发光主体"。直接画会有方形色差，
- * 所以统一用 screen 混合 —— 黑即透明，光留下。省掉抠图。
+ * 所以统一用 screen 混合：黑即透明，光留下。省掉抠图。
  */
 export interface Art {
   shard: HTMLImageElement;

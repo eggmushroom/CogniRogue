@@ -48,7 +48,7 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   let by = 452;
 
   // 有断点就把它摆到第一位。100 层的一局接近一小时，首页上「继续」比「开始」更常用；
-  // 反过来，一旦按错「开始新的一局」，代价不是十分钟，是整座塔 ——
+  // 反过来，一旦按错「开始新的一局」，代价不是十分钟，是整座塔：
   // 所以破坏性的那个降成次按钮，要点的那个是唯一带金边的。
   const save = runSaveInfo();
   if (save) {
@@ -89,7 +89,7 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
     });
   }
 
-  // 版本和许可合成右下角一行。左下原来还有一行"v0.4 · TypeScript + Canvas"——
+  // 版本和许可合成右下角一行。左下原来还有一行"v0.4 · TypeScript + Canvas"：
   // 技术栈对玩家没有意义，对读源码的人 README 里也有。
   text('v0.4 · MIT License', VW - 40, VH - 28, { size: 12, color: C.faint, align: 'right' });
 }
