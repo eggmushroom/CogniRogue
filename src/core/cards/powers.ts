@@ -112,7 +112,7 @@ export function rulesOf(ctx: RulesCtx = {}): Rules {
     refund: hasPower('librarycard') ? BAL.refund : 0,
     draw: BAL.drawPerTurn
       + (hasPower('board') ? BAL.boardDraw : 0)
-      + (hasPower('index') && handLeft <= 2 ? 1 : 0)
+      + (hasPower('index') && handLeft <= 2 ? BAL.indexDraw : 0)
       + (first && hasPower('dogear') ? BAL.dogearDraw : 0),
     turnBlock: hasPower('lamp') ? BAL.lampBlock : 0,
     startBlock: first

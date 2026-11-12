@@ -12,7 +12,7 @@ import type { MapNode } from '../src/core/model';
 import {
   EVENTS, G, answer, askCard, canAsk, canPay, cancelPanel, chooseEventOption, clearRun, defOf,
   dismissFeedback, endTurn, forgetCard, intentText, parseMem, playBasic,
-  runSaveInfo, skipReward, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
+  runSaveInfo, skipReward, takeCard, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
   loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf, LEGACY_CARD_IDS,
   allQuestions, stageMemOf, resetStageMemory, cardKind, enterStage, BASICS, drawBattleQuestions,
   cardGrade, gradeNeed, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
@@ -338,6 +338,58 @@ function missGain(eff: string) {
   openReward();
   skipReward();
   ok(panelKind() === 'none' && G.screen === 'map', '精英奖励走完就回地图，不会开空面板');
+}
+
+// ── 9b. 账本不再被便签覆盖；索引卡不再被板书覆盖 ───────────
+{
+  // 索引卡：空手时是 +2，不是 +1；和板书叠起来是两个不同的来源。
+  startRun();
+  G.powers = ['index'];
+  ok(rulesOf({ handLeft: 2 }).draw === BAL.drawPerTurn + BAL.indexDraw,
+    `索引卡：空手时抽牌 +${BAL.indexDraw}（${rulesOf({ handLeft: 2 }).draw}）`);
+  G.powers = ['board', 'index'];
+  ok(rulesOf({ handLeft: 2 }).draw === BAL.drawPerTurn + BAL.boardDraw + BAL.indexDraw,
+    `索引卡 + 板书：两个来源叠加（${rulesOf({ handLeft: 2 }).draw}）`);
+
+  // 账本：幕内第一次奖励多一张，而且选中的那张直接精炼。
+  startRun();
+  G.powers = ['ledger'];
+  G.onceStage = {};
+  G.node = { r: 1, i: 0, key: '1:0', col: 1, type: 'battle', next: [] } as unknown as MapNode;
+  openReward();
+  const rw = G.panel as unknown as { k: string; cards: { id: string }[]; ledger?: boolean };
+  ok(rw.k === 'reward' && rw.ledger === true
+    && rw.cards.length === BAL.rewardPicks + BAL.ledgerPicks,
+    `账本：第一次奖励 ${rw.cards.length} 个选项，并标记精炼`);
+  const before = G.deck.length;
+  takeCard(0);
+  ok(isUpgraded(G.deck[before]), `账本：选中的牌直接精炼（${G.deck[before]}）`);
+
+  openReward();
+  const rw2 = G.panel as unknown as { k: string; ledger?: boolean };
+  ok(rw2.k === 'reward' && rw2.ledger !== true,
+    '账本：同一幕第二次奖励不再多给，也不再精炼');
+
+  // 折角：第一回合多 2 张，不再是板书的 1 张子集。
+  battle(1, 'examiner');
+  G.powers = ['dogear'];
+  G.turn = 1;
+  startTurn();
+  ok(G.hand.length === BAL.drawPerTurn + BAL.dogearDraw,
+    `折角：第一回合手牌 ${G.hand.length} 张（应 ${BAL.drawPerTurn + BAL.dogearDraw}）`);
+
+  // 书签：第一次答对给的是格挡，不是和双面镜抢同一条抽牌。
+  battle(1, 'examiner');
+  G.powers = ['bookmark'];
+  G.ap = 9;
+  G.block = 0;
+  G.hand[0] = PACK.cards.find((c) => c.kind === 'knowledge' && c.blk > 0 && cardGrade(c) !== 'C')!.id;
+  askCard(0);
+  if (G.panel.k !== 'question') throw new Error('书签测试：没弹题');
+  answer(G.panel.view.answer);
+  ok(G.block >= BAL.bookmarkBlock, `书签：第一次答对补 ${BAL.bookmarkBlock} 点格挡（${G.block}）`);
+  const fp = G.panel as unknown as { k: string };
+  if (fp.k === 'feedback') dismissFeedback();
 }
 
 // ── 10. 事件：代价先写清，选牌交给玩家，没牌可交时留在原地 ──

@@ -7,7 +7,7 @@ import { clamp, G } from '../core/infra';
 import { countQuestions, sourceBank } from '../core/library';
 import {
   BASICS, baseIdOf, basicsSummary, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded,
-  isXCost, statOf, upGain,
+  isXCost, statOf, upGain, UP_MARK,
 } from '../core/cards';
 import { applyCardBonus } from '../core/cards/powers';
 import { answer, cancelPanel } from '../core/combat';
@@ -585,9 +585,12 @@ function drawReward(t: number) {
   }
 
   heading('战斗结束', x + 44, y + 66,
-    isElite ? '精英倒下了。挑一张卡 —— 它还会掉一个增益。' : '挑一张放进牌组。');
+    isElite ? '精英倒下了。挑一张卡 —— 它还会掉一个增益。'
+      : p.ledger ? '账本翻开了：这一屏多一个选项，选中的牌直接精炼。'
+        : '挑一张放进牌组。');
 
-  // 张数是活的：「便签」把三选一变成四选一。原来卡宽写死 280，
+  // 张数是活的：「便签」把三选一变成四选一，「账本」再在幕内第一次加一张。
+  // 原来卡宽写死 280，
   // 四张正好 1222px > 面板 1220px，卡片左右各压出边框 1px —— 看着就是"贴边了"。
   // 现在先按可用宽度等比缩卡：三张保持原尺寸，四张及以上整体缩小，
   // 左右始终留出至少 72px，卡面发光也不会蹭到框。
@@ -611,8 +614,12 @@ function drawReward(t: number) {
     const hv = hover(px, cy, cw, ch);
     const lift = hv ? -10 : 0;
     // 奖励预览也用同一套卡面数值；直接画 c.atk 会和入牌组后的卡面不一致。
-    const st = statOf(c.id);
-    drawCard(px, cy + lift, cw, ch, c, st.atk, st.blk, { glow: hv, rule: c.link?.note });
+    // 账本这一屏的牌会被直接精炼，所以预览也画精炼后的数值和 + 号。
+    const id = p.ledger ? c.id + UP_MARK : c.id;
+    const st = statOf(id);
+    drawCard(px, cy + lift, cw, ch, c, st.atk, st.blk, {
+      glow: hv, up: p.ledger, rule: c.link?.note,
+    });
     onClick(px, cy, cw, ch, () => takeCard(i), 'rewardcard');
   });
 

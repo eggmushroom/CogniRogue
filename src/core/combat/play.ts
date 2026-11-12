@@ -401,16 +401,13 @@ export function answer(choice: number) {
       apNote = join(apNote, `答对：抽 ${BAL.answerDraw} 张（本回合 ${G.answerDrawsThisTurn}/${cap}）。`);
     }
 
-    // 书签：这一场**第一道**答对，多抽一张。和双面镜刻意分开记 ——
-    // 双面镜数的是"每回合第一次"，书签数的是"这一场第一次"；共用一个计数
-    // 会让第一回合把书签的机会顺手吃掉，玩家看到的是一张空牌。
+    // 书签：这一场**第一道**答对，补 2 点格挡。和双面镜刻意分开 ——
+    // 双面镜数的是"每回合第一次答对抽牌"，书签数的是"这一场第一次答对挡一下"；
+    // 两条线给的是不同的资源，不会因为同场拿到就互相作废。
     if (onceThisFight('bookmark')) {
-      const got = drawCards(BAL.bookmarkDraw);
-      if (got) {
-        drawn += got;
-        G.answerDraws += got;
-        apNote = join(apNote, `书签：这一场第一道答对，抽 ${got} 张。`);
-      }
+      grantBlock(BAL.bookmarkBlock);
+      blkGain += BAL.bookmarkBlock;
+      apNote = join(apNote, `书签：这一场第一道答对，获得 ${BAL.bookmarkBlock} 点格挡。`);
     }
 
     // 答对的次数用来攒这张牌的等级：攒到 `gradeNeed` 之后，这一场剩下的时间里它免答。

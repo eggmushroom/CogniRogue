@@ -4,7 +4,7 @@ import { G, log } from '../infra/state';
 import { emit } from '../infra/events';
 import { shuffle } from '../infra/util';
 import { PACK } from '../cards/pack';
-import { baseIdOf } from '../cards/registry';
+import { baseIdOf, UP_MARK } from '../cards/registry';
 import { applyInstant, onceThisStage, rulesOf } from '../cards/powers';
 import { finishNode } from './nodes';
 
@@ -39,22 +39,23 @@ function rewardPool(n: number): CardDef[] {
 
 export function openReward() {
   // 便签：把这一屏从三选一变成四选一（`R.rewardPicks`），整局常驻。
-  // 账本：这一幕**第一次**战后奖励再多一张，一幕一次 ——
-  // 两个都是"多一个选项"，但一个问"这一局带没带便签"，一个问"这是不是幕内第一次"，
-  // 所以它们叠在一起是五选一，不是同一个数的两次覆盖。
+  // 账本：这一幕**第一次**战后奖励再多一张，而且选中的那张直接精炼 ——
+  // 只是"多一个选项"的话，它仍然被便签完全覆盖；多出来的精炼才是它自己的账。
   const base = rulesOf().rewardPicks;
-  const bonus = onceThisStage('ledger') ? BAL.ledgerPicks : 0;
-  G.panel = { k: 'reward', cards: rewardPool(base + bonus) };
+  const ledger = onceThisStage('ledger');
+  const bonus = ledger ? BAL.ledgerPicks : 0;
+  G.panel = { k: 'reward', cards: rewardPool(base + bonus), ledger };
 }
 
 export function takeCard(i: number) {
   if (G.panel.k !== 'reward') return;
   const c = G.panel.cards[i];
   if (!c) return;
-  // 牌组里只存 id，精炼过的那一张带 `+` 后缀。奖励拿到的是**新的一张**，
-  // 所以它进牌组时是未精炼的 —— 想要强化版，得另外花一次精炼在它身上。
-  G.deck.push(c.id);
-  log(`「${c.topic}」加入牌组（${G.deck.length} 张）`, 'hi');
+  // 牌组里只存 id，精炼过的那一张带 `+` 后缀。账本那一屏选中的牌直接带后缀；
+  // 其余奖励拿到的是**新的一张**，想要强化版，得另外花一次精炼在它身上。
+  const id = G.panel.ledger ? c.id + UP_MARK : c.id;
+  G.deck.push(id);
+  log(`「${c.topic}」加入牌组${G.panel.ledger ? '（账本已精炼）' : ''}（${G.deck.length} 张）`, 'hi');
   afterReward();
 }
 

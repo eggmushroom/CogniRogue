@@ -582,7 +582,7 @@ export type Panel =
    */
   | { k: 'question'; idx: number; qid: string; topic: string; q: Question; view: QView; fresh: boolean }
   | { k: 'feedback'; fb: Feedback }
-  | { k: 'reward'; cards: CardDef[] }
+  | { k: 'reward'; cards: CardDef[]; ledger?: boolean }
   /**
    * 精英 / Boss 战后掉落的增益。**只有一个**（`id`），没有"要不要"的分支：
    * 掉落不是成本，玩家没有理由拒绝它。
