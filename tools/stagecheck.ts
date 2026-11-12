@@ -13,7 +13,8 @@ import {
   cardGrade, gradeNeed, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight,
   upGain, rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
-  grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards,
+  grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
+  lastFeedback,
 } from '../src/core';
 
 (globalThis as unknown as { setTimeout: (fn: () => void) => void }).setTimeout = (fn) => { fn(); };
@@ -283,12 +284,9 @@ function missGain(eff: string) {
   askCard(0);
   if (G.panel.k !== 'question') throw new Error('多段测试：没弹题');
   answer(G.panel.view.answer);
-  const p = G.panel as unknown as {
-    k: string;
-    fb?: { hits: number[]; dmg: number; parts: { d: number }[] };
-  };
-  if (p.k !== 'feedback' || !p.fb) throw new Error('多段测试：没反馈');
-  const fb = p.fb;
+  // 答对不再画判定面板，但结果本身还在：段数/伤害从最近一次判定里读。
+  const fb = lastFeedback();
+  if (!fb) throw new Error('多段测试：没有判定结果');
   const raw = fb.hits.reduce((n: number, x: number) => n + x, 0);
   const parts = fb.parts.reduce((n: number, part: { d: number }) => n + part.d, 0);
   ok(raw > fb.dmg, `多段原始 ${raw} > 实际 ${fb.dmg}（有格挡）`);
@@ -979,9 +977,8 @@ function missGain(eff: string) {
     askCard(0);
     if (G.panel.k !== 'question') throw new Error('内化测试：没弹题');
     answer(G.panel.view.answer);
-    const p = G.panel as unknown as { k: string; fb?: { dmg: number; heal: number } };
-    if (p.k !== 'feedback' || !p.fb) throw new Error('内化测试：没反馈');
-    const fb = p.fb;
+    const fb = lastFeedback();
+    if (!fb) throw new Error('内化测试：没有判定结果');
     dismissFeedback();
     return fb;
   };
@@ -1634,6 +1631,62 @@ C) 3
   }
   ok(bad.length === 0,
     `资源写入只有一条通道（${bad.length ? `裸写在 ${bad.join('、')}` : `${files.length} 个文件里没有裸写`}）`);
+}
+
+// ── 15. 回合结束：手牌一张不留，洗牌只发生在抽牌堆见底 ──────────
+// 以前杂念会「原地散去」，同 id 的副本在表现层又被认成没动过，玩家看到的是
+// 「一回合结束，有的牌没回弃牌堆」。这里把规则和洗牌时机一起钉住。
+{
+  const e = battle(1, 'examiner');
+  // 用一举盾招式，避免敌人往弃牌堆塞杂念干扰计数。
+  e.moves = [{ k: 'def', v: 1 }];
+  e.mv = 0;
+  G.powers = [];
+  G.drawCut = 0;
+  G.panel = { k: 'none' };
+  G.busy = false;
+  G.pending = null;
+  G.hp = 999;
+  G.maxHp = 999;
+
+  // 抽牌堆还够抽：弃牌堆里原有的牌不许被洗走，旧手牌 4 张（含杂念）全进去。
+  G.hand = ['base:strike', 'base:guard', 'c01', JUNK_ID];
+  G.draw = ['base:guard', 'base:guard', 'base:guard', 'base:guard', 'base:guard', 'base:strike'];
+  G.discard = ['c02', 'c03'];
+  const kept = G.discard.slice();
+  endTurn();
+  ok(G.hand.length === BAL.drawPerTurn,
+    `回合结束：旧手牌全清，重新抽满 ${BAL.drawPerTurn} 张（实到 ${G.hand.length}）`);
+  ok(kept.every((id) => G.discard.includes(id)), '抽牌堆没见底：弃牌堆里原有的牌没被洗走');
+  ok(G.discard.filter((id) => id === JUNK_ID).length === 1, '打不出去的杂念也回弃牌堆');
+  ok(['base:strike', 'base:guard', 'c01'].every((id) => G.discard.includes(id)),
+    '没打出去的 3 张牌全部回弃牌堆');
+  ok(G.draw.length > 0, '抽牌堆还有牌：这一回合没有触发洗牌');
+
+  // 抽牌堆见底：这时才允许把弃牌堆洗回来，且一张牌都不能凭空少。
+  G.pending = null;
+  G.panel = { k: 'none' };
+  G.busy = false;
+  G.hand = ['base:strike', 'base:guard'];
+  G.draw = [];
+  G.discard = ['c02', 'c03', 'c04', 'c05', 'c06', 'c07'];
+  const total = G.hand.length + G.discard.length;
+  endTurn();
+  ok(G.discard.length === 0, '抽牌堆见底：弃牌堆整堆洗回抽牌堆');
+  ok(G.hand.length + G.draw.length + G.discard.length === total,
+    `洗牌不丢牌（${G.hand.length + G.draw.length + G.discard.length}/${total}）`);
+
+  // 战斗在这一回合结束、不再开新回合时，手牌也不能留在手里。
+  G.pending = null;
+  G.panel = { k: 'none' };
+  G.busy = false;
+  G.hand = ['base:strike', JUNK_ID];
+  G.draw = ['base:guard', 'base:guard'];
+  G.discard = [];
+  G.enemy!.hp = 0;
+  endTurn();
+  ok(G.hand.length === 0 && G.discard.includes('base:strike') && G.discard.includes(JUNK_ID),
+    '战斗在回合结束时分出胜负：手牌照样全进弃牌堆');
 }
 
 console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 结构检查通过');

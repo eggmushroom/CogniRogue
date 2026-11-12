@@ -12,15 +12,16 @@ import { BANK, enterStage, loadQuestionBank, stageMemOf } from './core/library';
 import { costNow, defOf, PACK } from './core/cards';
 import { liveStatOf } from './core/combat/link';
 import { FOES } from './core/model';
-import { answer, askCard, cancelPanel, canAsk, endTurn } from './core/combat';
+import { answer, askCard, cancelPanel, canAsk, endTurn, lastFeedback } from './core/combat';
 import {
   EVENTS, ackPower, dismissFeedback, endRun, enterNode, openCardPick, saveRun, startRun,
 } from './core/journey';
 import { genStage } from './core/map';
 import { CURRICULUM, STAGES } from './core/model';
-import type { Move } from './core/model';
+import type { Feedback, Move } from './core/model';
 import {
-  drawBattle, DISCARD_TO, ENEMY, fxCount, handSettled, HERO, heroHand, resetBattleView, syncBattle,
+  drawBattle, DISCARD_TO, ENEMY, ENEMY_GROUND, fxCount, handSettled, HERO, heroHand,
+  resetBattleView, syncBattle,
 } from './scenes/battle';
 import { drawMap, mapCam } from './scenes/map';
 import { drawOverlay, quizFrame } from './scenes/overlay';
@@ -37,7 +38,13 @@ bindInput(canvas, toLogic);
 // 面板真的画出来了（而不是"状态里有个面板"）才算挡住：打击演出期间面板是推迟绘制的，
 // 这时候玩家侧的格挡/回血数字应该照常弹出来。
 const modalOpen = () => G.panel.k !== 'none';
-const panelShown = () => modalOpen() && panelHold <= 0;
+/**
+ * 面板真的画出来了（而不是"状态里有个面板"）才算挡住：打击演出期间面板是推迟绘制的，
+ * 这时候玩家侧的格挡/回血数字应该照常弹出来。
+ * 答对的判定面板根本不绘制（只当输入锁），所以它也不算挡住。
+ */
+const panelShown = () =>
+  modalOpen() && panelHold <= 0 && !(G.panel.k === 'feedback' && G.panel.fb.right);
 
 /** 反馈面板的推迟时间：先让这一下打完，再弹面板。 */
 let panelHold = 0;
@@ -123,6 +130,7 @@ onFx((e) => {
         from: { x: ENEMY.x, y: ENEMY.y },
         to: { x: HERO.x, y: HERO.y },
         discard: DISCARD_TO,
+        ground: ENEMY_GROUND,
       });
       enemyHold = Math.max(enemyHold, dur);
       break;
@@ -197,6 +205,11 @@ function frame(now: number) {
   if (G.panel.k === 'feedback' && panelHold > 0) panelHold = Math.max(0, panelHold - dt);
   else if (G.panel.k !== 'feedback') panelHold = 0;
   if (enemyHold > 0) enemyHold = Math.max(0, enemyHold - dt);
+
+  // 答对没有可看的判定面板：这一手的效果早就结算了，留着它只是给打击演出锁输入。
+  // 演出（panelHold）一结束就收掉，玩家不用再点一次「继续」——
+  // 打死敌人的那一手也因此能看见最后一击，而不是被奖励面板当场盖住。
+  if (G.panel.k === 'feedback' && G.panel.fb.right && panelHold <= 0) dismissFeedback();
 
   // 面板换屏时重置答题面板的时钟；同一块面板只推进 reveal
   if (G.panel.k !== lastPanelKind) {
@@ -327,10 +340,15 @@ declare global {
       locked: () => boolean;
       /** 答题面板：阶段 / 几何 / 自动推进倒计时。用来验"没有闪断、没有换框" */
       quiz: () => {
-        phase: string; settling: boolean; reveal: number;
+        phase: string; settling: boolean; drawn: boolean; reveal: number;
         geom: { x: number; y: number; w: number; h: number };
         autoIn: number; autoPaused: boolean;
       };
+      /**
+       * 最近一次判定的结果。答对不再弹面板，测试要验"打了几段"只能从这里读；
+       * 没答过题时是 null。
+       */
+      lastAnswer: () => Feedback | null;
       /** 截图 / 回归用：把判定演出拉长，好把"面板没消失"这一帧拍下来 */
       holdQuiz: (sec: number) => void;
       /** 截图/回归用：停掉软自动推进，否则 4.2s 后判定面板会自己收掉 */
@@ -379,6 +397,7 @@ window.cog = {
       from: { x: ENEMY.x, y: ENEMY.y },
       to: { x: HERO.x, y: HERO.y },
       discard: DISCARD_TO,
+      ground: ENEMY_GROUND,
     });
     enemyHold = Math.max(enemyHold, dur);
   },
@@ -388,10 +407,14 @@ window.cog = {
     phase: G.panel.k === 'feedback' ? (quizSettling ? 'settle' : 'result')
       : G.panel.k === 'question' ? 'ask' : 'idle',
     settling: quizSettling,
+    /** 判定面板这一帧有没有真的画在屏幕上：答对时它一帧都不该出现。 */
+    drawn: quizFrame().drawn,
     reveal: quizReveal,
     geom: { ...quizFrame().geom },
     autoIn, autoPaused,
   }),
+  // 答对不再有面板可读，这一手的结算结果（打了几段、退了几点）从这里拿。
+  lastAnswer: () => lastFeedback(),
   holdQuiz: (sec: number) => { quizHoldBoost = Math.max(0, sec); },
   pauseAuto: (on = true) => { autoHold = on; autoCancelled = on; },
   links: () => ({
@@ -450,7 +473,7 @@ function devJump() {
   if (d === 'refine') { startRun(); openCardPick('up'); return; }
   if (d === 'pack') { startRun(); G.panel = { k: 'pack', msg: '', ok: true }; return; }
   if (d === 'help') { startRun(); G.panel = { k: 'help' }; return; }
-  // 敌人动作截图：把招式表固定成单招循环，头顶意图和演出才是同一件事；
+  // 敌人动作截图：把招式表固定成单招循环，状态牌上的意图和演出才是同一件事；
   // 而且真的走一次 endTurn，血量 / 格挡 / 弃牌堆都会跟着变，不是只盖一层特效。
   // 参数既可以是单招名（atk/jam/def/buff），也可以是 FOES 里的怪物 key，
   // 后者直接把敌人整个换成那只怪：新怪的立绘 / hint / 意图才能被逐个拍到。

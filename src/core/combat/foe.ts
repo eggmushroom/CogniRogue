@@ -7,7 +7,7 @@ import { JUNK_ID } from '../cards/registry';
 import { onceThisFight, rulesOf } from '../cards/powers';
 import { FLOOR_MAX } from '../map/gen';
 import { requestSettle } from './pending';
-import { startTurn } from './deck';
+import { discardHand, startTurn } from './deck';
 
 /**
  * combat/foe：敌人模板、意图公示、敌人回合。招式是循环表，玩家能看见下一步。
@@ -108,9 +108,12 @@ export function onPlayerMiss(): string {
 export function endTurn() {
   if (G.panel.k !== 'none' || G.pending || !G.enemy || G.busy) return;
   const e = G.enemy;
+  // 回合结束：不管这几张牌用没用过、能不能用，一律回弃牌堆。
+  // 先记下张数再清 —— 索引卡在 startTurn 里按「上回合剩几张」决定多抽几张。
+  const handLeft = discardHand();
   e.block = 0;
   // 羽毛：回合结束是最后一次看格挡的时机，先算它再让敌人出招。
-  const R = rulesOf();
+  const R = rulesOf({ handLeft });
   if (R.endBlock > 0 && G.block === 0) {
     grantBlock(R.endBlock);
     log(`羽毛：空手结束回合，补 ${R.endBlock} 点格挡`, 'hi');
@@ -132,7 +135,7 @@ export function endTurn() {
       log(`封蜡：这一击被削去一半（${f.total} → ${dmg}）`, 'hi');
     }
     // 夜灯：每次挨打减固定值，同样在格挡之前，可以削到 0。
-    const cut = rulesOf().dmgCut;
+    const cut = rulesOf({ handLeft }).dmgCut;
     if (cut > 0 && dmg > 0) dmg = Math.max(0, dmg - cut);
     if (f.reviewer) {
       log(`${e.name}：你这回合没有认真答对任何一张卡，+${f.reviewer}`, 'bad');
@@ -176,7 +179,7 @@ export function endTurn() {
 
   e.mv = (e.mv || 0) + 1;
   // 索引贴：没花完的格挡带一点进下一回合；重设而非累加，startTurn 会先清格挡。
-  const carry = rulesOf().carryBlock;
+  const carry = rulesOf({ handLeft }).carryBlock;
   G.carryBlock = carry > 0 ? Math.min(G.block, carry) : 0;
   // 加速：每回合自己变强，拖一回合更贵。
   if (e.mech === 'haste') {
@@ -185,7 +188,8 @@ export function endTurn() {
     log(`${e.name} 又紧了一分，攻击 +${n}`, 'bad');
   }
   checkPending();
-  if (!G.pending) { G.turn += 1; startTurn(); }
+  // 战斗在这一回合结束（打完 / 倒下）时不再开新回合，但手牌已经在上面清干净了。
+  if (!G.pending) { G.turn += 1; startTurn(handLeft); }
   G.busy = false;
 
   if (G.pending === 'dead') setTimeout(() => { if (G.pending === 'dead') requestSettle(); }, 700);

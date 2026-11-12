@@ -1,6 +1,6 @@
 import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
-import { C, font, FONT_UI, FONT_TITLE, withAlpha } from './theme';
+import { C, font, FONT_UI, FONT_TITLE, FONT_NUM, withAlpha } from './theme';
 import { EFFS, effFace, resolveEff } from '../core/model';
 import { cardGrade, cardKind, cardType, costGlyph, GRADE_META, isXCost, CARD_TYPE_META } from '../core/cards';
 import { applyCardBonus } from '../core/cards/powers';
@@ -133,56 +133,90 @@ export function action(
   if (!opts.disabled) onClick(x, y, w, h, fn, label);
 }
 
+/**
+ * 进度 / 血量槽，全站共用（战斗血条、地图生命、结算掌握度）。
+ * 造型是「档案尺」：微圆角细金框 + 哑光填充 + 淡金刻度 + 当前值游标。
+ * 旧版是荧光色胶囊加半条白色高光、黑色粗刻度和发光描边，像另一套手游 HUD；
+ * 这里刻意不加任何发光，颜色和线宽都跟模式面板、卡牌外框取同一套。
+ */
 export function bar(
   x: number, y: number, w: number, h: number, pct: number,
   color: string, opts: { bg?: string; ghost?: number; r?: number; label?: string; ticks?: number } = {},
 ) {
-  const r = opts.r ?? h / 2;
+  const r = opts.r ?? 3;
+  const p = Math.max(0, Math.min(1, pct));
+  g.save();
+
+  // 槽底压到跟面板一个明度：读的是「剩多少」，不是「槽本身有多亮」。
   roundRect(x, y, w, h, r);
-  g.fillStyle = opts.bg ?? 'rgba(255,255,255,.07)';
+  g.fillStyle = opts.bg ?? 'rgba(255,255,255,.035)';
   g.fill();
 
-  const p = Math.max(0, Math.min(1, pct));
+  // 掉血前的虚影，只画差的那一段（预留给掉血演出）。
   if (opts.ghost !== undefined && opts.ghost > p) {
-    roundRect(x, y, w * Math.min(1, opts.ghost), h, r);
-    g.fillStyle = withAlpha('#ffffff', 0.5);
-    g.fill();
-  }
-  if (p > 0.001) {
     g.save();
-    roundRect(x, y, Math.max(2, w * p), h, r);
+    roundRect(x, y, w, h, r);
     g.clip();
-    const grd = g.createLinearGradient(0, y, 0, y + h);
-    grd.addColorStop(0, withAlpha(color, 0.95));
-    grd.addColorStop(1, withAlpha(color, 0.55));
-    g.fillStyle = grd;
-    g.fillRect(x, y, w * p, h);
-    g.fillStyle = 'rgba(255,255,255,.18)';
-    g.fillRect(x, y, w * p, h * 0.4);
+    g.fillStyle = withAlpha(color, 0.18);
+    g.fillRect(x + w * p, y, w * (Math.min(1, opts.ghost) - p), h);
     g.restore();
   }
-  // 刻度让血量过半一眼可辨。
+
+  if (p > 0.001) {
+    const fw = Math.max(2, w * p);
+    g.save();
+    // 裁在整个槽内而不是填充块内，两端才不会顶出圆角。
+    roundRect(x, y, w, h, r);
+    g.clip();
+    const grd = g.createLinearGradient(0, y, 0, y + h);
+    grd.addColorStop(0, withAlpha(color, 0.78));
+    grd.addColorStop(1, withAlpha(color, 0.48));
+    g.fillStyle = grd;
+    g.fillRect(x, y, fw, h);
+    // 纸页上缘：1px 亮线，替代原来占掉四成高度的白色高光。
+    g.fillStyle = withAlpha(color, 0.85);
+    g.fillRect(x, y, fw, 1);
+    g.restore();
+    // 当前值游标：血量停在哪一格一眼可读，也顶替了粗黑刻度的功能。
+    if (p < 0.999) {
+      g.fillStyle = 'rgba(255,255,255,.55)';
+      g.fillRect(Math.round(x + fw) - 1, y + 1, 1, h - 2);
+    }
+  }
+
+  // 刻度：极细淡金线，压在全槽上；不再把血条切成黑边四段。
   if (opts.ticks && opts.ticks > 1) {
     g.save();
-    g.strokeStyle = 'rgba(0,0,0,.42)';
-    g.lineWidth = 1.4;
+    roundRect(x, y, w, h, r);
+    g.clip();
+    g.strokeStyle = withAlpha(C.gold, 0.22);
+    g.lineWidth = 1;
     for (let i = 1; i < opts.ticks; i++) {
-      const tx = x + (w * i) / opts.ticks;
+      const tx = Math.round(x + (w * i) / opts.ticks) + 0.5;
       g.beginPath();
-      g.moveTo(tx, y + 2.5);
-      g.lineTo(tx, y + h - 2.5);
+      g.moveTo(tx, y + 2);
+      g.lineTo(tx, y + h - 2);
       g.stroke();
     }
     g.restore();
   }
-  roundRect(x, y, w, h, r);
-  g.strokeStyle = withAlpha(color, 0.45);
-  g.lineWidth = 1.2;
+
+  // 1px 细金框，和模式面板 / 卡牌外框同一条语言。
+  roundRect(x + 0.5, y + 0.5, w - 1, h - 1, r);
+  g.strokeStyle = withAlpha(C.gold, 0.32);
+  g.lineWidth = 1;
   g.stroke();
 
   if (opts.label) {
-    text(opts.label, x + w / 2, y + h / 2 + 1, { size: Math.min(h * 0.66, 18), align: 'center', weight: 700, color: C.ink });
+    // 等宽数字 + 一层极淡暗影当描边；压在填充上和空槽上都能读，不用粗白大字。
+    g.shadowColor = 'rgba(4,6,10,.85)';
+    g.shadowBlur = 3;
+    text(opts.label, x + w / 2, y + h / 2 + 1, {
+      size: Math.min(h * 0.68, 16), align: 'center', weight: 600,
+      family: FONT_NUM, color: '#f5edda',
+    });
   }
+  g.restore();
 }
 
 /* ── 卡牌 ─────────────────────────────────────────────────── */
@@ -390,8 +424,12 @@ export function drawCard(
   // 水印先于文字绘制；大小和位置按效果行剩余空间算。
   let ruleLines: string[] = [];
   if (opts.rule && kind !== 'junk') {
+    // 量规则行要换小字号，但量完必须还原：联动卡带着 opts.rule 进来，
+    // 不还原的话牌名、名字下短线和精炼 + 号都按 14px 排版，跟其他卡不是一套版式。
+    g.save();
     g.font = font(Math.round(14 * s), 400, FONT_UI);
     ruleLines = wrapText(opts.rule, w - pad * 2).slice(0, 2);
+    g.restore();
   }
   const rows = (per > 0 ? 1 : 0)
     + (out.blk > 0 || out.pierce || out.healRatio > 0 || out.draw > 0 ? 1 : 0)
@@ -469,7 +507,7 @@ export function drawCard(
   };
   if (kind === 'junk') {
     effLine('无法打出', 0, '', ey, C.faint);
-    effLine('回合结束自动散去', 0, '', ey + eh, C.faint);
+    effLine('回合结束进弃牌堆', 0, '', ey + eh, C.faint);
   } else {
     // 逐行往下排，X 费牌的第三行不会压到上一行。
     let ly = ey;

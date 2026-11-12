@@ -127,7 +127,13 @@ export function drawOverlay(t: number, quiz: QuizState = IDLE_QUIZ) {
   switch (p.k) {
     case 'question': return drawQuestion(p.idx, p.q, p.view);
     case 'boon': return drawBoon();
-    case 'feedback': return drawFeedback(t, quiz);
+    case 'feedback':
+      // 答对不画判定面板：效果已经当场结算，这块整屏面板只会盖住战场，
+      // 把光刃、伤害数字和敌人的反应全压在底下，打击感立刻没了。
+      // 状态保留到演出结束只是当输入锁（见 main.ts），演完自己收掉。
+      // 答错仍然整屏反馈 —— 解析和正确选项是这一局真正的教学时刻。
+      if (p.fb.right) return;
+      return drawFeedback(t, quiz);
     case 'reward': return drawReward(t);
     case 'powerdrop': return drawPowerDrop();
     case 'rest': return drawRest(t);
@@ -852,65 +858,85 @@ function drawGallery(title: string, list: string[]) {
 
 /* ── 开局前：选模式 ───────────────────────────────────────── */
 
-/** 开局三选一；模式只决定初始增益数量，不改价码和卡面。 */
+/**
+ * 开局三选一；模式只决定初始增益数量，不改价码和卡面。
+ *
+ * 刻意不读 MODES 的 color / icon：首页、复习点、事件、战后选卡都是暗底 +
+ * 单一金边的目录卡片，三块各染绿/金/红会读成另一套 UI。难度差别交给
+ * 增益个数和它的名字，彩色只留给 hover 与面板边线。
+ */
 function drawBoon() {
   dim(0.84);
-  const w = 1100;
-  const h = 464;
+  const w = 1040;
+  const h = 486;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.gold, 0.42));
-  heading('这次从哪个模式开始', x + 48, y + 66,
-    '学习 2 个初始增益 · 复习 1 个 · 测试 0 个；难度逐级递加。');
+  box(x, y, w, h, withAlpha(C.gold, 0.35));
+  heading('这次从哪个模式开始', x + 44, y + 64,
+    '只决定开局带几个增益；答错价码、卡面、题库三档完全一样。');
 
+  const pad = 44;
   const gap = 24;
-  const cw = (w - 96 - gap * 2) / 3;
-  const ch = 264;
-  const cy = y + 132;
+  const cw = (w - pad * 2 - gap * 2) / 3;
+  const ch = 272;
+  const cy = y + 140;
   MODES.forEach((m, i) => {
-    const cx = x + 48 + i * (cw + gap);
+    const cx = x + pad + i * (cw + gap);
+    const mid = cx + cw / 2;
     const hv = hover(cx, cy, cw, ch);
+
     roundRect(cx, cy, cw, ch, 14);
-    g.fillStyle = hv ? withAlpha(m.color, 0.13) : 'rgba(255,255,255,.035)';
+    g.fillStyle = hv ? withAlpha(C.gold, 0.1) : 'rgba(255,255,255,.035)';
     g.fill();
-    g.strokeStyle = withAlpha(m.color, hv ? 0.9 : 0.42);
+    g.strokeStyle = withAlpha(C.gold, hv ? 0.85 : 0.28);
     g.lineWidth = hv ? 2 : 1.3;
     g.stroke();
 
-    roundRect(cx + 1, cy + 1, cw - 2, 4, 3);
-    g.fillStyle = m.color;
-    g.fill();
-
-    text(m.icon, cx + 44, cy + 58, {
-      size: 30, weight: 800, family: FONT_TITLE, color: m.color, align: 'center',
+    // 编号 + 渐隐金线是首页标题下那条分割线的缩小版，三张卡读成同一套目录卡片。
+    text(`0${i + 1}`, mid, cy + 30, {
+      size: 12, align: 'center', color: C.faint, weight: 700,
     });
-    text(m.name, cx + 78, cy + 58, { size: 26, weight: 800, family: FONT_TITLE, color: m.color });
+    const lg = g.createLinearGradient(cx + 36, 0, cx + cw - 36, 0);
+    lg.addColorStop(0, withAlpha(C.gold, 0));
+    lg.addColorStop(0.5, withAlpha(C.gold, hv ? 0.8 : 0.45));
+    lg.addColorStop(1, withAlpha(C.gold, 0));
+    g.fillStyle = lg;
+    g.fillRect(cx + 36, cy + 46, cw - 72, 1.4);
+
+    text(m.name, mid, cy + 84, {
+      size: 26, weight: 700, align: 'center', family: FONT_TITLE,
+      color: hv ? C.gold : C.ink,
+    });
 
     g.font = font(13, 400, FONT_UI);
     g.fillStyle = C.ink2;
-    wrapText(m.desc, cw - 48).slice(0, 2)
-      .forEach((ln, j) => g.fillText(ln, cx + 24, cy + 98 + j * 19));
+    g.textAlign = 'center';
+    wrapText(m.desc, cw - 48).slice(0, 3)
+      .forEach((ln, j) => g.fillText(ln, mid, cy + 118 + j * 20));
+    g.textAlign = 'left';
 
-    text('初始增益', cx + 24, cy + 150, { size: 12, color: C.faint, weight: 700 });
-    if (m.powers.length) {
-      m.powers.forEach((id, j) => {
-        const p = POWER_BY_ID[id];
-        text(`· ${p?.name ?? id}`, cx + 24, cy + 176 + j * 22, {
-          size: 14, color: p?.color ?? C.ink, weight: 600,
-        });
-      });
-    } else {
-      text('无：全靠路上捡', cx + 24, cy + 176, { size: 14, color: C.faint });
-    }
-
-    text(hv ? '从这里开始 →' : '点击选择', cx + cw / 2, cy + ch - 24, {
-      size: 13, align: 'center', color: hv ? m.color : C.faint, weight: 700,
+    text(`初始增益 · ${m.powers.length}`, mid, cy + 196, {
+      size: 12, align: 'center', color: C.faint, weight: 700,
     });
+    text(
+      m.powers.length
+        ? m.powers.map((id) => POWER_BY_ID[id]?.name ?? id).join(' · ')
+        : '无 · 全靠路上捡',
+      mid, cy + 218, {
+        size: 13, align: 'center', weight: 600,
+        color: m.powers.length ? C.ink2 : C.faint,
+      },
+    );
+
+    text(hv ? '从这里开始 →' : '点击选择', mid, cy + ch - 24, {
+      size: 13, align: 'center', color: hv ? C.gold : C.faint, weight: 700,
+    });
+    // 这个 label 是冒烟测试点开局的入口：坐标可以改，名字不能改。
     onClick(cx, cy, cw, ch, () => startRun(m.id), `mode:${m.id}`);
   });
 
   text('开局选一次，整局不变；想换就重开一局。Esc 返回。',
-    x + 48, y + h - 30, { size: 12, color: C.faint });
+    x + 44, y + h - 30, { size: 12, color: C.faint });
 }
 
 /* ── 说明 ─────────────────────────────────────────────────── */

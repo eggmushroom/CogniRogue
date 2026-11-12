@@ -1,6 +1,6 @@
 import { BAL, FOES, MISS_RULE } from '../model/data';
 import { EFFS, resolveEff } from '../model/effects';
-import type { CardId, MapNode } from '../model/types';
+import type { CardId, Feedback, MapNode } from '../model/types';
 import { G, checkPending, log, topTopic } from '../infra/state';
 import { emit } from '../infra/events';
 import { grantBlock, gainAp, healHp, loseHp, spendAp } from '../infra/write';
@@ -100,7 +100,7 @@ export const canAsk = (id: CardId | null | undefined): boolean => cardAskState(i
 
 /**
  * 等级攒满后直接打：走同一条 `strikeWith`，不抽题、不判对错、不进答题流水。
- * 不弹反馈面板，反馈只写日志。
+ * 不弹反馈面板，结果只留一条内部文字记录。
  */
 export function playFree(idx: number) {
   if (G.busy || G.panel.k !== 'none') return;
@@ -407,9 +407,9 @@ export function answer(choice: number) {
   } else {
     // 答错：这一手作废，不补格挡、不补抽，牌进弃牌堆。
     if (onceThisFight('gluepot')) {
-      // 胶水壶：这一场第一次答错，牌留在手里。
+      // 胶水壶：这一场第一次答错，牌留在手里；回合结束照常进弃牌堆。
       backToHand = true;
-      apNote = join(apNote, '胶水壶：这张牌没有离开手牌，下一回合还能打它。');
+      apNote = join(apNote, '胶水壶：这张牌没有离开手牌，这一回合还能再打它。');
     } else {
       // 默认：进弃牌堆，要等洗牌才回来。
       apNote = join(apNote, '它进了弃牌堆，要等洗牌才回来。');
@@ -543,15 +543,29 @@ export function answer(choice: number) {
   if (blkGain) setTimeout(() => emit({ t: 'blk', n: blkGain }), base + (right ? 60 : 220));
   if (heal) setTimeout(() => emit({ t: 'heal', n: heal }), base + 60);
 
-  G.panel = {
-    k: 'feedback',
-    fb: {
-      idx, qid, choice, right,
-      dmg, absorbed, blk: blkGain, eff: card.eff, hits, parts, heal, draw: drawn, apNote, linkNote,
-      explain: q.explain, question: q.q, options: view.options, answer: view.answer,
-      topic: q.topic,
-    },
+  const fb: Feedback = {
+    idx, qid, choice, right,
+    dmg, absorbed, blk: blkGain, eff: card.eff, hits, parts, heal, draw: drawn, apNote, linkNote,
+    explain: q.explain, question: q.q, options: view.options, answer: view.answer,
+    topic: q.topic,
   };
+  lastFb = fb;
+  /**
+   * 答对**不画**判定面板（见 scenes/overlay.ts）：效果已经当场结算，
+   * 那块面板除了盖住战场没有别的作用，光刃和伤害数字全被它压在底下。
+   * 状态仍然停在 feedback 一小会，只是给打击演出当输入锁 —— 表现层演完就收掉，
+   * 不需要玩家再点一次「继续」。
+   */
+  G.panel = { k: 'feedback', fb };
+}
+
+/**
+ * 最近一次判定的完整结果。
+ * 答对不再有面板可读，测试和调试仍要拿到"这一手打了几段、退了几点"。
+ */
+let lastFb: Feedback | null = null;
+export function lastFeedback() {
+  return lastFb;
 }
 
 /**

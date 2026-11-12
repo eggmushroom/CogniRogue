@@ -10,6 +10,8 @@ interface Particle {
   x: number; y: number; vx: number; vy: number;
   life: number; max: number; size: number;
   color: string; grav: number; drag: number; shape: 'dot' | 'spark' | 'ring';
+  /** 细线环：默认环是 3–8px 的粗圈，护盾类演出用 1px 才不抢画面。 */
+  thin?: boolean;
 }
 
 interface FloatText {
@@ -83,10 +85,12 @@ export function burst(
   }
 }
 
-export function ring(x: number, y: number, color: string, radius = 90, life = 0.4) {
+export function ring(
+  x: number, y: number, color: string, radius = 90, life = 0.4, thin = false,
+) {
   particles.push({
     x, y, vx: 0, vy: 0, life, max: life, size: radius,
-    color, grav: 0, drag: 1, shape: 'ring',
+    color, grav: 0, drag: 1, shape: 'ring', thin,
   });
 }
 
@@ -267,9 +271,11 @@ function land(s: Strike) {
     // 敌人确实出手了，但被格挡全接住。这里必须演"撞在盾上"而不是"挨了一下"：
     // 否则玩家叠了半天挡，画面上却什么都不发生，会以为这次格挡白叠了。
     hKnock = 0.32;
-    ring(x, y, withAlpha(C.blue, 0.7), 150, 0.4);
-    burst(x, y, C.blue, 18, { speed: 260, size: 4 });
-    slash(x, y, -Math.PI / 4, withAlpha(C.blue, 0.85), 180);
+    // 与获得格挡同一套细线护封：两道 1px 蓝环，不再是一圈 8px 粗的荧光盾圈。
+    ring(x, y, withAlpha(C.blue, 0.45), 132, 0.4, true);
+    ring(x, y, withAlpha(C.blue, 0.22), 168, 0.52, true);
+    burst(x, y, C.blue, 10, { speed: 200, size: 3 });
+    slash(x, y, -Math.PI / 4, withAlpha(C.blue, 0.6), 180);
     shake(5);
     floatText(x, y - 40, '全挡下', C.blue, 38, { vy: -70, weight: 700 });
   } else {
@@ -291,9 +297,12 @@ function star(x: number, y: number, color: string) {
 /* ── 语义化特效 ───────────────────────────────────────────── */
 
 export function gainBlock(x: number, y: number, n: number) {
-  ring(x, y, withAlpha(C.blue, 0.55), 110, 0.45);
-  burst(x, y, C.blue, 14, { speed: 200, size: 4, grav: 120 });
-  floatText(x, y - 50, `+${n}`, C.blue, 40, { vy: -70, weight: 700 });
+  // 旧版是一圈 8px 粗的荧光蓝大环 + 14 颗四散粒子，跟细金线的档案馆语言完全两套。
+  // 现在只留两道 1px 细环慢慢张开、少量微屑和读数；数值主要看状态牌上的盾徽章。
+  ring(x, y, withAlpha(C.blue, 0.38), 92, 0.42, true);
+  ring(x, y, withAlpha(C.blue, 0.2), 128, 0.55, true);
+  burst(x, y + 40, C.blue, 8, { speed: 90, size: 2.5, grav: -60, life: 0.5 });
+  floatText(x, y - 46, `+${n}`, C.blue, 32, { vy: -58, weight: 600 });
 }
 
 export function heal(x: number, y: number, n: number) {
@@ -320,6 +329,8 @@ interface Debris {
 const debris: Debris[] = [];
 let poseKind: EnemyActKind = 'atk';
 let poseAt: Vec = { x: 0, y: 0 };
+/** 这次动作发生在哪一片地面上：护盾类的演出贴地，不绕身体转圈。 */
+let poseGround: Vec = { x: 0, y: 0 };
 let poseT = 9;
 const POSE_DUR = 0.62;
 
@@ -347,12 +358,15 @@ export interface EnemyActSpec {
   from: Vec;
   to: Vec;
   discard: Vec;
+  /** 敌人脚下的地面（护盾演出贴地画）。缺省就退回 from。 */
+  ground?: Vec;
 }
 
 /** 编排一次敌人动作，返回演完要多久 —— 调用方拿这个数锁输入。 */
 export function enemyAct(o: EnemyActSpec): number {
   poseKind = o.k;
   poseAt = { ...o.from };
+  poseGround = { ...(o.ground ?? o.from) };
   poseT = 0;
   const { from, to } = o;
 
@@ -379,9 +393,13 @@ export function enemyAct(o: EnemyActSpec): number {
   }
 
   if (o.k === 'def') {
-    gainBlock(from.x, from.y + 70, o.n);
+    // 读数与两层细环都落在脚下：和常驻的地面封环同一套语言。
+    // 以前画在身体上，和封环叠起来像给敌人套了个蛋壳。
+    const gx = poseGround.x;
+    const gy = poseGround.y;
+    gainBlock(gx, gy, o.n);
     // 从地面升起来的一层蓝雾：护甲是"裹上去"的，不是凭空多个数字
-    burst(from.x, from.y + 150, C.blue, 24, { speed: 130, size: 5, grav: -190, life: 0.7 });
+    burst(gx, gy - 10, C.blue, 24, { speed: 120, size: 5, grav: -190, life: 0.7 });
     return 0.55;
   }
 
@@ -579,17 +597,21 @@ function drawEnemyMotion() {
     g.save();
     g.translate(poseAt.x, poseAt.y);
     if (pose.k === 'def') {
-      // 护盾从外往里收，最后是"裹"在敌人身上，不是凭空出现一个数字
-      const r = 215 - 45 * pose.p;
-      g.strokeStyle = withAlpha(C.blue, 0.7 * pulse);
-      g.lineWidth = 3 + 5 * pulse;
-      g.beginPath();
-      g.ellipse(0, 0, r * 0.68, r, 0, 0, Math.PI * 2);
-      g.stroke();
-      g.strokeStyle = withAlpha(C.blue, 0.22 * pulse);
+      // 一圈细环从外往回收，最后落进常驻的那道地面封环里。
+      // 旧版是绕身体的一圈粗荧光椭圆：和新的封环叠在一起，像给敌人套了个蛋壳。
+      const gy = poseGround.y - poseAt.y;
+      const k = pose.p;
+      const rx = 214 - 82 * k;
+      const ry = rx * 0.26;
+      g.strokeStyle = withAlpha(C.blue, 0.5 * pulse);
       g.lineWidth = 1.5;
       g.beginPath();
-      g.ellipse(0, 0, r * 0.68 + 16, r + 16, 0, 0, Math.PI * 2);
+      g.ellipse(0, gy, rx, ry, 0, 0, Math.PI * 2);
+      g.stroke();
+      g.strokeStyle = withAlpha(C.blue, 0.2 * pulse);
+      g.lineWidth = 1;
+      g.beginPath();
+      g.ellipse(0, gy, rx + 26, ry + 7, 0, 0, Math.PI * 2);
       g.stroke();
     } else if (pose.k === 'buff') {
       g.strokeStyle = withAlpha(C.orange, 0.5 * pulse);
@@ -700,7 +722,7 @@ export function draw() {
     g.globalAlpha = Math.max(0, Math.min(1, k));
     if (p.shape === 'ring') {
       g.strokeStyle = p.color;
-      g.lineWidth = 3 + 5 * k;
+      g.lineWidth = p.thin ? 1.2 : 3 + 5 * k;
       g.beginPath();
       g.arc(p.x, p.y, p.size * (1.35 - k * 0.75), 0, Math.PI * 2);
       g.stroke();

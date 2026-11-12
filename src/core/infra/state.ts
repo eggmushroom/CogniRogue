@@ -21,6 +21,12 @@ export const G: GameState = {
   pending: null, pendingCost: 0, busy: false,
 };
 
+/**
+ * 内部文字记录。左上角「战斗记录」面板已移除，运行时不再有 UI 消费者；
+ * 但不少事件仍以它作为唯一的文字出口（牌组太薄、题库为空、增益触发等），
+ * 先留着记录，将来要接提示条或调试面板时不必回头改几十处调用点。
+ * 上限 60 条，避免整局无限累积。
+ */
 export function log(msg: string, kind: LogLine['kind'] = '') {
   G.log.push({ msg, kind });
   if (G.log.length > 60) G.log.shift();

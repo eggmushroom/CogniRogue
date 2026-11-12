@@ -168,10 +168,19 @@ const SHOTS = [
   ['rest', '?dev=rest', null, 400],
   ['event', '?dev=event', null, 400],
   ['ask', '?dev=question', null, 400],
-  // 答对之后面板要等打击演出演完才出来，所以多等一会。
-  // prep 里停掉软自动推进：它是「没人动就 4.2s 自己走」，截图脚本正好是"没人动"，
-  // 不等这一下，两张文档图会拍成判定面板已经收掉的空战斗画面。
-  ['feedback', '?dev=answer', 'cog.pauseAuto()', 1400],
+  // 答对的一瞬：判定面板已经不再出现，光刃直接打在敌人身上。
+  // 不能靠 sleep 猜时机（截图本身还有几十毫秒延迟，光刃早就飞过去了），
+  // 在页面里用 rAF 数 3 帧，正好停在"快命中"那一格。
+  ['answer', '?dev=question', `(async () => {
+    cog.pauseAuto();
+    const right = cog.state.panel.view.answer;
+    cog.pick(right);
+    await new Promise((r) => {
+      let i = 0;
+      const tick = () => (++i >= 3 ? r() : requestAnimationFrame(tick));
+      requestAnimationFrame(tick);
+    });
+  })()`, 0],
   // 答错那一屏：统一价码写在反馈面板里
   ['wrong', '?dev=wrong', 'cog.pauseAuto()', 1400],
   // 光刃飞出去的那一瞬：0.18s 左右正好在半路

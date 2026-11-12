@@ -468,9 +468,10 @@ function leftPanel() {
   // 生命
   text('生命', x + 20, y + 28, { size: 13, color: C.dim, weight: 600 });
   const pct = G.hp / G.maxHp;
-  bar(x + 20, y + 42, w - 40, 18, pct, pct > 0.5 ? C.green : pct > 0.25 ? C.gold : C.red, {
-    label: `${G.hp} / ${G.maxHp}`,
-  });
+  bar(x + 20, y + 42, w - 40, 18, pct,
+    pct > 0.5 ? C.hpCalm : pct > 0.25 ? C.hpWarn : C.hpDanger, {
+      label: `${G.hp} / ${G.maxHp}`,
+    });
 
   // 牌组
   const dy = y + 82;

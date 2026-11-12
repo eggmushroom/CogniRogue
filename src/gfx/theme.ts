@@ -33,6 +33,15 @@ export const C = {
   // 数字比正文大了 3px 却读不出来，等于白放大。数值要压得住自己那张卡。
   numDmg: '#ffc684',
   numBlk: '#a6dcff',
+
+  // 血量条专用：旧纸 / 铜 / 朱砂 / 灰紫，都是降过饱和的档案色。
+  // 原先直接拿 green / gold / red 填胶囊，荧光色在深蓝黑底上比立绘还亮：
+  // HUD 抢了画面，也和「细金线 + 衬线字」的全局语言对不上。
+  hpCalm: '#d7bd8b',
+  hpWarn: '#c68a52',
+  hpDanger: '#b95048',
+  hpFoe: '#ab5049',
+  hpBoss: '#9b7088',
 } as const;
 
 export const FONT_UI =

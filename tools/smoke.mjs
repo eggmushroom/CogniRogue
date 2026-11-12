@@ -437,21 +437,26 @@ await step('答题面板里没有档位按钮', async () => {
 }, async () => true);
 
 // 答对才会触发打击动画，所以这里点「正确答案」而不是第一个选项
-await step('选对 → 出反馈（此刻面板还没画出来）', async () => {
+await step('选对 → 判定面板一帧都不画出来', async () => {
   // 选项每次出题都会重新排，正确答案的位置只能从本次的 panel.view 里读
   const right = await evalJs('cog.state.panel.view.answer');
   await clickLabel('opt', right);
 }, async () => {
-  const k = await S('cog.state.panel.k');
-  const btn = await evalJs(`cog.hots().filter((h) => h.label === '继续').length`);
-  // 状态已经是 feedback，但按钮还没出现 —— 打击动画正在演，面板被推迟了
-  return k === 'feedback' && btn === 0;
+  await nextFrames(2);
+  const st = await evalJs(`({
+    drawn: cog.quiz().drawn,
+    cont: cog.hots().filter((h) => h.label === '继续').length,
+    panel: cog.state.panel.k,
+  })`);
+  // 答对当场结算：屏幕上只有战场本身，没有面板、也没有「继续」按钮。
+  // feedback 那一小段只是给打击演出锁输入用的，它不该被画出来。
+  return st.drawn === false && st.cont === 0
+    && (st.panel === 'feedback' || st.panel === 'none');
 });
 
-// 打击动画先演完，面板才弹出来：这一步专门盯"推迟"没有把按钮一起吞掉
-await step('「继续」→ 回到战斗', async () => {
-  await expectFeedback('打击动画结束后');
-  await clickLabel('继续');
+// 答对之后不该再要一次确认：演出演完，面板自己收掉，手牌立刻能继续打。
+await step('答对 → 不用点「继续」，自己回到可以出牌的状态', async () => {
+  if (!await waitReady(15000)) throw new Error('答对之后一直没回到可出牌的状态');
 }, async () => (await S('cog.state.panel.k')) === 'none');
 
 // 经济规则：有借书证时答对退回 1 点，没有就不退。它要是坏了，整套节奏就塌了
@@ -629,9 +634,10 @@ await step('X 费牌 → 吃光行动力，按点数结算 3 次', async () => {
   if (!await waitFor('opt')) throw new Error('X 费牌没有弹题');
   const right = await evalJs('cog.state.panel.view.answer');
   await clickLabel('opt', right);
-  await expectFeedback('X 费牌答对');
+  if (!await waitReady(15000)) throw new Error('X 费牌答对之后没有结算完');
 }, async () => {
-  const st = await S('({ ap: cog.state.ap, hits: cog.state.panel.k === "feedback" ? cog.state.panel.fb.hits.length : -1 })');
+  // 答对不再弹面板：段数从「最近一次判定」读，那里记着这一手完整的结算结果。
+  const st = await S('({ ap: cog.state.ap, hits: cog.lastAnswer() ? cog.lastAnswer().hits.length : -1 })');
   return st.ap === 1 && st.hits === 3;   // 3 点全花，退回 1 点；效果结算 3 次
 });
 
@@ -639,11 +645,8 @@ await step('X 费牌 → 吃光行动力，按点数结算 3 次', async () => {
 // 这里曾经用「还有没有牌可打」决定要不要注册热区，于是唯一还能前进的局面被彻底锁死 ——
 // 按钮画在屏幕上，点下去却没有任何反应。战斗里没有任何东西能替代这个按钮，必须守住。
 await step('手牌与行动力都归零 → 结束回合仍然生效', async () => {
-  // 再往前几步打完的那一手还停在反馈面板上（面板开着时 busy 恒为 true）——
-  // 那期间 endTurn 会被自己的守卫挡掉，看起来就是"按钮画着却点不动"。
-  // 这一步测的是空场下的结束回合，先把上一手收干净，再等它真的闲着。
-  await evalJs('(() => { const G = cog.state; if (G.panel.k === "feedback") G.panel = { k: "none" }; G.busy = false; })()');
-  if (!await waitReady()) throw new Error('上一步一直没闲下来');
+  // 上一手答对之后面板会自己收掉，这里只要等它真的闲下来。
+  if (!await waitReady()) throw new Error('上一手一直没闲下来');
   // X 费牌 3 段可能已经把敌人打死（pending=clear），那样 endTurn 本来就该被挡住 ——
   // 这里测的是"手牌空 + 行动力 0 时按钮还能按"，所以先把战斗恢复成进行中。
   await evalJs(`(() => {
@@ -983,6 +986,44 @@ await step('结束回合 → 上一轮没打出的牌飞进弃牌堆（同名牌
   return true;
 });
 
+// 上面那条只放 1 张牌，验的是「方向」；这条验「张数」。
+// 抽牌堆里留同名牌，新手牌会和旧手牌 id 重合：表现层早先按 id 对齐，把这些
+// 副本认成「没动过」，于是只有 1 张牌飞向弃牌堆 —— 玩家读作「有的牌没回去」。
+await boot(URL_ + '?dev=battle');
+await step('结束回合 → 3 张没打出的牌一张不落地全飞进弃牌堆', async () => {
+  await evalJs(`(() => {
+    const G = cog.state;
+    G.hand = ['base:strike', 'base:guard', 'c01'];
+    G.draw = ['base:guard', 'base:guard', 'base:guard', 'base:guard', 'base:guard', 'base:strike'];
+    G.discard = ['c02'];
+    G.enemy.hp = 9999; G.enemy.maxHp = 9999; G.hp = 999; G.maxHp = 999;
+    G.pending = null; G.busy = false; G.panel = { k: 'none' };
+  })()`);
+  if (!await waitHand()) throw new Error('手牌没有落位');
+  // 逐帧取同时在飞的弃牌张数峰值：动画只有 0.3 秒，点完再读一定错过。
+  await evalJs(`(() => {
+    window.__peak = 0;
+    window.__stop = false;
+    const tick = () => {
+      window.__peak = Math.max(window.__peak, cog.fx().discard);
+      if (!window.__stop) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    cog.endTurn();
+  })()`);
+  await sleep(900);
+  globalThis.__turnPeak = await evalJs('(window.__stop = true, window.__peak)');
+  globalThis.__turnDiscard = await S('cog.state.discard.slice()');
+}, async () => {
+  const peak = globalThis.__turnPeak ?? 0;
+  if (peak < 3) throw new Error(`3 张旧手牌只飞出去 ${peak} 张：有牌没回弃牌堆`);
+  const pile = globalThis.__turnDiscard ?? [];
+  for (const id of ['base:strike', 'base:guard', 'c01']) {
+    if (!pile.includes(id)) throw new Error(`${id} 没进弃牌堆`);
+  }
+  return true;
+});
+
 await boot(URL_ + '?dev=event');
 await step('事件 → 选一个选项', () => clickLabel('eventopt', 0), async () =>
   (await S('cog.state.panel.k')) !== 'event');
@@ -1059,8 +1100,8 @@ async function playRight(idx) {
     if (!await waitFor('opt')) throw new Error('联动牌没有出题');
     const right = await S('cog.state.panel.view.answer');
     await clickLabel('opt', right);
-    await expectFeedback('联动牌');
-    await clickLabel('继续');
+    // 答对没有判定面板要点，直接等这一手结算完。
+    if (!await waitReady()) throw new Error('联动牌答对之后没有结算完');
   } else if (!await waitReady()) {
     throw new Error('免答的联动牌一直没结算完');
   }
@@ -1136,19 +1177,20 @@ await step('联动：护甲与抽牌数变化立刻改写攻击底数', async ()
 });
 
 await boot(URL_ + '?dev=battle');
-// 这三步要盯着同一块面板慢慢验，先停掉软自动推进；后面 ?dev=answer
+// 判定面板现在只在答错时出现（答对不再打断战场），这三步盯着它：
+// 同一块面板、几何不跳、没有闪断。先停掉软自动推进；后面 ?dev=wrong
 // 会重新导航，那边的自动推进照常要验。
 await evalJs('cog.pauseAuto()');
-await step('答题 → 判定：同一块面板，几何不跳、没有闪断', async () => {
+await step('答错 → 判定：同一块面板，几何不跳、没有闪断', async () => {
   await waitHand();
   const idx = await ensureKnowledge();
   await clickCard(idx);
   if (!await waitFor('opt')) throw new Error('没有出题');
   globalThis.__quizGeom = await S('cog.quiz().geom');
-  const right = await S('cog.state.panel.view.answer');
+  const v = await S('cog.state.panel.view');
   // 把判定演出拉长，好稳定地验"面板没消失、结果还没展开"这一帧
   await evalJs('cog.holdQuiz(2.2)');
-  await clickLabel('opt', right);
+  await clickLabel('opt', (v.answer + 1) % v.options.length);
 }, async () => {
   const q = await S('cog.quiz()');
   if (JSON.stringify(q.geom) !== JSON.stringify(globalThis.__quizGeom)) {
@@ -1176,10 +1218,11 @@ await step('点击面板任意处 → 立刻继续，不必瞄准按钮', async 
   await clickPoint(p);
 }, async () => (await S('cog.state.panel.k')) === 'none');
 
-await boot(URL_ + '?dev=answer');
+await boot(URL_ + '?dev=wrong');
 await step('结算不停顿：指针不在面板上时软自动推进已就绪', async () => {
   // 判定演出按 dt 推进：CPU 节流 ×6 又连跑几十步之后，光是「结果区展开」
   // 就可能要十几秒。按状态轮询，别拿固定 20 秒当上限，也别死等「继续」热区。
+  // 用 ?dev=wrong：答对那条路已经不再有判定面板，这里验的是答错这一屏。
   const t0 = Date.now();
   let ready = null;
   while (Date.now() - t0 < 45000) {

@@ -409,8 +409,8 @@ export const POWERS: PowerDef[] = [
   {
     id: 'gluepot', icon: '壶', name: '胶水壶', color: '#a8b090',
     scope: 'fight',
-    card: '每场战斗第一次答错，那张牌回手牌',
-    desc: '这一场第一次答错，牌留在手里而不是进弃牌堆。',
+    card: '每场战斗第一次答错，那张牌留在手里',
+    desc: '这一场第一次答错，牌留在手里，这一回合还能再打；回合结束照常进弃牌堆。',
   },
   {
     id: 'seal', icon: '蜡', name: '封蜡', color: '#b87878',
