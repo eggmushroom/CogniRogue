@@ -13,10 +13,10 @@ export type QLevel = 'recall' | 'understand' | 'transfer';
  * 原来这里是三种模式（学习 / 复习 / 测试），各改一遍答错补多少格挡、补不补抽、
  * 牌去哪、稳固度怎么变。规则本身没问题，问题是**它挡在每一局前面**：
  * 玩家得先回答"我今天是来学还是来测"才能开始玩，而"这一局偏严还是偏松"
- * 本该是构筑（能力卡）造成的结果，不是开局菜单选出来的。
+ * 本该是构筑造成的结果，不是开局菜单选出来的。
  *
- * 现在只有一套规则。差异交给开局选的那张能力卡 —— 它是牌组的一部分，
- * 会在战斗里被看见、被记住，而不是一个选完就再也想不起来的开关。
+ * 现在只有一套规则。差异交给开局模式带的初始增益（学习 2 / 复习 1 / 测试 0），
+ * 增益不进牌组，也不改答错价码。
  */
 export interface MissRule {
   /** 答错时稳固度乘数 */
@@ -222,10 +222,10 @@ export type PowerId =
   | 'feather' | 'ink' | 'archive' | 'pulse' | 'varnish' | 'seed';
 
 /**
- * 一张能力牌的**作用域** —— 它多久兑现一次。
+ * 一个增益的**作用域** —— 它多久兑现一次。
  *
- * 这不是分类学，是加牌时唯一要回答的问题：**"这张牌什么时候该响"**。
- * 四种作用域各自对应 `cards/powers.ts` 里的一条通道：
+ * 这不是分类学，是加牌时唯一要回答的问题：**"这个增益什么时候该响"**。
+ * 五种作用域各自对应 `cards/powers.ts` 里的一条通道：
  *
  *   · `always`  常驻数值：`rulesOf()` 把它折成一个数字，结算层只读数字
  *   · `fight`   每场一次：`onceThisFight(id)`，调用即消耗
@@ -326,7 +326,7 @@ export interface CardDef {
   junk?: boolean;
   /** 身份。工厂与解析层写入；旧 JSON 包没写时由 cardKind() 回落推导。 */
   kind?: CardKind;
-  /** 类别（攻击/防御/技能/能力）。不写就按 kind + eff 自动推导，见 cardType()。 */
+  /** 类别（攻击/防御/技能）。不写就按 kind + eff 自动推导，见 cardType()。 */
   type?: CardType;
 }
 
@@ -564,7 +564,7 @@ export interface ReportData {
   rows: ReportRow[];
   /** 这一局靠"答对"额外抽到的张数：知识变输出的那条线走的是信息，不是倍率 */
   answerDraws: number;
-  /** 牌组里的增益牌（名字），没有就是空数组 */
+  /** 这一局获得的增益（名字），没有就是空数组 */
   powers: string[];
   verdict: string;
 }
@@ -572,18 +572,15 @@ export interface ReportData {
 export type Panel =
   | { k: 'none' }
   /**
-   * 开局：从三张能力卡里选一张带走。
+   * 开局：选学习 / 复习 / 测试，分别带 2 / 1 / 0 个初始增益。
    *
-   * 它替代了原来的"选模式"。同样是每局开始前的一次选择，但选的东西从
-   * "我今天是来学还是来测"变成了"这一局我想带什么上手" —— 后者会在
-   * 战斗里持续起作用，前者只是一个改四行数字的开关。
+   * 模式只决定开局能力数量，不改答错价码、不改卡面、不改题库。
    */
   | { k: 'boon' }
   /**
    * `q` 是点开那一刻从题池抽出的题目快照：答题期间题库换不掉这一手。
-   * `fresh` 记的是"这道题来自本场新题池，还是复用" —— 课表只对前者兑现。
    */
-  | { k: 'question'; idx: number; qid: string; topic: string; q: Question; view: QView; fresh: boolean }
+  | { k: 'question'; idx: number; qid: string; topic: string; q: Question; view: QView }
   | { k: 'feedback'; fb: Feedback }
   | { k: 'reward'; cards: CardDef[]; ledger?: boolean }
   /**
@@ -604,7 +601,7 @@ export interface LogLine { msg: string; kind: '' | 'hi' | 'bad' | 'turn' }
 
 export interface GameState {
   screen: 'title' | 'map' | 'battle' | 'report' | 'atlas';
-  /** 开局选的学习 / 复习 / 测试模式；它决定开局塞哪几张能力牌 */
+  /** 开局选的学习 / 复习 / 测试模式；它决定开局塞哪几个增益 */
   mode: ModeId | null;
   /**
    * 当前第几幕（1..5）。地图只装当前这一幕的 20 行 —— 100 层不画成一张图，
@@ -689,30 +686,30 @@ export interface GameState {
    */
   topOkTopic: string | null;
   /**
-   * 「一场一次」的能力牌，哪些这一场已经用掉了。
+   * 「一场一次」的增益，哪些这一场已经用掉了。
    *
-   * 装订线 / 书签 / 橡皮 / 书套 / 批注 / 草稿纸 / 放大镜 / 荧光笔 —— 八张牌
-   * 八条完全不同的分支，但形态是同一个：**这一场只兑现一次**。旧版给每张
-   * 开一个 `xxxUsed` 布尔，于是加第九张要同时改三处（类型 / 初值 / 清零），
-   * 漏一处就是"这张牌只在第一场响"的静默 bug。
+   * 装订线 / 书签 / 橡皮 / 书套 / 批注 / 草稿纸 / 放大镜 / 荧光笔 / 胶水壶……
+   * 分支各不相同，但形态是同一个：**这一场只兑现一次**。旧版给每张开一个
+   * `xxxUsed` 布尔，于是加一张就要同时改三处（类型 / 初值 / 清零），漏一处
+   * 就是"这个增益只在第一场响"的静默 bug。
    *
    * 现在只有一张表，键是 `PowerId`。读写只能走 `cards/powers.ts` 的
-   * `onceThisFight(id)` —— 它把"有没有这张牌 + 用过没有 + 记账"合成一步，
-   * 调用点不会漏记账。按 id 分槽，所以先触发的牌不会吃掉别的牌的机会。
+   * `onceThisFight(id)` —— 它把"有没有这个增益 + 用过没有 + 记账"合成一步，
+   * 调用点不会漏记账。按 id 分槽，所以先触发的增益不会吃掉别的机会。
    *
-   * **按场清，不按回合清**：这些牌整局常驻，一局七十来场，按回合给
+   * **按场清，不按回合清**：这些增益整局常驻，一局四十来场，按回合给
    * 每一条都会变成一整条额外的血条。由 `startBattle` 调 `clearOnceUsed()`。
    */
   onceUsed: Partial<Record<PowerId, boolean>>;
   /**
-   * 「一幕一次」的能力牌：账本 / 地图册。过幕时清（`clearStageOnce`）。
+   * 「一幕一次」的增益：账本 / 地图册。过幕时清（`clearStageOnce`）。
    *
    * 和 `onceUsed` 同一形状、同一套读写（`onceThisStage`），只是清的时机不同。
    * 分开两张表而不是在键上加前缀：前缀会渗进存档格式，而"这一场用没用过"
    * 和"这一幕用没用过"本来就是两个不同生命周期的东西。
    */
   onceStage: Partial<Record<PowerId, boolean>>;
-  /** 「整局一次」的能力牌：许愿条。开局时清（`startRun`） */
+  /** 「整局一次」的增益：许愿条。开局时清（`startRun`） */
   onceRun: Partial<Record<PowerId, boolean>>;
   /**
    * 索引贴留下的格挡：回合结束时保留几点到下一回合。
@@ -726,7 +723,7 @@ export interface GameState {
    *
    * 之所以是一个状态字段而不是 `rulesOf()` 的一项：`statOf` 在 cards 层最底层，
    * 而 `rulesOf` 依赖 `G.powers` 与 `BAL`，反过来 import 会成环。
-   * 能力牌在拾取时把这一档写进 G，`statOf` 只读一个数 —— 依赖方向不倒。
+   * 增益在拾取时把这一档写进 G，`statOf` 只读一个数 —— 依赖方向不倒。
    */
   upGrade: number;
   /**
@@ -734,13 +731,6 @@ export interface GameState {
    * 所以它只活一手；放在 G 上是因为退款结算在函数末尾，中间隔着一整段分支。
    */
   markerRefund: number;
-  /**
-   * 刚取到的这道题是不是**本场新题池**里的（false = 复用）。
-   *
-   * `takeQuestion` 写、`askCard` 在弹面板那一刻快照进 `Panel.fresh`。
-   * 只活一手，不存档：存档发生在节点之间，那时没有题在手上。
-   */
-  qFresh: boolean;
   /**
    * 课表这一回合是否已经给过基础牌格挡。值是 `G.turn`，不是布尔：
    * 换回合直接比数字，不用额外清账；`startBattle` 归零，避免跨场沿用。

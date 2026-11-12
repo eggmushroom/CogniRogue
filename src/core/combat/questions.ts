@@ -68,14 +68,11 @@ export function takeQuestion(): Question | null {
     // `qLeft` 现在只装新题，这里理论上不会命中；保留跳过是给坏状态兜底。
     if ((G.qPicked[q.qid] ?? 0) >= MAX_PICK_PER_RUN) continue;
     G.qPicked[q.qid] = (G.qPicked[q.qid] ?? 0) + 1;
-    // 这一道确实是本场新题：课表只在 `fresh` 上兑现，复用不会白拿格挡。
-    G.qFresh = true;
     return q;
   }
   // 本场新题用完了（或整章都到了 3 次上限）。**这时允许重复最少被问到的那几道**，
   // 而不是让知识卡整场变成废纸：一场打不下去比重复一道题糟得多。
   // 内置题库每章 80 道，正常一局用不到这里；它是给"只写了 10 道题"的导入题库留的路。
-  G.qFresh = false;
   const list = stagePool();
   if (!list.length) return null;
   const min = Math.min(...list.map((q) => G.qPicked[q.qid] ?? 0));

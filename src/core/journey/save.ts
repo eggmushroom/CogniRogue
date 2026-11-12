@@ -164,7 +164,7 @@ export function resumeRun(): boolean {
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
     draw: [], discard: [], hand: [], powers: s.powers,
     topicWrong: s.topicWrong, qPicked: {}, qLeft: [], charge: {}, answers: [],
-    answerDraws: s.answerDraws, qFresh: false, syllabusTurn: 0, onceUsed: {},
+    answerDraws: s.answerDraws, syllabusTurn: 0, onceUsed: {},
     onceStage: usedTable(s.onceStage),
     onceRun: usedTable(s.onceRun),
     carryBlock: 0, upGrade: s.upGrade,

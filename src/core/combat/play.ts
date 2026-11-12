@@ -62,7 +62,6 @@ export function startBattle(nd: MapNode) {
   G.charge = {};
   // 课表的账按场清：`syllabusTurn` 记的是回合号，跨场不清会误判"这一回合已给过"。
   G.syllabusTurn = 0;
-  G.qFresh = false;
   // 联动的账按**场**清：本场打过几次、上一张留了什么，都不该带进下一场。
   G.cardPlays = {};
   G.nextBoost = null;
@@ -207,8 +206,7 @@ export function askCard(idx: number) {
       log('放大镜：这一场的第一道题，一个干扰项被划掉了。', 'hi');
     }
   }
-  // `fresh` 是这一道题的快照：课表只对"本场新题"兑现格挡，复用不算。
-  G.panel = { k: 'question', idx, qid: q.qid, topic: q.topic, q, view, fresh: G.qFresh };
+  G.panel = { k: 'question', idx, qid: q.qid, topic: q.topic, q, view };
 }
 
 export function cancelPanel() {
