@@ -9,9 +9,13 @@ import type { Question, QuestionBank } from '../model/types';
  *   A) 选项 / B) 选项
  *   = B                      答案字母
  *   + 解析                   可选
+ *   ! 固定顺序               可选：选项语义依赖位置，出题时不打乱
  *   ? 同一池的另一道题        `? 理解:` 这类前缀会被剥掉，只留题干
  *
  * 主题不限，格式要过：题干非空、2–4 个选项、答案在范围内。
+ * 选项顺序默认每局打乱（免得玩家背字母）；含「以上都对」这类位置依赖
+ * 选项的题必须自己写 `! 固定顺序`，解析器在校验期就拒绝没声明的题，
+ * 而不是等出题时靠正则猜选项文案。
  * 违规题进 `issues`，由 `loadQuestionBank` 整体拒绝。
  * 每题生成稳定题号 `qid`（主题 + 规范化题干的 hash）。
  * `@ 卡名` / `% 攻 挡 效果` 是旧包遗留行，解析时忽略。
@@ -21,10 +25,16 @@ import type { Question, QuestionBank } from '../model/types';
 export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 4;
 /** 界面上给写题人的一句话格式说明。 */
-export const QUESTION_FORMAT = `每道题要有非空题干、${MIN_OPTIONS}–${MAX_OPTIONS} 个选项、= 答案字母（不能越过选项数）`;
+export const QUESTION_FORMAT = `每道题要有非空题干、${MIN_OPTIONS}–${MAX_OPTIONS} 个选项、= 答案字母（不能越过选项数）；选项里有「以上都对」这类依赖位置的写法时，必须写「! 固定顺序」`;
 
 /** 题干里的空白不该影响题号：同一个知识点换行/多空格仍然指回同一道题。 */
 const normStem = (s: string) => s.trim().replace(/\s+/g, ' ');
+
+/**
+ * 位置依赖选项的**校验提示**，不是出题策略。解析期拿它要求作者显式写
+ * `! 固定顺序`；出题视图只认 Question.noShuffle，不读选项文本。
+ */
+const POSITIONAL_HINT = /^(以上|下述|前面|全都|全部都是|以上皆|以上均|其余|其他都)/;
 
 /**
  * FNV-1a。题号只要「同题同号、异题不同号」，不需要加密强度。
@@ -57,6 +67,9 @@ function diagnose(q: Question | null, lineNo: number): string | null {
   if (q.answer >= q.options.length) {
     const letter = String.fromCharCode(65 + q.answer);
     return `${tag}：答案 ${letter} 超出 ${q.options.length} 个选项的范围`;
+  }
+  if (q.options.some((o) => POSITIONAL_HINT.test(o)) && !q.noShuffle) {
+    return `${tag}：有依赖位置的选项，但未写「! 固定顺序」——打乱后会变成错题`;
   }
   return null;
 }
@@ -125,6 +138,18 @@ export function parseQuestionBank(text: string): QuestionBank {
 
     if (line.startsWith('+ ')) { if (q) q.explain = line.slice(2).trim(); continue; }
 
+    if (line.startsWith('! ')) {
+      const flag = line.slice(2).trim();
+      if (flag !== '固定顺序') {
+        bank.issues.push(`第 ${lineNo} 行：未知标记「! ${flag}」，只认「! 固定顺序」`);
+      } else if (q) {
+        q.noShuffle = true;
+      } else {
+        bank.issues.push(`第 ${lineNo} 行：! 固定顺序 前面没有题目`);
+      }
+      continue;
+    }
+
     // 旧知识包的卡面行：卡面现在内置，这些行不影响任何东西
     if (line.startsWith('@ ') || line.startsWith('% ')) continue;
   }
@@ -158,7 +183,7 @@ export function parseAnyQuestionBank(text: string): QuestionBank {
       const q: Question = {
         qid: '', topic,
         q: x.q ?? '', options: x.options ?? [], answer: x.answer ?? -1,
-        explain: x.explain ?? '',
+        explain: x.explain ?? '', noShuffle: x.noShuffle,
       };
       const issue = diagnose(q, 0);
       if (issue) bank.issues.push(`${where}[${i}]：${issue.slice(issue.indexOf('：') + 1)}`);

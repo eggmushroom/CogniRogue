@@ -7,7 +7,7 @@ import { G } from '../core/infra';
 import { BANK } from '../core/library';
 import { costNow, defOf, PACK } from '../core/cards';
 import { answer, endTurn, lastFeedback } from '../core/combat';
-import { liveStatOf } from '../core/combat/link';
+import { planStrike } from '../core/combat/strike';
 import { ackPower, saveRun } from '../core/journey';
 import { EFFS } from '../core/model';
 import type { Feedback } from '../core/model';
@@ -74,7 +74,7 @@ declare global {
       holdQuiz: (sec: number) => void;
       /** 截图/回归用：停掉软自动推进，否则 4.2s 后判定面板会自己收掉 */
       pauseAuto: (on?: boolean) => void;
-      /** 联动的战场记账 + 四张联动卡此刻的攻击底数，给回归测试验因果 */
+      /** 联动的战场记账 + 四张联动卡此刻每段打出的伤害，给回归测试验因果 */
       links: () => {
         drawn: number; block: number; plays: Record<string, number>;
         next: { mul: number; add: number; from: string } | null;
@@ -110,13 +110,20 @@ export function installCog(hooks: CogHooks) {
     costOf: (id: string) => costNow(defOf(id)),
     fx: () => ({ ...fxCount(), enemy: FX.enemyActCount() }),
     enemyAct: (k: FX.EnemyActKind = 'atk', taken = 9) => {
+      const from = { x: ENEMY.x, y: ENEMY.y };
+      const to = { x: HERO.x, y: HERO.y };
+      // 调试入口演的是「一段」：多段由真实敌人回合的执行器逐段发出。
+      if (k === 'atk') {
+        const absorbed = taken === 0 ? 12 : 0;
+        const dur = FX.enemyStrike({
+          n: taken, absorbed, seq: 0, times: 1, totalAbsorbed: absorbed, from, to,
+        });
+        hooks.holdEnemy(dur);
+        return;
+      }
       const n = k === 'jam' ? 2 : k === 'def' ? 12 : k === 'buff' ? 2 : 12;
       const dur = FX.enemyAct({
-        k, n, times: k === 'atk' ? 2 : 1, taken, absorbed: taken === 0 ? 12 : 0,
-        from: { x: ENEMY.x, y: ENEMY.y },
-        to: { x: HERO.x, y: HERO.y },
-        discard: DISCARD_TO,
-        ground: ENEMY_GROUND,
+        k, n, from, to, discard: DISCARD_TO, ground: ENEMY_GROUND,
       });
       hooks.holdEnemy(dur);
     },
@@ -142,7 +149,7 @@ export function installCog(hooks: CogHooks) {
       block: G.block,
       plays: { ...G.cardPlays },
       next: G.nextBoost ? { ...G.nextBoost } : null,
-      live: Object.fromEntries(['c83', 'c84', 'c85', 'c86'].map((k) => [k, liveStatOf(k).atk])),
+      live: Object.fromEntries(['c83', 'c84', 'c85', 'c86'].map((k) => [k, planStrike(k).hits[0] ?? 0])),
     }),
     save: () => saveRun(),
     grid: () => {

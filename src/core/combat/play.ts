@@ -1,31 +1,28 @@
 import { BAL, FOES } from '../model/data';
-import { resolveEff } from '../model/effects';
-import type { EffOut } from '../model/effects';
-import type { CardId, Eff, MapNode } from '../model/types';
+import type { CardId, MapNode } from '../model/types';
 import { G, checkPending, log } from '../infra/state';
-import { after } from '../infra/schedule';
-import { emit } from '../infra/events';
-import { grantBlock, gainAp, healHp, loseHp, spendAp } from '../infra/write';
 import { pick, shuffle } from '../infra/util';
 import { stagePool } from '../library/stage';
 import { floorOf } from '../map/gen';
 import { shuffleOptions } from '../library/question';
 import { defOf } from '../cards/registry';
-import { applyCardBonus, clearOnceUsed, onceThisFight, rulesOf, syllabusBasicBlock } from '../cards/powers';
+import { clearOnceUsed, onceThisFight, syllabusBasicBlock } from '../cards/powers';
 import { canPay, costNow, isXCost } from '../cards/cost';
 import { cardGrade, needsAsk } from '../cards/grade';
 import { cardKind } from '../cards/kinds';
-import { drawCards, startTurn } from './deck';
-import { commitLink, liveStatOf } from './link';
+import { startTurn } from './deck';
 import { makeFoe } from './foe';
 import { requestSettle } from './pending';
 import { drawBattleQuestions, takeQuestion } from './questions';
+import {
+  buildSettlement, emptySettlement, planThorns, settle, viewOf,
+} from './settlement';
+import type { Settlement } from './settlement';
 
 /**
  * 战斗开局与玩家出牌的全部路径。
- * 出牌只有两条：答题（`answer`）和基础牌（`playBasic`），都经 `strikeWith` 结算，
- * 且都要先 `canPay` 再动牌堆。
- * 答对奖励只有两条：退 1 点行动力、抽一张牌，没有倍率层。
+ * 出牌只有两条：答题（`answer`）和基础牌（`playBasic`），都构造一份 Settlement
+ * 交给 `settle` 执行；答对奖励只有退 1 点行动力、抽一张牌，没有倍率层。
  */
 
 /**
@@ -111,7 +108,7 @@ export function cardAskState(id: CardId | null | undefined): 'free' | 'ask' | 'e
 export const canAsk = (id: CardId | null | undefined): boolean => cardAskState(id) === 'ask';
 
 /**
- * 等级攒满后直接打：走同一条 `strikeWith`，不抽题、不判对错、不进答题流水。
+ * 等级攒满后直接打：构造同一份 Settlement，不抽题、不判对错、不进答题流水。
  * 不弹反馈面板，结果只留一条内部文字记录。
  */
 export function playFree(idx: number) {
@@ -127,18 +124,19 @@ export function playFree(idx: number) {
   const xcost = isXCost(card);
   const spent = xcost ? G.ap : costNow(card);
   const repeat = xcost ? Math.max(1, spent) : 1;
-  const r = strikeWith(id, 1, repeat);
-  const back = thornsBack(r.out.hits);
+  const s = buildSettlement(id, { repeat });
+  const back = planThorns(s);
+  const v = viewOf(s);
 
-  const shape = r.out.hits.length > 1 ? `${r.out.hits.join('+')} 伤害` : `${r.dmg} 伤害`;
-  commitSimplePlay(id, idx, r, {
+  const shape = v.hits.length > 1 ? `${v.hits.join('+')} 伤害` : `${v.dmg} 伤害`;
+  commitSimplePlay(id, idx, s, {
     spent,
     logKind: 'hi',
     logMsg:
-      `「${card.name}」${r.dmg ? shape : ''}${r.blk ? `${r.dmg ? '，' : ''}${r.blk} 格挡` : ''}` +
-      `${r.selfHp ? `，失去 ${r.selfHp} 生命` : ''}` +
+      `「${card.name}」${v.dmg ? shape : ''}${v.blk ? `${v.dmg ? '，' : ''}${v.blk} 格挡` : ''}` +
+      `${v.selfHp ? `，失去 ${v.selfHp} 生命` : ''}` +
       `（${cardGrade(card)} 级，这一场已免答${back ? `；反伤 ${back}` : ''}）` +
-      `${r.nextNote ? `　·　${r.nextNote}` : ''}`,
+      `${v.nextNote ? `　·　${v.nextNote}` : ''}`,
   });
 }
 
@@ -158,7 +156,8 @@ export function askCard(idx: number) {
   if (!q) {
     // 空题库：给一个能查的失败原因，不静默吞掉点击。
     log('这一章的题库是空的：检查题库文件，或者先用基础牌撑过去', 'bad');
-    emit({ t: 'fizzle', eff: card.eff });
+    // 空计划也走执行器：反馈事件与状态写入只有一条出口。
+    settle(emptySettlement(card.id));
     return;
   }
   // 题目快照挂在 Panel 上，答题期间不随题库变。
@@ -204,172 +203,24 @@ export function cancelPanel() {
   }
 }
 
-function damageEnemy(raw: number, pierce = false) {
-  const e = G.enemy!;
-  let n = raw;
-  let absorbed = 0;
-  // 洞察绕过格挡：连"被吸收"这件事都不会发生，敌人那层防御直接不参与结算
-  if (!pierce && e.block > 0) { absorbed = Math.min(e.block, n); e.block -= absorbed; n -= absorbed; }
-  const alive = e.hp > 0;
-  e.hp -= n;
-  // 藏书印：**这一下打死的**才算击杀。多段牌的第二段会让 `e.hp` 已经是负数，
-  // 不加 `alive` 这个前置判断的话，一张两段牌会回两次血。
-  if (alive && e.hp <= 0) {
-    const got = healHp(rulesOf().healOnKill);
-    if (got) {
-      log(`藏书印：击杀回复 ${got} 点生命`, 'hi');
-      emit({ t: 'heal', n: got });
-    }
-  }
-  return { dealt: n, absorbed };
-}
-
 /**
- * 一手结算的完整结果。同时给反馈面板、日志和演出用。
- * 注意 `hits` 是扣格挡前的原始段值，`parts` 是实际打进/被吸收的值。
- */
-export interface StrikeResult {
-  out: EffOut;
-  dmg: number;
-  absorbed: number;
-  blk: number;
-  heal: number;
-  drawn: number;
-  selfHp: number;
-  parts: { d: number; a: number }[];
-  linkNote: string;
-  boosted: boolean;
-  nextNote: string;
-}
-
-/**
- * 一张卡真正打出去的那一下。`mult` 只给装订线的"半额结算"传 0.5，其余路径
- * 一律 1：没有全局倍率，卡面写的数就是打出来的数。
- * `repeat` 是 X 费牌花掉的点数，走同一条结算路径，所以牌面写的段数和实际打出的段数
- * 永远由同一份 `resolveEff` 决定。
- */
-export function strikeWith(id: CardId, mult: number, repeat = 1): StrikeResult {
-  const card = defOf(id);
-  // 这一回合第几张真正生效的牌。答错不增加，所以墨水瓶/节拍器只数打出去的牌。
-  G.cardsThisTurn += 1;
-  // 读的是**此刻**的联动底数，不是卡面印死的那个数。手牌、答题面板、
-  // 结算三处都调 liveStatOf，所以「卡面写 10」和「实际打 10」是同一个数。
-  const st = liveStatOf(id);
-  // card.mods 必须一起传：卡面（ui.ts）和答题面板（overlay.ts）都是按 mods 画的，
-  // 结算漏掉它，带签名改动的 15 张卡就会「卡面写的」和「实际发生的」两张皮。
-  // `applyCardBonus` 同理：压书石 / 校规加在**结果**上，卡面走的是同一个函数。
-  const out = applyCardBonus(resolveEff(card.eff, st.atk, st.blk, mult, card.mods, repeat));
-  const parts: { d: number; a: number }[] = [];
-  let dmg = 0;
-  let absorbed = 0;
-  for (const hit of out.hits) {
-    const r = damageEnemy(hit, out.pierce);
-    dmg += r.dealt;
-    absorbed += r.absorbed;
-    parts.push({ d: r.dealt, a: r.absorbed });
-  }
-  grantBlock(out.blk);
-  let heal = 0;
-  let drawn = 0;
-  let selfHp = 0;
-  // 按实际打进去的伤害回血；0 伤害不回 1 点。
-  if (out.healRatio > 0 && dmg > 0) {
-    heal = healHp(Math.max(1, Math.round(dmg * out.healRatio)));
-  }
-  if (out.draw > 0) drawn = drawCards(out.draw);
-  // 自伤：卡面写多少扣多少。
-  if (out.selfHp > 0) {
-    selfHp = out.selfHp;
-    loseHp(selfHp);
-    log(`「${card.name}」反噬：你失去 ${selfHp} 点生命`, 'bad');
-    emit({ t: 'hurt', n: selfHp });
-  }
-  // 节奏型增益：按"真正生效的牌"计数，答错不触发
-  const R = rulesOf();
-  if (R.inkDraw > 0 && G.cardsThisTurn % 3 === 0) {
-    const got = drawCards(R.inkDraw);
-    if (got) log(`墨水瓶：本回合第 ${G.cardsThisTurn} 张牌，抽 ${got} 张`, 'hi');
-  }
-  if (G.cardsThisTurn === 3 && onceThisFight('pulse')) {
-    gainAp(BAL.pulseRefund);
-    log(`节拍器：这一场第一次三连，退回 ${BAL.pulseRefund} 点行动力`, 'hi');
-  }
-  if (!isXCost(card) && costNow(card) === 0 && onceThisFight('varnish')) {
-    const got = drawCards(BAL.varnishDraw);
-    if (got) log(`亮油：这一场第一张 0 费牌，抽 ${got} 张`, 'hi');
-  }
-  if (out.hits.some((h) => h > 0) && onceThisFight('seed')) {
-    grantBlock(BAL.seedBlock);
-    log(`种纸：这一场第一张攻击牌，补 ${BAL.seedBlock} 点格挡`, 'hi');
-  }
-  // 走完才记账：答错这一手作废，上一张留的倍率继续留着。
-  const nextNote = commitLink(id);
-  return {
-    out, dmg, absorbed, blk: out.blk, heal, drawn, selfHp, parts,
-    linkNote: st.reasons.join(' · '), boosted: st.boosted, nextNote,
-  };
-}
-
-/**
- * 反伤：打出有攻击段的牌就挨一下，格挡挡不住。
- * 数的是打出几张，不是打中几段；击杀的那一下不反伤。
- */
-export function thornsBack(hits: number[]) {
-  const e = G.enemy;
-  if (!e || e.mech !== 'thorns' || e.hp <= 0 || !hits.some((h) => h > 0)) return 0;
-  const n = e.mechV ?? BAL.mech.thorns;
-  if (n <= 0) return 0;
-  loseHp(n);
-  log(`${e.name} 的反伤：你受到 ${n} 点伤害`, 'bad');
-  emit({ t: 'hurt', n });
-  return n;
-}
-
-/**
- * 一手的结果怎么演：三段出牌路径共用。
- * 0 伤害的知识卡（纯防御 / 纯过牌）不发空光刃；答错的牌只有在真的没造成伤害时才演"焰灭"，
- * 装订线半额结算已经打出了伤害，不能再播一段"没打出去"。
- */
-export function publishStrike(
-  r: { parts: { d: number; a: number }[]; blk: number; heal: number },
-  eff: Eff,
-  opts: { wrong?: boolean; base?: number; blockBonus?: number } = {},
-) {
-  const dealt = r.parts.some((p) => p.d > 0);
-  if (dealt) {
-    r.parts.forEach((p, i) => {
-      const fire = () => emit({ t: 'dmg', n: p.d, absorbed: p.a, eff, seq: i });
-      if (i === 0) fire(); else after(i * 150, fire);
-    });
-  } else if (opts.wrong) {
-    emit({ t: 'fizzle', eff });
-  }
-
-  const base = opts.base ?? 0;
-  const blk = r.blk + (opts.blockBonus ?? 0);
-  if (blk) after(base + (opts.wrong ? 220 : 60), () => emit({ t: 'blk', n: blk }));
-  if (r.heal) after(base + 60, () => emit({ t: 'heal', n: r.heal }));
-}
-
-/**
- * 免答直打 / 基础牌共用的收尾：扣费、离手、判胜负、日志、演出、输入锁。
- * 知识卡的答题路径不用它——那条路径要留反馈面板，不能 200ms 后自动收。
+ * 免答直打 / 基础牌共用的收尾：把扣费并入计划、牌离手，再交给执行器。
+ * 知识卡的答题路径不用它——那条路径要留反馈面板，不能演完自动收。
  */
 function commitSimplePlay(
-  id: CardId, idx: number, r: StrikeResult,
-  opts: { spent: number; logMsg: string; logKind: '' | 'hi' | 'bad'; blockBonus?: number },
+  id: CardId, idx: number, s: Settlement,
+  opts: { spent: number; logMsg: string; logKind: '' | 'hi' | 'bad' },
 ) {
-  spendAp(opts.spent);
+  s.budget.ap.spend += opts.spent;
+  s.instant.push(() => log(opts.logMsg, opts.logKind));
   G.discard.push(id);
   G.hand.splice(idx, 1);
   checkPending();
-  log(opts.logMsg, opts.logKind);
-  publishStrike(r, defOf(id).eff, { blockBonus: opts.blockBonus });
-
   G.busy = true;
-  after(200, () => {
-    G.busy = false;
-    requestSettle();
+  settle(s, {
+    // 以前是固定 200ms 解锁：多段演出比它长时，玩家能在最后几段落地前动手，
+    // 胜负也判得太早。现在跟着执行器走完才解锁。
+    onDone: () => { G.busy = false; requestSettle(); },
   });
 }
 
@@ -386,20 +237,18 @@ export function playBasic(idx: number) {
   if (!canPay(card)) return;
 
   const spent = costNow(card);
-  const r = strikeWith(id, 1);
-  // 课表只认基础牌，和题目池无关。
-  const syllabusBlk = syllabusBasicBlock();
-  thornsBack(r.out.hits);
+  const s = buildSettlement(id);
+  // 课表只认基础牌，和题目池无关；它同样只报预算，由执行器统一写入。
+  s.budget.blk += syllabusBasicBlock();
+  planThorns(s);
+  const v = viewOf(s);
 
-  const shape = r.out.hits.length > 1 ? `${r.out.hits.join('+')} 伤害` : `${r.dmg} 伤害`;
-  commitSimplePlay(id, idx, r, {
+  const shape = v.hits.length > 1 ? `${v.hits.join('+')} 伤害` : `${v.dmg} 伤害`;
+  commitSimplePlay(id, idx, s, {
     spent,
-    blockBonus: syllabusBlk,
     logKind: '',
     logMsg:
-      `「${card.name}」${r.dmg ? shape : ''}${r.blk ? `${r.dmg ? '，' : ''}${r.blk} 格挡` : ''}` +
-      `${syllabusBlk ? `${r.dmg || r.blk ? '，' : ''}课表 +${syllabusBlk} 格挡` : ''}` +
-      `（基础牌，不答题）${r.nextNote ? `　·　${r.nextNote}` : ''}`,
+      `「${card.name}」${v.dmg ? shape : ''}${v.blk ? `${v.dmg ? '，' : ''}${v.blk} 格挡` : ''}` +
+      `（基础牌，不答题）${v.nextNote ? `　·　${v.nextNote}` : ''}`,
   });
 }
-

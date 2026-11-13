@@ -1,5 +1,5 @@
 import { CURRICULUM, FOES, STAGES } from '../core/model';
-import type { Move } from '../core/model';
+import type { Move, PowerId } from '../core/model';
 import { PACK } from '../core/cards';
 import { G } from '../core/infra';
 import {
@@ -85,8 +85,11 @@ export function devJump() {
   // 面板出现时掉落**已经生效**（G.powers 里有它），这一屏只负责把它念出来。
   if (d === 'powerdrop') {
     startRun();
-    G.powers.push('hourglass', 'lamp');
-    G.panel = { k: 'powerdrop', id: 'lamp' };
+    // `&id=atlas`：`desc` 是可选的，没有说明的增益走另一条排版（面板更矮），
+    // 两种高度都得能拍到，否则这条分支只有等玩家抽到才第一次被看见。
+    const want = (new URLSearchParams(location.search).get('id') ?? 'lamp') as PowerId;
+    G.powers.push('hourglass', want);
+    G.panel = { k: 'powerdrop', id: want };
     return;
   }
   if (d === 'power') {

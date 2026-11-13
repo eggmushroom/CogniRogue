@@ -2,96 +2,80 @@ import { BAL, MISS_RULE } from '../model/data';
 import { EFFS } from '../model/effects';
 import type { CardDef, CardId, Feedback, QView, Question } from '../model/types';
 import { G, checkPending, log, topTopic } from '../infra/state';
-import { gainAp, grantBlock, spendAp } from '../infra/write';
-import { drawCards } from './deck';
 import { onPlayerMiss } from './foe';
-import { publishStrike, strikeWith, thornsBack } from './play';
-import type { StrikeResult } from './play';
 import { defOf } from '../cards/registry';
 import { gradeNeed } from '../cards/grade';
 import { onceThisFight, rulesOf } from '../cards/powers';
 import { costNow, isXCost, refundOf } from '../cards/cost';
 import { memOf, saveMem } from '../library/memory';
 import { recordAnswer } from '../library/stagemem';
+import {
+  addNote, buildSettlement, emptySettlement, mergeSettlement, planThorns, settle, viewOf,
+} from './settlement';
+import type { Settlement, StrikeView } from './settlement';
 
 /**
- * 答题结算：答对 / 答错分支只改 `AnswerCtx`，最后由 `finishAnswer` 统一落账。
- * 这里的增益触发按“答对 / 答错 / 结算 AP”分组；加新增益优先改这里，不要再往通用路径里插分支。
+ * 答题结算：答对 / 答错分支只改同一份 `Settlement`，最后由 `finishAnswer`
+ * 交给唯一执行器。判定面板、日志、免答记账都从这份计划的 `viewOf()` 派生，
+ * 不存在「预演值」和「真实值」两套读数，也不需要逐字段拷贝。
+ *
+ * 加新增益优先改这里，不要再往通用路径里插分支。
  */
 
-/** 一次答题的全部中间结果；右/左分支只改这里，最后由 finishAnswer 统一收尾。 */
-interface AnswerCtx {
-  idx: number;
-  qid: string;
-  choice: number;
-  id: CardId;
-  card: CardDef;
-  q: Question;
-  view: QView;
-  right: boolean;
-  spent: number;
-  repeat: number;
-  xcost: boolean;
-  mem: ReturnType<typeof memOf>;
-  dmg: number;
-  absorbed: number;
-  blk: number;
-  heal: number;
-  drawn: number;
-  selfHp: number;
-  hits: number[];
-  parts: { d: number; a: number }[];
-  linkNote: string;
-  nextNote: string;
-  backToHand: boolean;
-  notes: string[];
-}
+/** 一次答题的全部中间结果；唯一的结算真值是 `s`，其余是答题自己的身份信息。 */
+class AnswerCtx {
+  s: Settlement;
+  backToHand = false;
 
-function addNote(ctx: AnswerCtx, msg: string) {
-  ctx.notes.push(msg);
-}
+  constructor(
+    readonly idx: number,
+    readonly qid: string,
+    readonly choice: number,
+    readonly id: CardId,
+    readonly card: CardDef,
+    readonly q: Question,
+    readonly view: QView,
+    readonly right: boolean,
+    readonly spent: number,
+    readonly repeat: number,
+    readonly xcost: boolean,
+    readonly mem: ReturnType<typeof memOf>,
+  ) {
+    this.s = emptySettlement(id);
+  }
 
-/** 把一次 strikeWith 的结果装回上下文。 */
-function applyStrike(ctx: AnswerCtx, r: StrikeResult) {
-  ctx.hits = r.out.hits;
-  ctx.dmg = r.dmg;
-  ctx.absorbed = r.absorbed;
-  ctx.blk = r.blk;
-  ctx.heal = r.heal;
-  ctx.drawn = r.drawn;
-  ctx.selfHp = r.selfHp;
-  ctx.parts = r.parts;
-  ctx.linkNote = r.linkNote;
-  ctx.nextNote = r.nextNote;
+  /** 反馈与日志只读这一份派生视图；预算再怎么改，都不会出现漏拷的字段。 */
+  get v(): StrikeView {
+    return viewOf(this.s);
+  }
 }
 
 function resolveRight(ctx: AnswerCtx) {
   // 毛笔：这一场第一次答对，段数 +1（不是翻倍）。记账必须在结算之前。
   const extra = onceThisFight('brush') ? BAL.brushRepeat : 0;
-  applyStrike(ctx, strikeWith(ctx.id, 1, ctx.repeat + extra));
-  if (extra) addNote(ctx, `毛笔：这一场第一次答对，效果结算 ${ctx.repeat + extra} 次。`);
-  if (ctx.selfHp) addNote(ctx, `反噬：失去 ${ctx.selfHp} 点生命。`);
-  if (ctx.nextNote) addNote(ctx, `${ctx.nextNote}。`);
-  if (ctx.xcost) addNote(ctx, `耗尽 ${ctx.spent} 点行动力，效果结算 ${ctx.repeat} 次。`);
-  if (ctx.drawn) addNote(ctx, `专注：抽 ${ctx.drawn} 张。`);
-  // 反伤在结算完之后收
-  const back = thornsBack(ctx.hits);
-  if (back) addNote(ctx, `反伤：你受到 ${back} 点。`);
+  ctx.s = buildSettlement(ctx.id, { repeat: ctx.repeat + extra });
+  if (extra) addNote(ctx.s, `毛笔：这一场第一次答对，效果结算 ${ctx.repeat + extra} 次。`);
+  if (ctx.v.selfHp) addNote(ctx.s, `反噬：失去 ${ctx.v.selfHp} 点生命。`);
+  if (ctx.v.nextNote) addNote(ctx.s, `${ctx.v.nextNote}。`);
+  if (ctx.xcost) addNote(ctx.s, `耗尽 ${ctx.spent} 点行动力，效果结算 ${ctx.repeat} 次。`);
+  if (ctx.v.drawn) addNote(ctx.s, `专注：抽 ${ctx.v.drawn} 张。`);
+  // 反伤只把伤害记进计划；敌人是否还活着读预演结果，段伤害还没逐段落地。
+  const back = planThorns(ctx.s);
+  if (back) addNote(ctx.s, `反伤：你受到 ${back} 点。`);
 
   // 答对抽牌由双面镜提供，默认关闭；上限读 `rulesOf().answerDraw`。
   const cap = rulesOf().answerDraw;
-  if (G.answerDrawsThisTurn < cap && drawCards(BAL.answerDraw)) {
+  if (G.answerDrawsThisTurn < cap) {
+    ctx.s.budget.draw += BAL.answerDraw;
     G.answerDrawsThisTurn += BAL.answerDraw;
     G.answerDraws += BAL.answerDraw;
-    ctx.drawn += BAL.answerDraw;
-    addNote(ctx, `答对：抽 ${BAL.answerDraw} 张（本回合 ${G.answerDrawsThisTurn}/${cap}）。`);
+    addNote(ctx.s, `答对：抽 ${BAL.answerDraw} 张（本回合 ${G.answerDrawsThisTurn}/${cap}）。`);
   }
 
   // 书签：这一场第一道答对补格挡，和双面镜（给牌）分属两条线。
   if (onceThisFight('bookmark')) {
-    grantBlock(BAL.bookmarkBlock);
-    ctx.blk += BAL.bookmarkBlock;
-    addNote(ctx, `书签：这一场第一道答对，获得 ${BAL.bookmarkBlock} 点格挡。`);
+    ctx.s.budget.blk += BAL.bookmarkBlock;
+    addNote(ctx.s, `书签：这一场第一道答对，获得 ${BAL.bookmarkBlock} 点格挡。`);
   }
 
   // 答对攒等级，攒够 `gradeNeed` 这场就免答；按卡 id 记，同名牌副本共用。
@@ -100,7 +84,7 @@ function resolveRight(ctx: AnswerCtx) {
     const before = G.charge[ctx.card.id] ?? 0;
     G.charge[ctx.card.id] = Math.min(need, before + 1);
     if (G.charge[ctx.card.id] >= need && before < need) {
-      addNote(ctx, `这一场「${ctx.card.name}」已免答：再打它不用答题。`);
+      addNote(ctx.s, `这一场「${ctx.card.name}」已免答：再打它不用答题。`);
     }
   }
 
@@ -115,14 +99,14 @@ function resolveRight(ctx: AnswerCtx) {
   let stabGain = MISS_RULE.stabGain;
   if (onceThisFight('margin')) {
     stabGain += BAL.marginStab;
-    addNote(ctx, `批注：这一场第一道答对，稳固度额外 +${BAL.marginStab}。`);
+    addNote(ctx.s, `批注：这一场第一道答对，稳固度额外 +${BAL.marginStab}。`);
   }
   ctx.mem.stab = Math.min(60, Math.max(ctx.mem.stab * (1 + 0.8 * stabGain), ctx.mem.stab + stabGain));
   ctx.mem.due = Math.round(ctx.mem.stab);
   // 荧光笔：这一手多退 1 点，在 settleAnswerAp 统一结算。
   if (onceThisFight('marker')) {
     G.markerRefund += 1;
-    addNote(ctx, '荧光笔：这一场第一道答对，这一手多退 1 点行动力。');
+    addNote(ctx.s, '荧光笔：这一场第一道答对，这一手多退 1 点行动力。');
   }
 }
 
@@ -131,26 +115,22 @@ function resolveWrong(ctx: AnswerCtx) {
   if (onceThisFight('gluepot')) {
     // 胶水壶：这一场第一次答错，牌留在手里；回合结束照常进弃牌堆。
     ctx.backToHand = true;
-    addNote(ctx, '胶水壶：这张牌没有离开手牌，这一回合还能再打它。');
+    addNote(ctx.s, '胶水壶：这张牌没有离开手牌，这一回合还能再打它。');
   } else {
     // 默认：进弃牌堆，要等洗牌才回来。
-    addNote(ctx, '它进了弃牌堆，要等洗牌才回来。');
+    addNote(ctx.s, '它进了弃牌堆，要等洗牌才回来。');
   }
 
   // 草稿纸：这一场第一次答错补一张。
   if (onceThisFight('scratch')) {
-    const got = drawCards(BAL.scratchDraw);
-    if (got) {
-      ctx.drawn += got;
-      addNote(ctx, `草稿纸：这一场第一次答错，补抽 ${got} 张。`);
-    }
+    ctx.s.budget.draw += BAL.scratchDraw;
+    addNote(ctx.s, `草稿纸：这一场第一次答错，补抽 ${BAL.scratchDraw} 张。`);
   }
 
   // 橡皮：这一场第一次答错补 3 点格挡，不救那一手。
   if (onceThisFight('eraser')) {
-    grantBlock(BAL.eraserBlock);
-    ctx.blk += BAL.eraserBlock;
-    addNote(ctx, `橡皮：这一场第一次答错，补了 ${BAL.eraserBlock} 点格挡。`);
+    ctx.s.budget.blk += BAL.eraserBlock;
+    addNote(ctx.s, `橡皮：这一场第一次答错，补了 ${BAL.eraserBlock} 点格挡。`);
   }
 
   G.topicWrong[ctx.q.topic] = (G.topicWrong[ctx.q.topic] || 0) + 1;
@@ -158,15 +138,14 @@ function resolveWrong(ctx: AnswerCtx) {
   G.stageBad += 1;
   ctx.mem.lapses += 1;
   ctx.mem.bad += 1;
-  addNote(ctx, '这一手不花行动力：代价是这一场少了一道题。');
 
-  const missNote = onPlayerMiss();
-  if (missNote) addNote(ctx, missNote);
+  const missNote = onPlayerMiss(ctx.s);
+  if (missNote) addNote(ctx.s, missNote);
 
   // 稳固度下降、到期提前：惩罚靠日程不靠扣血。
   // 书套：这一场第一次答错，两项都不动。
   if (onceThisFight('slipcase')) {
-    addNote(ctx, '书套：这一场第一次答错，稳固度和到期都没动。');
+    addNote(ctx.s, '书套：这一场第一次答错，稳固度和到期都没动。');
   } else {
     ctx.mem.stab = Math.max(1, ctx.mem.stab * MISS_RULE.stabDrop);
     ctx.mem.due = 1;
@@ -175,19 +154,20 @@ function resolveWrong(ctx: AnswerCtx) {
 
 function settleAnswerAp(ctx: AnswerCtx) {
   // 节奏结算：答对先付再退最多 1 点；答错一分不扣。
+  // 付与退都只记进计划，由执行器在本帧写完，不在两处各写一次 G.ap。
   if (ctx.right) {
-    spendAp(ctx.spent);
+    ctx.s.budget.ap.spend = ctx.spent;
     // 退款上限来自借书证；荧光笔是额外一层，不进 `refundOf`。
     let back = refundOf(ctx.spent, rulesOf().refund) + G.markerRefund;
     // 回形针：这一场第一次打出 3 费以上的牌，再多退 2 点。
     if (ctx.spent >= 3 && onceThisFight('clip')) {
       back += BAL.clipRefund;
-      addNote(ctx, `回形针：这一场第一次打出 ${ctx.spent} 费牌，多退 ${BAL.clipRefund} 点。`);
+      addNote(ctx.s, `回形针：这一场第一次打出 ${ctx.spent} 费牌，多退 ${BAL.clipRefund} 点。`);
     }
     G.markerRefund = 0;
+    ctx.s.budget.ap.gain = back;
     if (back > 0) {
-      gainAp(back);
-      addNote(ctx, back > ctx.spent
+      addNote(ctx.s, back > ctx.spent
         ? `答对了，退回 ${back} 点：这一手净赚 ${back - ctx.spent} 点。`
         : back >= ctx.spent
           ? '答对了，这一手不花行动力。'
@@ -200,20 +180,15 @@ function settleAnswerAp(ctx: AnswerCtx) {
 
 function finishAnswer(ctx: AnswerCtx) {
   // 装订线：这一场第一次答错，仍然按一半结算。
+  // 两份计划合并，而不是把 11 个字段手工拷一遍：橡皮刚记的格挡、
+  // 装订线的自伤与联动说明，全都由 mergeSettlement 保住。
   if (!ctx.right && onceThisFight('binder')) {
-    const r = strikeWith(ctx.id, 0.5, ctx.repeat);
-    ctx.hits = r.out.hits;
-    ctx.parts = r.parts;
-    ctx.dmg = r.dmg;
-    ctx.absorbed = r.absorbed;
-    // `resolveEff` 已经把 mult 乘进格挡，这里不能再补一次。
-    ctx.blk = r.blk;
-    ctx.heal = r.heal;
-    ctx.drawn += r.drawn;
-    ctx.linkNote = r.linkNote;
-    if (r.nextNote) addNote(ctx, `${r.nextNote}。`);
-    addNote(ctx, `装订线：这一手仍然按一半结算`
-      + `（${ctx.dmg} 伤害${r.blk ? `，${r.blk} 格挡` : ''}${r.drawn ? `，抽 ${r.drawn} 张` : ''}）。`);
+    const half = buildSettlement(ctx.id, { mult: 0.5, repeat: ctx.repeat });
+    const added = viewOf(half);
+    ctx.s = mergeSettlement(ctx.s, half);
+    if (ctx.v.nextNote) addNote(ctx.s, `${ctx.v.nextNote}。`);
+    addNote(ctx.s, `装订线：这一手按一半结算`
+      + `（${added.dmg} 伤害${added.blk ? `，${added.blk} 格挡` : ''}${added.drawn ? `，抽 ${added.drawn} 张` : ''}）。`);
   }
 
   G.busy = true;
@@ -234,7 +209,8 @@ function finishAnswer(ctx: AnswerCtx) {
   if (G.answers.length > 120) G.answers.shift();
 
   const effName = EFFS[ctx.card.eff].name;
-  const shape = ctx.hits.length > 1 ? `${ctx.hits.join('+')} 伤害` : `${ctx.dmg} 伤害`;
+  const v = ctx.v;
+  const shape = v.hits.length > 1 ? `${v.hits.join('+')} 伤害` : `${v.dmg} 伤害`;
   const missNote = ctx.backToHand ? '，牌留在手里' : '，进弃牌堆';
   const leftNote = G.qLeft.length
     ? `本场还剩 ${G.qLeft.length} 道新题`
@@ -242,31 +218,27 @@ function finishAnswer(ctx: AnswerCtx) {
   log(
     `「${effName}·${ctx.q.topic}」${ctx.right ? '答对' : '答错'}` +
       (ctx.right
-        ? `，${shape}${ctx.absorbed ? `（${ctx.absorbed} 被挡）` : ''}` +
-          (ctx.blk ? `，${ctx.blk} 格挡` : '') +
-          (ctx.selfHp ? `，失去 ${ctx.selfHp} 生命` : '') +
-          (ctx.heal ? `，回 ${ctx.heal}` : '') +
-          (ctx.drawn ? `，抽 ${ctx.drawn}` : '')
-        : `，效果作废${ctx.blk ? `，${ctx.blk} 格挡` : '，这张牌本身没有格挡'}${missNote}`) +
+        ? `，${shape}${v.absorbed ? `（${v.absorbed} 被挡）` : ''}` +
+          (v.blk ? `，${v.blk} 格挡` : '') +
+          (v.selfHp ? `，失去 ${v.selfHp} 生命` : '') +
+          (v.heal ? `，回 ${v.heal}` : '') +
+          (v.drawn ? `，抽 ${v.drawn}` : '')
+        : `，效果作废${v.blk ? `，${v.blk} 格挡` : '，这张牌不带格挡'}${missNote}`) +
       `　·　${leftNote}`,
     ctx.right ? 'hi' : 'bad',
   );
 
+  // 同步这一刻只判玩家侧的即时死亡；敌人是否被打死要等最后一段落地，
+  // 由执行器再判一次。
   checkPending();
 
-  // 多段伤害按段错开发出；第一下同步发，表现层靠它在本帧知道这一手打出去了。
-  // 0 伤害 / 装订线半结算 / 答错焰灭的判定统一在 publishStrike 里。
-  publishStrike(
-    { parts: ctx.parts, blk: ctx.blk, heal: ctx.heal },
-    ctx.card.eff,
-    { wrong: !ctx.right, base: ctx.parts.length * 150 },
-  );
+  settle(ctx.s);
 
   const fb: Feedback = {
     idx: ctx.idx, qid: ctx.qid, choice: ctx.choice, right: ctx.right,
-    dmg: ctx.dmg, absorbed: ctx.absorbed, blk: ctx.blk, eff: ctx.card.eff,
-    hits: ctx.hits, parts: ctx.parts, heal: ctx.heal, draw: ctx.drawn,
-    apNote: ctx.notes.join(' '), linkNote: ctx.linkNote,
+    dmg: v.dmg, absorbed: v.absorbed, blk: v.blk, eff: ctx.card.eff,
+    hits: v.hits, parts: v.parts, heal: v.heal, draw: v.drawn,
+    apNote: ctx.s.notes.join(' '), linkNote: v.linkNote,
     explain: ctx.q.explain, question: ctx.q.q, options: ctx.view.options, answer: ctx.view.answer,
     topic: ctx.q.topic,
   };
@@ -295,13 +267,9 @@ export function answer(choice: number) {
   const spent = xcost ? G.ap : costNow(card);
   const repeat = xcost ? Math.max(1, spent) : 1;
 
-  const ctx: AnswerCtx = {
-    idx, qid, choice, id, card, q, view, right,
-    spent, repeat, xcost,
-    mem: memOf(card.id),
-    dmg: 0, absorbed: 0, blk: 0, heal: 0, drawn: 0, selfHp: 0,
-    hits: [], parts: [], linkNote: '', nextNote: '', backToHand: false, notes: [],
-  };
+  const ctx = new AnswerCtx(
+    idx, qid, choice, id, card, q, view, right, spent, repeat, xcost, memOf(card.id),
+  );
   if (right) resolveRight(ctx);
   else resolveWrong(ctx);
   settleAnswerAp(ctx);

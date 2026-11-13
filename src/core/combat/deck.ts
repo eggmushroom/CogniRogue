@@ -1,6 +1,6 @@
 import { BAL } from '../model/data';
 import { G, log, resetTurnState } from '../infra/state';
-import { grantBlock, resetAp, setBlock, spendAp } from '../infra/write';
+import { grantBlock, resetAp, setApMax, setBlock, spendAp } from '../infra/write';
 import { shuffle } from '../infra/util';
 import { JUNK_ID } from '../cards/registry';
 import { onceThisFight, rulesOf } from '../cards/powers';
@@ -16,7 +16,7 @@ export function startTurn(handLeft = G.hand.length) {
   const R = rulesOf({ handLeft });
   resetTurnState();
   // 行动力上限也由 rulesOf 给（沙漏 +1），上限与当前值必须同源。
-  G.apMax = R.apMax;
+  setApMax(R.apMax);
   resetAp();
   // 吸水：敌人上回合抽走的行动力在这里结账，挨打时当场扣等于没扣。
   if (G.apDown > 0) {

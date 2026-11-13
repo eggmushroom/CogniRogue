@@ -11,15 +11,17 @@ export type GameEvent =
   | { t: 'heal'; n: number }
   /** 敌人回血，落点在敌人血条。 */
   | { t: 'foeHeal'; n: number }
-  /** 敌人动作；`taken` 为 0 表示被格挡全挡下。 */
+  /** 敌人一段攻击落地；与玩家的多段伤害共用同一个执行器与节拍。 */
   | {
-      t: 'enemyAct';
-      k: 'atk' | 'def' | 'jam' | 'buff' | 'calm';
+      t: 'enemyHit';
       n: number;
-      times?: number;
-      taken?: number;
-      absorbed?: number;
+      absorbed: number;
+      seq: number;
+      times: number;
+      totalAbsorbed: number;
     }
+  /** 敌人非攻击动作（举盾 / 塞牌 / 强化 / 观察）。 */
+  | { t: 'enemyAct'; k: 'def' | 'jam' | 'buff' | 'calm'; n: number }
   | { t: 'power'; id: PowerId }
   | { t: 'fizzle'; eff?: Eff }
   | { t: 'kill' }

@@ -2,7 +2,6 @@ import { BAL, MODE_BY_ID, STAGES, STAGE_ROWS, planFor, stageOf } from '../model/
 import type { GameState, ModeId, PowerId } from '../model/types';
 import { G, log, resetTurnState } from '../infra/state';
 import { raiseMaxHp, refillHp } from '../infra/write';
-import { pick } from '../infra/util';
 import { basicDeck } from '../cards/basics';
 import { startDeck } from '../cards/starter';
 import { applyInstant, clearRunOnce, clearStageOnce, rulesOf } from '../cards/powers';
@@ -11,7 +10,7 @@ import { saveStageMem } from '../library/stagemem';
 import { tickDue } from '../library/memory';
 import { availableNodes, curFloor, FLOOR_MAX, genStage } from '../map/gen';
 import { setSettleHandler, startBattle, resetBattleFields } from '../combat';
-import { EVENTS } from './events';
+import { drawEvent } from './events';
 import { openReward, openPowerDrop } from './rewards';
 import { endRun } from './report';
 import { clearRun } from './save';
@@ -35,7 +34,7 @@ export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []
   Object.assign(G, {
     screen: 'map', mode, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck,
     draw: [], discard: [], hand: [],
-    map: genStage(1), pos: null, seen: {}, node: null,
+    map: genStage(1), pos: null, seen: {}, eventsSeen: [], node: null,
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0,
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
     powers: startPowers, qPicked: {}, qLeft: [], charge: {}, answers: [],
@@ -68,7 +67,7 @@ export function enterNode(key: string) {
   G.node = nd;
   G.seen[key] = true;
   if (nd.type === 'rest') { G.panel = { k: 'rest' }; return; }
-  if (nd.type === 'event') { G.panel = { k: 'event', ev: pick(EVENTS) }; return; }
+  if (nd.type === 'event') { G.panel = { k: 'event', ev: drawEvent() }; return; }
   startBattle(nd);
 }
 

@@ -28,18 +28,25 @@ export function endRun(win: boolean) {
   // 这一局的伤害里，多少是你记住的，多少是你当时蒙对的那一下。
   const asks = G.runOk + G.runBad;
   const acc = asks ? G.runOk / asks : 0;
+  /**
+   * 结论只回答一件事：下一局先改哪里。
+   *
+   * 所以每档都给一个**具体到章**的动作，并且不加评语 —— "半懂""这副牌现在是借来的"
+   * 是在给玩家下判断，而玩家要的是下一步。指到章名之后，"错得最多的那一章"
+   * 这句空话才有落点（原来它没说是哪一章，等于什么也没说）。
+   */
+  const weak = rows.reduce<ReportRow | null>((w, r) => (r.bad > (w?.bad ?? 0) ? r : w), null);
   let verdict: string;
   if (!asks) {
-    verdict = '这一局你一道题都没答。战斗不是靠躲过去的：下一局先点开一张牌。';
+    verdict = '这一局一道题都没答。点开知识卡才会出题；基础牌不出题，也不退行动力。';
   } else if (acc >= 0.8) {
-    verdict = `你答对了 ${Math.round(acc * 100)}%。`
-      + '后半场你不是在赌，是在用记住的东西打仗：答对才结算、才攒免伤次数；借书证给退款，双面镜给抽牌。';
+    verdict = `你答对了 ${Math.round(acc * 100)}%。答对才结算，免答次数也是这么攒的。`;
   } else if (acc >= 0.6) {
-    verdict = `你答对了 ${Math.round(acc * 100)}%。这个区间是"半懂"：牌打得出去，但每一手都要重新想一次。`
-      + '把错得最多的那一章连着答两轮，比换一副更强的牌有用。';
+    verdict = `你答对了 ${Math.round(acc * 100)}%。`
+      + (weak ? `错得最多的是「${weak.t}」，下一局先把它连着答两轮。` : '');
   } else {
-    verdict = `你答对了 ${Math.round(acc * 100)}%。牌面够强，题没记住：这副牌现在是借来的。`
-      + '先把牌组压薄，让同一张卡多被问几次。';
+    verdict = `你答对了 ${Math.round(acc * 100)}%。牌组 ${G.deck.length} 张，`
+      + (weak ? `错的集中在「${weak.t}」。先把这一章连着答两轮，再压薄牌组。` : '先压薄牌组。');
   }
 
   G.screen = 'report';

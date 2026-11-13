@@ -4,15 +4,16 @@ import { C, font, FONT_NUM, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme'
 import { bar, drawCard, icon, panel, text } from '../gfx/ui';
 import type { IconName } from '../gfx/ui';
 import { onClick, hover } from '../input';
-import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { groundGlow, shieldDome, shieldSeal } from '../gfx/aura';
 import { clamp01, easeOut } from '../gfx/geom';
 import * as FX from '../gfx/fx';
 import { BAL, EFFS, MODE_BY_ID, POWER_BY_ID, stageOf } from '../core/model';
+import type { EffOut } from '../core/model';
 import { G } from '../core/infra';
-import { linkStatus, liveStatOf } from '../core/combat/link';
+import { linkStatus } from '../core/combat/link';
+import { planStrike } from '../core/combat/strike';
 import { curFloor } from '../core/map';
-import { canPay, cardKind, costOf, defOf, isUpgraded, isXCost, statOf } from '../core/cards';
+import { canPay, cardKind, costOf, defOf, isUpgraded, isXCost } from '../core/cards';
 import {
   askCard, cardAskState, endTurn, intentText, playBasic, playFree,
 } from '../core/combat';
@@ -70,9 +71,8 @@ export function syncBattle() {
   }
 }
 
+/** 世界层：立绘、状态牌、HUD 和手牌；书架由 layers.ts 的背景层统一画。 */
 export function drawBattle(t: number, dt: number) {
-  drawBackdrop(t, 0.58);
-  drawMotes(t);
   topBar();
   // 只报会影响卡面数值的状态，玩家要能回答"为什么这张牌现在是 14 点"。
   const ls = linkStatus();
@@ -142,7 +142,8 @@ function topBar() {
   if (mode) {
     x += topChip(x, `◆ ${mode.name}`, mode.color) + 8;
   }
-  // 本场剩余新题数。答错的代价落在这里；0 时显示「题 复用」，不是锁牌。
+  // 本场剩余新题数。点开牌时由 takeQuestion 扣掉，答对答错都一样；
+  // 0 时显示「题 复用」，不是锁牌。
   const left = G.qLeft.length;
   const reusing = left === 0;
   const qcol = reusing ? C.dim : left <= 2 ? C.red : left <= 4 ? C.gold : C.cyan;
@@ -418,8 +419,10 @@ function drawEnemy(e: Foe, t: number) {
         : []),
     ],
     // 机制改决策，玩家得在做决定之前知道；整行都给它，不靠截断省地方。
+    // 12px 小字叠在暗状态牌上，橙色 #e08a4a 会被压成一团；金色更亮，
+    // 也和 Boss 的名牌色一致，仍和血条/意图的语义色分开。
     note: mechNote(e) ?? undefined,
-    noteColor: C.orange,
+    noteColor: C.gold,
     t,
   });
 }
@@ -686,6 +689,8 @@ interface DrawFx {
   dx: number;
   dy: number;
   rot: number;
+  /** 上一帧画出来的卡面数值：离手动画要沿用它，别在加成已兑现后重算成旧数字。 */
+  out?: EffOut;
 }
 
 /** 与左下角两块牌堆牌的中心一致（38 + 48），卡牌飞行终点不悬空。 */
@@ -701,8 +706,8 @@ const DISCARD_GAP = 0.035;
 /** 出牌在逻辑层是瞬时的；不补这段飞行，牌就是凭空消失。 */
 interface DiscardFx {
   card: CardDef;
-  atk: number;
-  blk: number;
+  /** 离手瞬间的卡面数值快照。 */
+  out: EffOut;
   up: boolean;
   x: number;
   y: number;
@@ -855,9 +860,8 @@ function drawHand(t: number, dt: number) {
     const id = prevHand[pi];
     if (!fx || !id) continue;
     const card = defOf(id);
-    const st = statOf(id);
     discardFx.push({
-      card, atk: st.atk, blk: st.blk, up: isUpgraded(id),
+      card, out: fx.out ?? planStrike(id, { noBoost: true }), up: isUpgraded(id),
       x: fx.dx, y: fx.dy, rot: fx.rot,
       age: -laneOut * DISCARD_GAP,
     });
@@ -888,8 +892,9 @@ function drawHand(t: number, dt: number) {
     if (!foeActing) fx.age += dt;
     if (fx.age < 0) continue; // 还在队列里，这张牌此刻不存在
     const card = defOf(id);
-    // 手牌数字是这一刻打出去的数值，不是卡面底数。
-    const st = liveStatOf(id);
+    // 手牌数字就是这一刻真打出去的每段伤害：与结算共用同一份 planStrike。
+    const out = planStrike(id);
+    fx.out = out;
 
     if (before < 0) {
       FX.burst(DRAW_FROM.x, DRAW_FROM.y, C.blue, 4, {
@@ -946,7 +951,7 @@ function drawHand(t: number, dt: number) {
     g.globalAlpha = alpha;
     g.translate(px, py);
     g.rotate(rot);
-    drawCard(-w / 2, -h / 2, w, h, card, st.atk, st.blk, {
+    drawCard(-w / 2, -h / 2, w, h, card, out, {
       up: isUpgraded(id), glow: hv, hovered: hv,
       afford: isJunk || canPay(card),
       rule: card.link?.note,
@@ -1006,7 +1011,7 @@ function drawDiscards(dt: number) {
     g.globalAlpha = alpha;
     g.translate(px, py);
     g.rotate(rot);
-    drawCard(-w / 2, -h / 2, w, h, f.card, f.atk, f.blk, { up: f.up });
+    drawCard(-w / 2, -h / 2, w, h, f.card, f.out, { up: f.up });
     g.restore();
   }
 }

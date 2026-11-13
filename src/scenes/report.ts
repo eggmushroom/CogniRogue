@@ -1,12 +1,12 @@
-import { g, roundRect, VH, VW } from '../gfx/canvas';
-import { C, font, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
-import { action, bar, panel, text, wrap } from '../gfx/ui';
+import { g, roundRect, VH, VW, wrapText } from '../gfx/canvas';
+import { C, font, FONT_TITLE, FONT_UI, SCRIM, withAlpha } from '../gfx/theme';
+import { action, bar, panel, text } from '../gfx/ui';
 import { POWER_BY_ID, stageOf } from '../core/model';
 import { backToTitle, restart } from '../core/journey';
 import type { ReportData } from '../core/model';
 
 export function drawReport(d: ReportData) {
-  g.fillStyle = 'rgba(3,4,8,.86)';
+  g.fillStyle = `rgba(3,4,8,${SCRIM})`;
   g.fillRect(0, 0, VW, VH);
 
   const w = 1360;
@@ -21,7 +21,7 @@ export function drawReport(d: ReportData) {
   text(d.win ? '你走到了档案馆的尽头' : `这次倒在了第 ${d.floor} 层 · ${st.name}`, x + 48, y + 68, {
     size: 34, weight: 700, family: FONT_TITLE, color: accent,
   });
-  text('知识等级不会掉。答过的题会按稳固度排到下一次复习；起手固定 10 张。', x + 48, y + 106, {
+  text('这一局答过的题已经写进章节记忆，下一局抽题按它排。', x + 48, y + 106, {
     size: 14, color: C.dim,
   });
 
@@ -65,8 +65,9 @@ export function drawReport(d: ReportData) {
   // 而"错得最多的是哪一章"恰恰是结算页最该回答的问题。
   const ly = y + 282;
   text('章节掌握', x + 48, ly, { size: 15, weight: 700, color: C.ink2 });
+  // 行距 31：左栏五行收在 ly+154，正好和右栏四行的最后一行同底边。
   d.rows.forEach((r, i) => {
-    const ry = ly + 30 + i * 18;
+    const ry = ly + 30 + i * 31;
     text(r.t, x + 48, ry, { size: 12, color: C.ink, maxW: 150 });
     text(`${r.ok} 对 / ${r.bad} 错`, x + 206, ry, { size: 10, color: C.dim });
     bar(x + 300, ry - 6, 120, 9, r.mast, C.gold);
@@ -80,7 +81,7 @@ export function drawReport(d: ReportData) {
   text('这一局怎么打的', cx, ly, { size: 15, weight: 700, color: C.ink2 });
   const tail: Array<[string, string, string]> = [
     ['答题出牌', `${total2} 次`, `正确 ${acc}%`],
-    ['答对抽牌', `${d.answerDraws} 张`, '想起来的越多，看到的牌越多'],
+    ['答对抽牌', `${d.answerDraws} 张`, '来自双面镜'],
     // 答错的价码全模式统一，不再按"学习期 / 复习期"分档
     ['答错的牌', `${d.runBad} 次`, '这一手作废，牌进弃牌堆'],
     ['牌组', `${d.deckSize} 张`, `${d.kinds} 种卡`],
@@ -100,8 +101,8 @@ export function drawReport(d: ReportData) {
     text(s, cx + 250, yy, { size: 12, color: C.dim });
   });
 
-  // 结论
-  const vy = y + 626;
+  // 结论上提 100px：两栏数据止于 y+436，原来从那里空到 y+626 太散。
+  const vy = y + 526;
   roundRect(x + 48, vy, w - 96, 100, 12);
   g.fillStyle = withAlpha(C.purple, 0.08);
   g.fill();
@@ -111,7 +112,11 @@ export function drawReport(d: ReportData) {
   g.font = font(15, 400, FONT_UI);
   g.fillStyle = C.ink2;
   g.textAlign = 'left';
-  wrap(d.verdict, w - 140, 24, x + 72, vy + 30, 3);
+  // 结论框高度固定，行数却随档位在 1–3 之间变：写死首行基线时，一行的结论会贴在
+  // 框顶、底下空一条。按实际行数垂直居中，框才不显得"没写完"。
+  const vLines = wrapText(d.verdict, w - 140).slice(0, 3);
+  const vTop = vy + (100 - vLines.length * 24) / 2 + 17;
+  vLines.forEach((ln, i) => text(ln, x + 72, vTop + i * 24, { size: 15, color: C.ink2 }));
 
   action(x + w - 400, y + h - 74, 170, 52, '再来一局', () => restart(), 'primary');
   action(x + w - 216, y + h - 74, 170, 52, '回到首页', () => backToTitle());

@@ -12,15 +12,16 @@ import { shuffle } from '../infra/util';
  * 判定、反馈、键盘快捷键一律读 `QView`，绝不回头读 `q.answer`。
  */
 
-/** 这类选项的语义依赖自己排在第几位，打乱就会变成错题，直接跳过。 */
-const POSITIONAL = /^(以上|下述|前面|全都|全部都是|以上皆|以上均|其余|其他都)/;
-
+/**
+ * 只认题库声明的 `noShuffle`：位置依赖是**数据属性**，由 parse.ts 在解析期
+ * 校验并要求作者写 `! 固定顺序`。以前这里用正则猜选项文案，猜漏了就把
+ * 一道题洗成错题，而作者只能靠 README 一句「别写」来兜。
+ */
 export function shuffleOptions(q: Question): QView {
   const options = q.options.slice();
   const answer = q.answer;
-  // 选项不足、答案越界、或含「以上都对」这类选项时，原样返回
-  if (options.length < 2 || answer < 0 || answer >= options.length
-      || options.some((o) => POSITIONAL.test(o))) {
+  // 选项不足、答案越界、或题库显式声明了固定顺序时，原样返回
+  if (q.noShuffle || options.length < 2 || answer < 0 || answer >= options.length) {
     return { options, answer };
   }
 

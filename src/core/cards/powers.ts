@@ -2,11 +2,11 @@ import { BAL } from '../model/data';
 import type { EffOut } from '../model/effects';
 import type { CardId, PowerId } from '../model/types';
 import { G, log, setDeathGuard } from '../infra/state';
-import { grantBlock, healHp, raiseMaxHp, reviveHp } from '../infra/write';
+import { healHp, raiseMaxHp, reviveHp } from '../infra/write';
 import { shuffle } from '../infra/util';
 import { PACK } from './pack';
 import { isBasicId } from './basics';
-import { baseIdOf, hasPower, isUpgraded, upgradedId } from './registry';
+import { baseIdOf, hasPower, isUpgraded, upGain, upgradedId } from './registry';
 
 /**
  * 增益的唯一读取入口：always 由 `rulesOf()` 折成数字，fight / stage / run
@@ -42,25 +42,24 @@ export interface RulesCtx {
   hard?: boolean;
 }
 
-/** 把 `G.powers` 折成一组数字。纯读，不写 G。 */
-export function rulesOf(ctx: RulesCtx = {}): Rules {
-  const first = G.turn === 1;
-  const handLeft = ctx.handLeft ?? G.hand.length;
-  const hard = ctx.hard ?? (!!G.enemy && G.enemy.type !== 'fight');
-
+/**
+ * **常驻规则**：只按持有的增益算，不看回合数、手牌数、敌人类型。
+ *
+ * 为什么单独一层：`rulesOf()` 会读 `G.turn` / `G.hand` / `G.enemy`，在战斗之外
+ * 调用（帮助页、结算报告、战后统计）会带出那里没有的瞬时修正 —— 于是这些界面
+ * 只好改成直读 `BAL` 声明值，界面上的数字和实际生效的数字就成了两套。
+ * 静态层任何时刻调用都是同一个值，界面文案从这里派生，不会再出现第二份真值。
+ *
+ * 静态层回答的是「这条规则是什么」，不是「此刻生不生效」——例如 `startBlock`
+ * 在非首回合也是满值，要不要清零由 `rulesOf()` 决定。
+ */
+export function rulesStatic(): Rules {
   return {
-    apMax: BAL.baseAp + (first && hasPower('hourglass') ? 1 : 0),
+    apMax: BAL.baseAp,
     refund: hasPower('librarycard') ? BAL.refund : 0,
-    draw: BAL.drawPerTurn
-      + (hasPower('board') ? BAL.boardDraw : 0)
-      + (hasPower('index') && handLeft <= 2 ? BAL.indexDraw : 0)
-      + (first && hasPower('dogear') ? BAL.dogearDraw : 0),
+    draw: BAL.drawPerTurn + (hasPower('board') ? BAL.boardDraw : 0),
     turnBlock: hasPower('lamp') ? BAL.lampBlock : 0,
-    startBlock: first
-      ? BAL.startBlock
-        + (hasPower('paperweight') ? BAL.paperweightBlock : 0)
-        + (hard && hasPower('corner') ? BAL.cornerBlock : 0)
-      : 0,
+    startBlock: BAL.startBlock + (hasPower('paperweight') ? BAL.paperweightBlock : 0),
     answerDraw: hasPower('mirrorcard') ? BAL.answerDrawCap : 0,
     basicBlock: hasPower('syllabus') ? BAL.syllabusBlock : 0,
     rewardPicks: BAL.rewardPicks + (hasPower('sticky') ? BAL.stickyChoice : 0),
@@ -78,6 +77,24 @@ export function rulesOf(ctx: RulesCtx = {}): Rules {
   };
 }
 
+/** 把 `G.powers` 折成一组数字。纯读，不写 G。 */
+export function rulesOf(ctx: RulesCtx = {}): Rules {
+  const base = rulesStatic();
+  const first = G.turn === 1;
+  const handLeft = ctx.handLeft ?? G.hand.length;
+  const hard = ctx.hard ?? (!!G.enemy && G.enemy.type !== 'fight');
+
+  // 只在静态层上叠加「此刻」才成立的三项；其余字段原样透传。
+  return {
+    ...base,
+    apMax: base.apMax + (first && hasPower('hourglass') ? 1 : 0),
+    draw: base.draw
+      + (hasPower('index') && handLeft <= 2 ? BAL.indexDraw : 0)
+      + (first && hasPower('dogear') ? BAL.dogearDraw : 0),
+    startBlock: first ? base.startBlock + (hard && hasPower('corner') ? BAL.cornerBlock : 0) : 0,
+  };
+}
+
 /** 卡面与结算共用；加在结算结果上，避免倍率把 +1 缩放成 0 或 1。 */
 export function applyCardBonus(out: EffOut, R: Rules = rulesOf()): EffOut {
   if (!R.atkBonus && !R.blkBonus) return out;
@@ -88,12 +105,14 @@ export function applyCardBonus(out: EffOut, R: Rules = rulesOf()): EffOut {
   };
 }
 
-/** 每回合第一次打基础牌补格挡，不读题目池。 */
+/**
+ * 每回合第一次打基础牌补格挡，不读题目池。只报预算：真正写进 G.block 由
+ * settlement 的执行器在飘字那一刻统一做，否则一手牌会出现两个格挡写入点。
+ */
 export function syllabusBasicBlock(): number {
   const n = rulesOf().basicBlock;
   if (!n || G.syllabusTurn === G.turn) return 0;
   G.syllabusTurn = G.turn;
-  grantBlock(n);
   return n;
 }
 
@@ -115,6 +134,18 @@ export function onceThisFight(id: PowerId): boolean {
 /** 每幕一次（账本 / 地图册）。由 `nextStage` 清账。 */
 export function onceThisStage(id: PowerId): boolean {
   return spend(G.onceStage, id);
+}
+
+/**
+ * 只问「这次还用不用得上」，**不消费账**。界面预估专用：
+ * 面板要显示「这一下真能回多少」，就不能调 `onceThisStage()` —— 渲染一帧
+ * 就把名额花掉了。查询和消费是两个动作，别合成一个。
+ *
+ * 判断条件和 `onceThisStage()` 必须一致：`spend()` 会先看 `hasPower`，这里漏掉
+ * 就是「没拿地图册也白给 15 点」—— 探针一跑就会发现。
+ */
+export function canOnceStage(id: PowerId): boolean {
+  return hasPower(id) && !G.onceStage[id];
 }
 
 /** 整局一次（许愿条）。由 `startRun` 清账。 */
@@ -163,7 +194,7 @@ export function applyInstant(id: PowerId): string {
     case 'polish': {
       // 精炼加成写在 `G.upGrade` 上，`statOf` 读它。
       G.upGrade = BAL.polishUp;
-      return `以后每次精炼额外 +${BAL.polishUp}（攻/挡底数 +${3 + BAL.polishUp}）`;
+      return `以后每次精炼额外 +${BAL.polishUp}（攻/挡底数 +${upGain()}）`;
     }
     default:
       return '';

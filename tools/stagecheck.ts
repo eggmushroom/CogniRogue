@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
-import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS, effSummary, effSummaryOf } from '../src/core/model';
+import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS, effSummaryOf } from '../src/core/model';
 import type { MapNode } from '../src/core/model';
 import {
   EVENTS, G, answer, askCard, canAsk, canPay, cancelPanel, chooseEventOption, clearRun, defOf,
@@ -14,7 +14,8 @@ import {
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight,
   upGain, rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
   grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
-  lastFeedback, onFx, applyCardBonus, resolveEff, effFace, setScheduler,
+  lastFeedback, onFx, effFace, planStrike, setScheduler, panelOf,
+  parseQuestionBank, shuffleOptions, SNAP_V, SAVE_KEY, drawEvent, MAP_COLS,
 } from '../src/core';
 
 // 结构检查用同步调度，core 的演出延时不会真的挂住测试。
@@ -30,7 +31,7 @@ const ok = (cond: boolean, msg: string) => {
   console.log(`${cond ? '✓' : '✗'} ${msg}`);
   if (!cond) fails += 1;
 };
-const panelKind = () => (G.panel as { k: string }).k;
+const panelKind = () => G.panel.k;
 
 // ── 1. 怪物 ──
 for (const s of STAGES) {
@@ -66,6 +67,64 @@ ok(floorOf(3, 0) === 41 && floorOf(5, 19) === 100, '层号连续：第 3 幕第 
   } finally {
     Math.random = realRandom;
   }
+}
+
+// 形状：五个槽位装 1–4 个节点。3 列装不下岔路 —— 一行 2–3 个节点、
+// 只允许跨一列时，走法必然退化成三条平行竖线。这一版把它拆成 5 列，
+// 这些断言就是"别再退化回去"的尺子。
+{
+  const widths = m.map((row) => row.length);
+  ok(widths.every((n) => n >= 1 && n <= MAP_COLS), `每行 1–${MAP_COLS} 个节点（${widths.join(',')}）`);
+  ok(m.every((row) => row.every((nd) => nd.col >= 0 && nd.col < MAP_COLS)), '列号落在槽位内');
+  ok(m.every((row) => new Set(row.map((nd) => nd.col)).size === row.length), '同一行不会有两个节点挤在同一列');
+  ok(m.every((row) => row.every((nd, i) => i === 0 || nd.col > row[i - 1].col)), '同一行按列从左到右排');
+  ok(m.every((row, r) => r === 0 || row.every((a) => m[r - 1].some((b) => Math.abs(a.col - b.col) <= 1))),
+    '每个节点都挨着上一行的某个节点（边最多跨一列，不会有横贯的长斜线）');
+
+  // 分叉与合流：只有竖线时这两个数都是 0。阈值取很松，只证明"结构在"，
+  // 不锁死具体数量 —— 那是随机生成，不是常量表。
+  const fork = m.flat().filter((nd) => (nd.next?.length ?? 0) >= 2).length;
+  const indeg = new Map<string, number>();
+  for (let r = 0; r < m.length - 1; r++) {
+    for (const nd of m[r]) for (const j of nd.next) {
+      const k = `${r + 1}:${j}`;
+      indeg.set(k, (indeg.get(k) ?? 0) + 1);
+    }
+  }
+  const join = [...indeg.values()].filter((n) => n >= 2).length;
+  ok(fork >= 5, `地图有岔路可选（${fork} 处分叉）`);
+  ok(join >= 2, `地图有路汇到一起（${join} 处合流）`);
+
+  // 连通性：每个节点都走得出去，下一行的每个节点也都进得来
+  let leak = 0;
+  for (let r = 0; r < m.length - 1; r++) {
+    if (m[r].some((nd) => !nd.next.length)) leak += 1;
+    m[r + 1].forEach((_, j) => {
+      if (!m[r].some((nd) => nd.next.includes(j))) leak += 1;
+    });
+  }
+  ok(leak === 0, `没有走不出去的节点，也没有进不来的节点（漏 ${leak}）`);
+
+  // 随机性：同一幕连生成两次，形状不该一样
+  const sig = (g: MapNode[][]) => g.map((row) => row.map((nd) => `${nd.col}${nd.type[0]}`).join('|')).join('/');
+  ok(sig(genStage(1)) !== sig(genStage(1)), '同一幕连续生成两张图，列位置与类型都不一样');
+}
+
+// 事件池：一局十几个事件节点，四个模板轮着来会变成补给站。
+// 池子抽空之前不重复；模板数量本身也要够一局用。
+{
+  const kept = G.eventsSeen;
+  G.eventsSeen = [];
+  const seen = new Set<string>();
+  let dup = 0;
+  for (let i = 0; i < EVENTS.length; i++) {
+    const ev = drawEvent();
+    if (seen.has(ev.id)) dup += 1;
+    seen.add(ev.id);
+  }
+  ok(dup === 0, `${EVENTS.length} 个事件模板，抽空之前不重复（重复 ${dup} 次）`);
+  ok(EVENTS.length >= 12, `事件模板够一局用（${EVENTS.length} 个）`);
+  G.eventsSeen = kept;
 }
 
 // ── 3. 过幕 ──
@@ -243,7 +302,7 @@ function missGain(eff: string) {
   if (G.panel.k !== 'question') throw new Error(`「${eff}」那张牌没有弹题`);
   answer((G.panel.view.answer + 1) % G.panel.view.options.length);
   const gain = G.block - before;
-  if ((G.panel as { k: string }).k === 'feedback') dismissFeedback();
+  if (panelOf('feedback')) dismissFeedback();
   return gain;
 }
 {
@@ -265,14 +324,14 @@ function missGain(eff: string) {
   askCard(0);
   if (G.panel.k !== 'question') throw new Error('那张牌没有弹题');
   answer((G.panel.view.answer + 1) % G.panel.view.options.length);
-  const p = G.panel as unknown as { k: string; fb?: { apNote: string } };
+  const p = panelOf('feedback')!;
   const note = p.fb?.apNote ?? '';
   ok(G.block === blocked, `答错一格挡也不补（${blocked} → ${G.block}）`);
   ok(G.hand.length === handBefore - 1, `答错不补抽（手牌 ${handBefore} → ${G.hand.length}）`);
   ok(G.discard.length === pileBefore + 1, '答错的牌进了弃牌堆');
   ok(!G.draw.includes(card.id), '答错的牌不会回到抽牌堆');
   ok(note.includes('弃牌堆'), `说明写了牌的去向（${note}）`);
-  if (p.k === 'feedback') dismissFeedback();
+  dismissFeedback();
 }
 
 // ── 7. 取消
@@ -342,9 +401,12 @@ function missGain(eff: string) {
   startRun();
   G.powers = ['ledger'];
   G.onceStage = {};
-  G.node = { r: 1, i: 0, key: '1:0', col: 1, type: 'battle', next: [] } as unknown as MapNode;
+  // 这里原来写的是 `type: 'battle'` 再套 `as unknown as MapNode`，而 NodeType 里
+  // 根本没有 'battle'（是 'fight'）—— 断言让这个错值编译通过、一直没被发现。
+  // 去掉断言后 tsc 立刻报出来，这就是「测试里的 as unknown as」的实际代价。
+  G.node = { r: 1, i: 0, key: '1:0', col: 1, type: 'fight', next: [] };
   openReward();
-  const rw = G.panel as unknown as { k: string; cards: { id: string }[]; ledger?: boolean };
+  const rw = panelOf('reward')!;
   ok(rw.k === 'reward' && rw.ledger === true
     && rw.cards.length === BAL.rewardPicks + BAL.ledgerPicks,
     `账本：第一次奖励 ${rw.cards.length} 个选项，并标记精炼`);
@@ -353,7 +415,7 @@ function missGain(eff: string) {
   ok(isUpgraded(G.deck[before]), `账本：选中的牌直接精炼（${G.deck[before]}）`);
 
   openReward();
-  const rw2 = G.panel as unknown as { k: string; ledger?: boolean };
+  const rw2 = panelOf('reward')!;
   ok(rw2.k === 'reward' && rw2.ledger !== true,
     '账本：同一幕第二次奖励不再多给，也不再精炼');
 
@@ -375,8 +437,8 @@ function missGain(eff: string) {
   if (G.panel.k !== 'question') throw new Error('书签测试：没弹题');
   answer(G.panel.view.answer);
   ok(G.block >= BAL.bookmarkBlock, `书签：第一次答对补 ${BAL.bookmarkBlock} 点格挡（${G.block}）`);
-  const fp = G.panel as unknown as { k: string };
-  if (fp.k === 'feedback') dismissFeedback();
+  const fp = panelOf('feedback');
+  if (fp) dismissFeedback();
 }
 
 // ── 10. 事件 ──
@@ -410,7 +472,7 @@ function missGain(eff: string) {
   G.hp = 50;
   G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'notebook')! };
   chooseEventOption(0);
-  const p = G.panel as unknown as { k: string; mode?: string };
+  const p = panelOf('cardpick')!;
   ok(p.k === 'cardpick' && p.mode === 'up', `旧笔记本：打开精炼选牌（${p.k}/${p.mode}）`);
   ok(G.hp === 50, `旧笔记本：打开面板时还没扣血（${G.hp}）`);
   ok(G.pendingCost === 10, `旧笔记本：待付 10 点生命挂在面板上（${G.pendingCost}）`);
@@ -470,7 +532,7 @@ function missGain(eff: string) {
   const atkBefore = statOf(G.deck[bi]).atk;
   G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'notebook')! };
   chooseEventOption(0);
-  const p = G.panel as unknown as { k: string; mode?: string };
+  const p = panelOf('cardpick')!;
   ok(p.k === 'cardpick' && p.mode === 'up', `基础牌可精炼：打开选牌（${p.k}/${p.mode}）`);
   upgradeCard(bi);
   ok(isUpgraded(G.deck[bi]) && statOf(G.deck[bi]).atk === atkBefore + 3,
@@ -512,7 +574,7 @@ function missGain(eff: string) {
   const before = G.deck.length;
   G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'keeper')! };
   chooseEventOption(0);
-  const p = G.panel as unknown as { k: string; mode?: string };
+  const p = panelOf('cardpick')!;
   ok(p.k === 'cardpick' && p.mode === 'rm', `守夜人：打开移除选牌（${p.k}/${p.mode}）`);
   if (p.k === 'cardpick') {
     const i = G.deck.findIndex((e) => defOf(e).kind !== 'basic');
@@ -520,6 +582,61 @@ function missGain(eff: string) {
   }
   ok(G.deck.length === before - 1, `守夜人：玩家选的那张被移除（${before} → ${G.deck.length}）`);
   ok(G.hp === 50, '守夜人：不再随机抽卡，也不额外回血');
+}
+
+// 新事件的机制各不相同，每一条都要真的落到状态上。
+// "写了选项但 run() 没接线"是这一块最容易出的错：面板照常关掉、日志照常有字，
+// 只有状态没变，而测试里没有任何断言读 UI。
+{
+  // 复印机：复制手里的一张牌（同一份再来一张），付 6 点生命
+  startRun();
+  G.hp = 50;
+  const before = G.deck.length;
+  G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'copier')! };
+  chooseEventOption(0);
+  ok(G.deck.length === before + 1, `复印机：牌组 +1（${before} → ${G.deck.length}）`);
+  ok(G.hp === 44, `复印机：付 6 点生命（${G.hp}）`);
+  const copies = new Map<string, number>();
+  G.deck.forEach((id) => copies.set(id, (copies.get(id) ?? 0) + 1));
+  ok([...copies.values()].some((n) => n >= 2), '复印机：真的有同一张牌的第二份');
+}
+
+{
+  // 灯油：生命上限 +4，当前生命不动（不是"回满"）
+  startRun();
+  G.hp = 50;
+  const maxBefore = G.maxHp;
+  G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'lamp-oil')! };
+  chooseEventOption(0);
+  ok(G.maxHp === maxBefore + 4, `灯油：生命上限 +4（${maxBefore} → ${G.maxHp}）`);
+  ok(G.hp === 38, `灯油：失去 12 点生命、不会被回满（${G.hp}）`);
+}
+
+{
+  // 错页：一半概率拿卡、一半概率掉血。把随机钉死，两边都要验 ——
+  // 只验好的一边，"坏运分支写错了"会一直藏着。
+  const real = Math.random;
+  try {
+    startRun();
+    G.hp = 50;
+    const n0 = G.deck.length;
+    Math.random = () => 0.1;
+    G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'wrong-page')! };
+    chooseEventOption(0);
+    ok(G.deck.length === n0 + 1 && G.hp === 50,
+      `错页（好运）：拿卡不掉血（${n0} → ${G.deck.length} / ${G.hp}）`);
+
+    startRun();
+    G.hp = 50;
+    const n1 = G.deck.length;
+    Math.random = () => 0.9;
+    G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'wrong-page')! };
+    chooseEventOption(0);
+    ok(G.deck.length === n1 && G.hp === 40,
+      `错页（坏运）：掉 10 点血、不给卡（${G.hp} / ${G.deck.length}）`);
+  } finally {
+    Math.random = real;
+  }
 }
 
 // ── 10b. 开局牌组 ──
@@ -743,7 +860,7 @@ function missGain(eff: string) {
   const hp0 = e.hp;
   askCard(0);
   if (panelKind() !== 'question') throw new Error('装订线测试：没弹题');
-  const p = G.panel as unknown as { view: { answer: number; options: string[] } };
+  const p = panelOf('question')!;
   // 取模：正确选项可能是最后一个，越界会被 answer() 忽略。
   answer((p.view.answer + 1) % p.view.options.length);
   const dealt = hp0 - e.hp;
@@ -764,7 +881,7 @@ function missGain(eff: string) {
       G.hand[0] = guard.id;
       askCard(0);
       if (panelKind() !== 'question') throw new Error('装订线格挡测试：没弹题');
-      const view = (G.panel as unknown as { view: { answer: number; options: string[] } }).view;
+      const view = (panelOf('question')!).view;
       answer(wrong ? (view.answer + 1) % view.options.length : view.answer);
       const got = G.block;
       if (panelKind() === 'feedback') dismissFeedback();
@@ -799,7 +916,7 @@ function missGain(eff: string) {
   const off = onFx((ev) => { if (ev.t === 'dmg' || ev.t === 'fizzle') seen.push(ev.t); });
   askCard(0);
   if (panelKind() !== 'question') throw new Error('装订线演出测试：没弹题');
-  const view = (G.panel as unknown as { view: { answer: number; options: string[] } }).view;
+  const view = (panelOf('question')!).view;
   answer((view.answer + 1) % view.options.length);
   off();
   if (panelKind() === 'feedback') dismissFeedback();
@@ -820,7 +937,7 @@ function missGain(eff: string) {
   const off = onFx((ev) => { if (ev.t === 'dmg' || ev.t === 'fizzle') seen.push(ev.t); });
   askCard(0);
   if (panelKind() !== 'question') throw new Error('0 伤害测试：没弹题');
-  answer((G.panel as unknown as { view: { answer: number } }).view.answer);
+  answer((panelOf('question')!).view.answer);
   off();
   if (panelKind() === 'feedback') dismissFeedback();
   ok(!seen.includes('dmg') && !seen.includes('fizzle'),
@@ -828,16 +945,102 @@ function missGain(eff: string) {
 }
 
 {
-  // 压书石必须进答题面板文案；effSummary 是裸卡面，effSummaryOf 才是带加成的版本。
+  // 压书石必须进答题面板文案。裸/带加成两次都走同一个 planStrike，
+  // 只是 G.powers 不同：不存在「裸卡面」这个独立数值入口。
   const c = PACK.cards.find((x) => x.kind === 'knowledge' && x.cost === 1 && x.eff === 'strike' && x.atk > 0 && !x.mods?.selfHp)!;
-  G.powers = ['press'];
-  const plain = effSummary(c.eff, c.atk, c.blk, c.mods);
-  const out = applyCardBonus(resolveEff(c.eff, c.atk, c.blk, 1, c.mods));
-  const buffed = effSummaryOf(out, c.eff);
-  const plainPer = effFace(resolveEff(c.eff, c.atk, c.blk, 1, c.mods)).per;
-  ok(buffed !== plain && effFace(out).per === plainPer + BAL.pressAtk,
-    `压书石：答题面板文案 +${BAL.pressAtk}（${plainPer} → ${effFace(out).per}）`);
   G.powers = [];
+  const plainOut = planStrike(c.id, { noBoost: true });
+  const plain = effSummaryOf(plainOut, c.eff);
+  G.powers = ['press'];
+  const out = planStrike(c.id, { noBoost: true });
+  const buffed = effSummaryOf(out, c.eff);
+  ok(buffed !== plain && effFace(out).per === effFace(plainOut).per + BAL.pressAtk,
+    `压书石：答题面板文案 +${BAL.pressAtk}（${effFace(plainOut).per} → ${effFace(out).per}）`);
+  G.powers = [];
+}
+
+{
+  // 「续火 ×2」必须作用在这一手已经算好的每段伤害上。以前它乘在攻击底数里，
+  // 串联原型再乘 0.52 并取整，atk 7 的串联牌只能从 4 变 7，翻倍名不副实。
+  const c = PACK.cards.find((x) => x.eff === 'chain' && x.atk === 7)!;
+  const plain = effFace(planStrike(c.id, { noBoost: true })).per;
+  G.nextBoost = { mul: 2, add: 0, from: '续火' };
+  const doubled = effFace(planStrike(c.id)).per;
+  ok(doubled === plain * 2,
+    `续火 ×2 落在结果层：串联 ${plain} → ${doubled}（应 ${plain * 2}）`);
+  G.nextBoost = null;
+}
+
+{
+  // 段级执行：四段牌要发四次 dmg 事件，每次只写自己那一段，预演与落地一致。
+  // 同步调度器下四段会连续落地，掉血总量仍必须等于 parts 之和。
+  battle(1, 'examiner');
+  G.powers = [];
+  G.nextBoost = null;
+  G.charge = {};
+  G.hand[0] = 'c43';
+  G.ap = 2;
+  G.enemy!.hp = 999;
+  G.enemy!.block = 0;
+  const seen: number[] = [];
+  const off = onFx((ev) => { if (ev.t === 'dmg') seen.push(ev.n); });
+  askCard(0);
+  // 和文件里其它答题断言一样走 panelKind()：直接读 G.panel.k 会被 tsc 按
+  // 上一个块的赋值窄化成一个不可能的分支。
+  if (panelKind() === 'question') {
+    answer((panelOf('question')!).view.answer);
+  }
+  off();
+  const fb = lastFeedback();
+  const dropped = 999 - G.enemy!.hp;
+  ok(!!fb && fb.hits.length === 4 && seen.length === 4
+      && seen.join('+') === fb.parts.map((p) => p.d).join('+')
+      && dropped === fb.dmg,
+    `多段逐段落地：${fb?.hits.join('+')} / 事件 ${seen.join('+')} / 掉血 ${dropped}`);
+  if (panelKind() === 'feedback') dismissFeedback();
+}
+
+{
+  // 位置依赖是数据属性：题库显式写 ! 固定顺序 才不打乱；没声明的题在
+  // 解析期就被拦下，而不是等出题时用正则猜「以上都对」。
+  const body = '### 位置测试\nA) 甲\nB) 以上都对\n= B\n';
+  const flagged = parseQuestionBank(body + '! 固定顺序\n');
+  const missing = parseQuestionBank(body);
+  const q = flagged.byTopic['未分类']?.[0];
+  const normal = parseQuestionBank('### 普通题\nA) 甲\nB) 乙\n= B\n').byTopic['未分类']?.[0];
+  ok(flagged.issues.length === 0 && missing.issues.length === 1
+      && q?.noShuffle === true && shuffleOptions(q!).answer === 1
+      && !normal?.noShuffle,
+    `题库自描述：声明 ${flagged.issues.length} 条问题 / 未声明 ${missing.issues.length} 条 / 固定顺序答案 ${q ? shuffleOptions(q).answer : '-'}`);
+}
+
+{
+  // 敌人侧与玩家侧共用同一个执行器：三段攻击发三次 enemyHit，每次事件发出时
+  // 只掉了那一段血；回合推进排在所有段之后，不会在动画中途就抽好下一手牌。
+  battle(1, 'examiner');
+  G.powers = [];
+  G.panel = { k: 'none' };
+  G.pending = null;
+  G.busy = false;
+  G.turn = 2;
+  G.block = 0;
+  G.hp = 100;
+  G.maxHp = 100;
+  const e = G.enemy!;
+  delete e.mech;
+  delete e.mechV;
+  e.dmg = 20;
+  e.mv = 0;
+  e.moves = [{ k: 'atk', m: 1, times: 3 }];
+  const seen: { n: number; hp: number }[] = [];
+  const off = onFx((ev) => { if (ev.t === 'enemyHit') seen.push({ n: ev.n, hp: G.hp }); });
+  endTurn();
+  off();
+  const per = seen[0]?.n ?? 0;
+  ok(seen.length === 3 && per > 0
+      && seen.every((x, i) => x.n === per && x.hp === 100 - per * (i + 1))
+      && G.hp === 100 - per * 3 && G.turn === 3,
+    `敌人三段逐段落地：${seen.map((x) => `${x.n}@${x.hp}`).join(' / ')} / 剩余 ${G.hp} / 回合 ${G.turn}`);
 }
 
 {
@@ -849,7 +1052,7 @@ function missGain(eff: string) {
   G.hand[0] = 'c05';
   askCard(0);
   if (panelKind() !== 'question') throw new Error('本章统计测试：没弹题');
-  answer((G.panel as unknown as { view: { answer: number } }).view.answer);
+  answer((panelOf('question')!).view.answer);
   ok(G.stageOk === 1, `本章答对计数 +1（${G.stageOk}）`);
   if (panelKind() === 'feedback') dismissFeedback();
 
@@ -857,7 +1060,7 @@ function missGain(eff: string) {
   G.hand[0] = 'c06';
   askCard(0);
   if (panelKind() !== 'question') throw new Error('本章统计测试：第二次没弹题');
-  const v2 = (G.panel as unknown as { view: { answer: number; options: string[] } }).view;
+  const v2 = (panelOf('question')!).view;
   answer((v2.answer + 1) % v2.options.length);
   ok(G.stageBad === 1, `本章答错计数 +1（${G.stageBad}）`);
   if (panelKind() === 'feedback') dismissFeedback();
@@ -876,7 +1079,7 @@ function missGain(eff: string) {
       G.hand[0] = two.id;
       askCard(0);
       if (panelKind() !== 'question') throw new Error('借书证测试：没弹题');
-      answer((G.panel as unknown as { view: { answer: number } }).view.answer);
+      answer((panelOf('question')!).view.answer);
       const left = G.ap;
       if (panelKind() === 'feedback') dismissFeedback();
       return left;
@@ -898,7 +1101,7 @@ function missGain(eff: string) {
   G.hand[0] = card.id;
   askCard(0);
   if (panelKind() !== 'question') throw new Error('荧光笔测试：没弹题');
-  answer((G.panel as unknown as { view: { answer: number } }).view.answer);
+  answer((panelOf('question')!).view.answer);
   if (panelKind() === 'feedback') dismissFeedback();
   ok(G.ap === 4, `荧光笔 + 借书证：1 费牌答对退 2 点（3 - 1 + 2 = ${G.ap}）`);
 }
@@ -914,7 +1117,7 @@ function missGain(eff: string) {
     G.block = 0;
     askCard(0);
     if (panelKind() !== 'question') throw new Error('一次性的账：没弹题');
-    const p = G.panel as unknown as { view: { answer: number; options: string[] } };
+    const p = panelOf('question')!;
     answer((p.view.answer + 1) % p.view.options.length);
     const got = G.block;
     if (panelKind() === 'feedback') dismissFeedback();
@@ -947,7 +1150,7 @@ function missGain(eff: string) {
 // 规则表有改动不等于结算生效，每条通道跑一次真实结算。
 {
   const plain = PACK.cards.find((c) => c.kind === 'knowledge' && c.eff === 'strike' && c.cost === 1)!;
-  const panelAns = () => (G.panel as unknown as { view: { answer: number; options: string[] } }).view;
+  const panelAns = () => (panelOf('question')!).view;
 
   const hit = (powers: string[]) => {
     battle(1, 'examiner');
@@ -1142,8 +1345,8 @@ function missGain(eff: string) {
   const i = G.hand.findIndex((c) => canAsk(c) && canPay(defOf(c)));
   if (i < 0) throw new Error('反伤测试：手里没有能答的牌');
   askCard(i);
-  const p1 = G.panel as unknown as { k: string; view?: { answer: number } };
-  if (p1.k !== 'question' || !p1.view) throw new Error('反伤测试：没弹题');
+  const p1 = panelOf('question');
+  if (!p1) throw new Error('反伤测试：没弹题');
   answer(p1.view.answer);
   if (panelKind() === 'feedback') dismissFeedback();
   const th = e.mechV ?? BAL.mech.thorns;
@@ -1159,8 +1362,8 @@ function missGain(eff: string) {
   G.ap = 9;
   G.hand[0] = plain.id;
   askCard(0);
-  const p2 = G.panel as unknown as { k: string; view?: { answer: number } };
-  if (p2.k !== 'question' || !p2.view) throw new Error('反伤致死测试：没弹题');
+  const p2 = panelOf('question');
+  if (!p2) throw new Error('反伤致死测试：没弹题');
   answer(p2.view.answer);
   ok(G.hp <= 0 && (G.pending as string | null) === 'dead',
     `反伤致死：1 点血打影印 → ${G.hp}，判负`);
@@ -1174,8 +1377,8 @@ function missGain(eff: string) {
   G.ap = 9;
   G.hand[0] = plain.id;
   askCard(0);
-  const p4 = G.panel as unknown as { k: string; view?: { answer: number } };
-  if (p4.k !== 'question' || !p4.view) throw new Error('反伤击杀测试：没弹题');
+  const p4 = panelOf('question');
+  if (!p4) throw new Error('反伤击杀测试：没弹题');
   answer(p4.view.answer);
   ok(G.hp === 1 && (G.pending as string | null) === 'clear',
     `击杀不反伤：血量 ${G.hp}，判定 ${G.pending}`);
@@ -1268,21 +1471,21 @@ function missGain(eff: string) {
   } as Storage;
 
   const base = {
-    v: 8, stage: 1, mode: null, hp: 50, maxHp: 70,
+    v: SNAP_V, stage: 1, mode: null, hp: 50, maxHp: 70,
     deck: ['base:strike'], powers: [],
-    map: genStage(1), pos: null, seen: {}, topicWrong: {},
+    map: genStage(1), pos: null, seen: {}, eventsSeen: [], topicWrong: {},
     floors: 0, runOk: 0, runBad: 0, stageOk: 0, stageBad: 0, answerDraws: 0,
     qPicked: {}, onceStage: [], onceRun: [], upGrade: 0,
   };
   const put = (snap: unknown) => {
     clearRun();
-    store.set('cognirogue.run.v8', JSON.stringify(snap));
+    store.set(SAVE_KEY, JSON.stringify(snap));
   };
 
   put(base);
   ok(runSaveInfo()?.stage === 1, '合法存档可读');
-  put({ ...base, v: 7 });
-  ok(runSaveInfo() === null, '旧版本号存档被拒绝（v7）');
+  put({ ...base, v: SNAP_V - 1 });
+  ok(runSaveInfo() === null, '旧版本号存档被拒绝');
   put({ ...base, qPicked: { q_demo: -1 } });
   ok(runSaveInfo() === null, '题目曝光计数为负的存档被拒绝');
 
@@ -1413,7 +1616,7 @@ function missGain(eff: string) {
   ok(idx >= 0, '手牌里有非本章主题的知识卡');
   const cardTopic = idx >= 0 ? defOf(G.hand[idx]).topic : '';
   askCard(idx);
-  const p1 = G.panel as unknown as { k: string; topic?: string; qid?: string; view: { answer: number; options: string[] } };
+  const p1 = panelOf('question')!;
   ok(p1.k === 'question' && p1.topic === '基础动词' && p1.topic !== cardTopic,
     `非本章卡问本章题（卡「${cardTopic}」→ 题「${p1.topic}」）`);
   ok(!!p1.qid && allQuestions().some((q) => q.qid === p1.qid), 'Panel 带题号，且题号属于当前阶段题库');
@@ -1436,7 +1639,7 @@ function missGain(eff: string) {
   G.charge = {};
   const idx2 = G.hand.findIndex((e) => cardKind(defOf(e)) === 'knowledge');
   askCard(idx2);
-  const p2 = G.panel as unknown as { k: string; topic?: string };
+  const p2 = panelOf('question')!;
   ok(p2.k === 'question' && p2.topic === '生活名词',
     `换到第 2 幕后题目来自「生活名词」（实际「${p2.topic}」）`);
 }
@@ -1469,7 +1672,7 @@ C) 3
   const i = G.hand.findIndex((e) => canAsk(e));
   if (i < 0) throw new Error('题库替换测试：没有可问的牌');
   askCard(i);
-  const p = G.panel as unknown as { k: string; q?: { q: string } };
+  const p = panelOf('question')!;
   ok(p.k === 'question' && p.q?.q === '1+1=?', '题目来自新题库');
   ok(G.deck.join('|') === before, '换题库不改变牌组/card id');
   ok(PACK.cards.length === 101, 'PACK 仍是 101 张固定卡（83 张卡池 + 4 张联动卡 + 14 张扩充卡）');
@@ -1507,7 +1710,7 @@ C) 3
   const apBefore = G.ap;
   G.hand[0] = cb.id;
   /** 读当前题目视图；TS 在长脚本里会把 G.panel 窄化成上一步的形状，用显式形状接住。 */
-  const qv = () => (G.panel as unknown as { k: string; view: { answer: number; options: string[] } }).view;
+  const qv = () => (panelOf('question')!).view;
   askCard(0);
   if (panelKind() !== 'question') throw new Error('v0.5：答错测试没弹题');
   answer((qv().answer + 1) % qv().options.length);

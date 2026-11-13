@@ -545,9 +545,10 @@ await step('掉落面板 → 一张、只有"知道了"、掉落即已生效', a
 });
 
 // 答错的规则：这一手作废、不扣行动力；不补格挡、不补抽，牌进弃牌堆。
-// 代价落在"本场少一道新题"上。三档模式合并之后，只剩这一套。
+// 题不是答错才扣的：点开牌时 `takeQuestion` 就扣了，答对答错都一样，
+// 所以下面那条 `q -1` 断言验的是"点开时扣过"，不是"答错扣一道"。
 await boot(URL_ + '?dev=battle');
-await step('答错 → 不扣行动力、不补格挡、不补抽、本场新题少一道', async () => {
+await step('答错 → 不扣行动力、不补格挡、不补抽，牌进弃牌堆', async () => {
   if (!await waitHand()) throw new Error('手牌一直没落位');
   // 起手只带 2 张随机知识卡，抽 5 张时可能一张都没摸到；这条测的是答错规则，不是抽牌。
   const pick = await ensureKnowledge();
@@ -1082,7 +1083,12 @@ globalThis.__snap = await evalJs(`(() => {
   s.floors = 6;
   s.hp = 41;
   cog.save();
-  const raw = localStorage.getItem('cognirogue.run.v8');
+  // 不抄版本号：存档 key 带版本后缀，版本一升这里就读成 null。按前缀扫。
+  let raw = null;
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('cognirogue.run.')) raw = localStorage.getItem(k);
+  }
   return { len: raw ? raw.length : 0, deck: s.deck.length, hp: s.hp };
 })()`);
 await boot(URL_);
@@ -1241,12 +1247,17 @@ await step('答错 → 判定：同一块面板，几何不跳、没有闪断', 
   return q.phase === 'settle' && cont === 0 && opts === 0;
 });
 
-await step('判定演出结束 → 结果区展开，盒子还是那一块', async () => {
+await step('判定演出结束 → 结果区展开，锚点不动、盒子按内容收起', async () => {
   if (!await waitFor('继续', 45000)) throw new Error('结果区没有展开');
 }, async () => {
+  // settle 态仍是答题那一整块（不换框）；result 态把 2×2 小片以外那段
+  // 四行选项带的空白收掉。要守的是「同一块面板」= 锚点与宽度不变，
+  // 不是高度全等 —— 高度全等恰恰是那片空白的成因。
   const q = await S('cog.quiz()');
+  const a = globalThis.__quizGeom;
   return q.phase === 'result'
-    && JSON.stringify(q.geom) === JSON.stringify(globalThis.__quizGeom);
+    && q.geom.x === a.x && q.geom.y === a.y && q.geom.w === a.w
+    && q.geom.h <= a.h;
 });
 
 await step('点击面板任意处 → 立刻继续，不必瞄准按钮', async () => {

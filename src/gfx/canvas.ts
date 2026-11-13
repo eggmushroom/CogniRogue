@@ -75,9 +75,23 @@ export function roundRect(x: number, y: number, w: number, h: number, r: number)
 /** 不允许出现在行首的标点：让它们悬挂在上一行末尾，避免出现孤零零一个「？」。 */
 const HANG = /^[，。、；：！？）」』】…—～%]$/;
 
+/**
+ * 数字和紧跟的量词是一个词，不许在中间换行。
+ * 「答对退 1 / 点，每回合……」里的「1 点」被拆开之后，上一行读起来像
+ * 「答对退 1」，下一行从「点」起头 —— 三张模式卡并排时最刺眼的就是这种断法。
+ * 量词表只收项目里真的会写到的那些，不猜。
+ */
+const TOKEN = new RegExp(
+  '\\d+(?:\\.\\d+)?\\s*(?:点|张|次|层|个|道|秒|下|格|条|名|只|倍|回合|步|幕|章|%)'
+  + '|[A-Za-z0-9@#%&+\\-*/=<>_.\'"()]+'
+  + '|\\s+'
+  + '|[\\s\\S]',
+  'gu',
+);
+
 /** 中文按字断行、英文按词断行；够用，且没有依赖。 */
 export function wrapText(text: string, maxW: number): string[] {
-  const tokens = text.match(/[A-Za-z0-9@#%&+\-*/=<>_.'"()]+|\s+|[\s\S]/gu) ?? [];
+  const tokens = text.match(TOKEN) ?? [];
   const lines: string[] = [];
   let line = '';
   for (const tk of tokens) {

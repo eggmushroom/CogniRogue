@@ -18,6 +18,11 @@ export interface Question {
   options: string[];
   answer: number;
   explain: string;
+  /**
+   * 选项语义依赖自己的位置（「以上都对」）。由题库 DSL 的 `! 固定顺序`
+   * 显式声明，解析期校验；出题视图只读这个标记，不猜选项文案。
+   */
+  noShuffle?: boolean;
 }
 
 /** 每次出题打乱选项后的视图；题面、判定、反馈必须读同一份。 */
@@ -122,8 +127,12 @@ export interface PowerDef {
   /** 徽记里的一个字 */
   icon: string;
   name: string;
-  /** 完整描述：日志、悬停提示、结算页用 */
-  desc: string;
+  /**
+   * 卡面那句 `card` 装不下的**边界**：每场一次、只对基础牌、划掉的不含正确答案。
+   * 没有边界就不写 —— 复述 `card` 只会给"再补一句理由"留位置，而掉落面板上
+   * 那三行字一旦开始解释设计，就成了作者在自言自语。
+   */
+  desc?: string;
   /** 徽记面上的效果句，两行以内 */
   card: string;
   color: string;
@@ -273,7 +282,17 @@ export interface Foe extends FoeTpl {
 
 export interface EventOpt {
   t: string;
-  sub: string;
+  /**
+   * 副标题**一律是函数**，渲染时求值。
+   *
+   * 早先是 `string | (() => string)`：默认写字符串，只有会随增益变的那条改函数。
+   * 结果是渲染处要 `typeof` 分叉，而且新加选项时没人提醒该用哪种 —— 静态字符串
+   * 会悄悄锁死拿到增益之前的数字。统一成函数，分叉和「记得用对」一起消失。
+   *
+   * 文案里的数值只能来自本文件的代价常量，不能写字面量：守卫
+   * （`content/no-literal-hp`）会扫 `\d+ 点生命`。
+   */
+  sub: () => string;
   /** 返回日志文案；返回 null 表示这个选项没有被消费，面板留在原地让玩家重选 */
   run: () => string | null;
 }
@@ -435,6 +454,12 @@ export interface GameState {
   pos: { r: number; i: number } | null;
   node: MapNode | null;
   seen: Record<string, boolean>;
+  /**
+   * 本局已经遇过的事件 id，只用于"先抽没见过的"。
+   * 一局有十几二十个事件节点，四个模板轮着来，玩家会把事件当补给站；
+   * 池子抽空之前不重复，事件才回到"这次会遇到什么"。
+   */
+  eventsSeen: string[];
   /** 本场每张知识卡已答对几次；攒够等级要求后直接打。**每场清零**。 */
   charge: Record<string, number>;
   /** 本场还没点开过的新题；用完不锁牌，`takeQuestion` 会改问被问得最少的题。 */

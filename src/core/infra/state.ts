@@ -1,5 +1,5 @@
 import { BAL } from '../model/data';
-import type { GameState, LogLine } from '../model/types';
+import type { GameState, LogLine, Panel } from '../model/types';
 
 /**
  * 全局唯一的可变状态。所有工具包读写同一份 `G`，Node 无头模拟与浏览器共用。
@@ -8,7 +8,7 @@ export const G: GameState = {
   screen: 'title', mode: null, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck: [], powers: [],
   hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0, ap: BAL.baseAp, apMax: BAL.baseAp,
   turn: 1, enemy: null, draw: [], discard: [], hand: [],
-  map: [], pos: null, node: null, seen: {},
+  map: [], pos: null, node: null, seen: {}, eventsSeen: [],
   charge: {}, qLeft: [], qPicked: {}, answers: [],
   topicWrong: {}, okThisTurn: 0, topOkTopic: null,
   markerRefund: 0, syllabusTurn: 0,
@@ -20,6 +20,21 @@ export const G: GameState = {
   runOk: 0, runBad: 0, stageOk: 0, stageBad: 0, floors: 0,
   pending: null, pendingCost: 0, pendingHeal: 0, busy: false,
 };
+
+/**
+ * 只读窄化：把 `G.panel` 收窄成某一类面板，不是这一类就返回 null。
+ *
+ * `G.panel` 是判别联合，`if (G.panel.k === 'question')` 只在同一个函数体里有效。
+ * 跨调用点读内部字段（测试断言、调试接口、事件处理里已经不在那个分支的地方）
+ * 以前只能 `as unknown as { view: {...} }` —— 手写一份结构体，编译器的检查就断了，
+ * 面板字段一改名这些断言会静默读 `undefined` 而不是报错。
+ *
+ * 这个访问器替代的就是那些断言：读面板内部只有这一条路，生产代码和测试共用。
+ */
+export function panelOf<K extends Panel['k']>(k: K): Extract<Panel, { k: K }> | null {
+  const p = G.panel;
+  return p.k === k ? (p as Extract<Panel, { k: K }>) : null;
+}
 
 /**
  * 内部文字记录。左上角「战斗记录」面板已移除，运行时不再有 UI 消费者；

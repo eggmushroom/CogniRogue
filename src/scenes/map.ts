@@ -1,22 +1,45 @@
 import { g, roundRect, VH, VW } from '../gfx/canvas';
-import { C, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
+import { C, FONT_TITLE, withAlpha } from '../gfx/theme';
 import { bar, panel, text } from '../gfx/ui';
+import { drawArtIcon } from '../gfx/art/icons';
+import type { ArtIconName } from '../gfx/art/icons';
 import { consumeDragY, consumeWheel, hover, onClick } from '../input';
-import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { CURRICULUM, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS, stageOf } from '../core/model';
 import { G } from '../core/infra';
-import { FLOOR_MAX, availableNodes, curFloor, floorOf } from '../core/map';
+import { FLOOR_MAX, MAP_COLS, availableNodes, curFloor, floorOf } from '../core/map';
 import { enterNode } from '../core/journey';
 import type { MapNode } from '../core/model';
+
+/**
+ * 节点图标来自 `gfx/art` 的图标库，和卡面效果图标共用 24×24 坐标系与线宽。
+ * 之前地图自己手画了一套：战斗那把剑在 30px 半径里只看得见护手和柄，
+ * 一整屏橙色十字，读起来像治疗点。地图不该有第二套图标语言。
+ */
+const NODE_ICON: Record<MapNode['type'], ArtIconName> = {
+  fight: 'strike',
+  elite: 'skull',
+  rest: 'book',
+  event: 'ask',
+  boss: 'crown',
+};
 
 
 const TOP_Y = 132;
 const BOT_Y = 788;
-const X0 = 540;
-const DX = 260;
 /**
- * 一行 92px，由节点大小反推：半径 30 的节点之间要留 32px 才读得清是两个点。
+ * 列距与行距是**一对**，不能单独改：跨列的线斜率 = DX / ROW_GAP。
+ * 150 / 92 ≈ 1.6（约 58°）：每一条连线都朝上走，"往上爬"在形状上成立。
+ * 列数从 3 加到 5 之后列距必须收，否则五列铺到屏幕外。
  */
+const DX = 150;
+/**
+ * 地图的中心取左面板右侧那块可用区的中心（面板 340 结束，右边界留给滚动条）：
+ * 屏幕居中会让五列整体偏左，左边贴着面板、右边空一大块。
+ */
+const MAP_CX = 930;
+/** 五列的左端：入口与 Boss 都落在中间那一列 */
+const X0 = MAP_CX - ((MAP_COLS - 1) / 2) * DX;
+/** 一行 92px：半径 30 的节点之间留 32px，正好一屏 8 行 —— 也是 README 里写的那个数。 */
 const ROW_GAP = 92;
 const VISIBLE = Math.floor((BOT_Y - TOP_Y) / ROW_GAP) + 1;
 /** 普通 / Boss 节点的底盘半径。也跟着行距收了一档，让两者都留得出空。 */
@@ -91,17 +114,25 @@ export function mapCam() {
 const yOf = (r: number) => BOT_Y - (r - cam) * ROW_GAP;
 const xOf = (c: number) => X0 + c * DX;
 
-export function drawMap(t: number, dt = 1 / 60) {
-  drawBackdrop(t, 0.66);
-  drawMotes(t);
+/**
+ * 视野边缘的淡出：视野内是 1，越出上下边界后 46px 内线性消失。
+ * 比"在边缘盖一块渐变"稳 —— 矩形渐隐有自己的左右硬边，顶部会露出一块方形的暗；
+ * 按元素算的话，边界就是节点和连线自己的形状。
+ */
+const edgeFade = (y: number) => {
+  const d = y < TOP_Y ? TOP_Y - y : y - BOT_Y;
+  return d <= 0 ? 1 : Math.max(0, 1 - d / 46);
+};
 
+/** 世界层：节点、连线和 HUD；书架由 layers.ts 的背景层统一画。 */
+export function drawMap(t: number, dt = 1 / 60) {
   updateCam(dt);
   const st = stageOf(G.stage);
 
   // 每一幕给整屏加一层自己的色：换幕时最先察觉的不是新怪，是"这里的光变了"。
   // 只压 8% 的透明度：再多，节点类型色（战斗橙/精英红）就会被染得认不出来。
   g.save();
-  const amb = g.createRadialGradient(X0 + DX, VH * 0.42, 60, X0 + DX, VH * 0.42, 820);
+  const amb = g.createRadialGradient(MAP_CX, VH * 0.42, 60, MAP_CX, VH * 0.42, 820);
   amb.addColorStop(0, withAlpha(st.color, 0.09));
   amb.addColorStop(1, 'rgba(0,0,0,0)');
   g.fillStyle = amb;
@@ -126,9 +157,15 @@ export function drawMap(t: number, dt = 1 / 60) {
         const b = { x: xOf(G.map[r + 1][j].col), y: yOf(r + 1) };
         const live = walked || avail.has(`${r + 1}:${j}`);
         g.save();
+        g.globalAlpha = edgeFade(Math.min(a.y, b.y));
         g.beginPath();
         g.moveTo(a.x, a.y);
-        g.bezierCurveTo(a.x, a.y - 42, b.x, b.y + 42, b.x, b.y);
+        // 控制点跟着行距走，但要**朝对面的 x 靠一点**：只往竖直方向偏移时，
+        // 两个控制点在同一条竖线上，曲线中段的切线就接近水平 —— 跨一列的边
+        // 会读成一条横线，几行连起来像电网。带一点 x 偏移之后，整条边都朝上。
+        const bow = ROW_GAP * 0.52;
+        const drift = (b.x - a.x) * 0.34;
+        g.bezierCurveTo(a.x + drift, a.y - bow, b.x - drift, b.y + bow, b.x, b.y);
         if (live) {
           // 走过的、马上能走的路是一道光：中段最亮，两端收进节点里。
           // 纯色细线在暗背景上分不出"哪条是我选的"，渐变 + 一点辉光就分得出。
@@ -141,8 +178,10 @@ export function drawMap(t: number, dt = 1 / 60) {
           g.shadowColor = withAlpha(C.gold, 0.4);
           g.shadowBlur = 9;
         } else {
-          g.strokeStyle = 'rgba(132,150,190,.34)';
-          g.lineWidth = 1.6;
+          // 还没走的路退到背景里，但不能退到看不见：地图要回答"我还能往哪走"，
+          // 所以留一档比背景亮、又明显低于金线的灰蓝。
+          g.strokeStyle = 'rgba(132,150,190,.28)';
+          g.lineWidth = 1.5;
         }
         g.stroke();
         g.restore();
@@ -157,12 +196,26 @@ export function drawMap(t: number, dt = 1 / 60) {
     }
   }
 
-  // 层号刻度：每 5 层一支，画在地图左缘：挂在节点旁边会读成"这个节点叫 10"
+  // 层号标尺：一条竖轴 + 每 5 层一支刻度，数字挂在轴左。
+  // 之前只有一个飘着的数字，读者既不知道它是层号，也不知道它指着哪一行。
+  const axisX = X0 - NODE_R - 32;
+  g.fillStyle = 'rgba(120,140,180,.14)';
+  g.fillRect(axisX, TOP_Y, 1, BOT_Y - TOP_Y);
   for (let r = lo; r <= hi; r++) {
     if (r !== 0 && (r + 1) % 5 !== 0 && r !== STAGE_ROWS - 1) continue;
-    text(`${floorOf(G.stage, r)}`, X0 - 70, yOf(r) + 4, {
-      size: 11, align: 'right', color: r === STAGE_ROWS - 1 ? withAlpha(C.gold, 0.8) : C.faint, weight: 600,
+    const ty = yOf(r);
+    // 滚动到中段时，视野外的刻度会飘到屏幕顶上（数字跑到标题那一行），跟着淡出
+    const f = edgeFade(ty);
+    if (f <= 0.02) continue;
+    const last = r === STAGE_ROWS - 1;
+    g.save();
+    g.globalAlpha = f;
+    g.fillStyle = withAlpha(last ? C.gold : C.lineHi, last ? 0.7 : 0.45);
+    g.fillRect(axisX - 7, ty - 0.5, 7, 1);
+    text(`${floorOf(G.stage, r)}`, axisX - 12, ty + 4, {
+      size: 11, align: 'right', color: last ? withAlpha(C.gold, 0.85) : C.faint, weight: 600,
     });
+    g.restore();
   }
 
   scrollBar();
@@ -194,9 +247,9 @@ function scrollBar() {
 
 function hint(hasAvail: boolean) {
   text(hasAvail ? '点击发光的节点继续' : '这条路的尽头，是你要面对的东西',
-    X0 + DX, 862, { size: 14, align: 'center', color: C.dim });
+    MAP_CX, 862, { size: 14, align: 'center', color: C.dim });
   text('滚轮 / 按住拖动 · 走一步自动回到当前位置',
-    X0 + DX, 884, { size: 11, align: 'center', color: C.faint });
+    MAP_CX, 884, { size: 11, align: 'center', color: C.faint });
   // 上下还有多少路：和滚动条一起回答"我是不是看到底了"
   const above = Math.max(0, STAGE_ROWS - 1 - Math.round(cam));
   const below = Math.max(0, Math.round(cam));
@@ -233,6 +286,11 @@ function platePath(type: MapNode['type'], x: number, y: number, r: number) {
 function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   const x = xOf(nd.col);
   const y = yOf(nd.r);
+  const fade = edgeFade(y);
+  // 完全在视野外的行不必画，也不必挂命中区
+  if (fade <= 0.02) return;
+  g.save();
+  g.globalAlpha = fade;
   const meta = NODE_META[nd.type];
   const seen = !!G.seen[nd.key];
   const baseR = nd.type === 'boss' ? BOSS_R : NODE_R;
@@ -265,13 +323,14 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   // 底盘
   const rr = r * (hv ? 1.09 : 1);
   platePath(nd.type, x, y, rr);
-  const grd = g.createRadialGradient(x, y - rr * 0.4, 2, x, y, rr);
+  // 上亮下暗的径向：和卡面的"洗底"同一个做法，底盘才像一枚徽章而不是一块玻璃
+  const grd = g.createRadialGradient(x, y - rr * 0.55, 1, x, y, rr);
   if (avail || seen) {
-    grd.addColorStop(0, withAlpha(meta.color, 0.4));
-    grd.addColorStop(1, 'rgba(10,12,18,.96)');
+    grd.addColorStop(0, withAlpha(meta.color, 0.46));
+    grd.addColorStop(1, 'rgba(9,11,17,.97)');
   } else {
-    grd.addColorStop(0, 'rgba(30,34,46,.9)');
-    grd.addColorStop(1, 'rgba(8,10,15,.96)');
+    grd.addColorStop(0, 'rgba(34,38,52,.92)');
+    grd.addColorStop(1, 'rgba(8,10,15,.97)');
   }
   g.fillStyle = grd;
   g.fill();
@@ -280,6 +339,18 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   if (nd.type === 'event') g.setLineDash([7, 6]);
   g.stroke();
   g.setLineDash([]);
+
+  // 顶缘高光：一段短弧压在边框内侧，读成"光从上方来"。
+  // 圆、六边、圆角方都能用同一条弧，底盘因此像同一套模具压出来的。
+  g.save();
+  platePath(nd.type, x, y, rr - 1.6);
+  g.clip();
+  g.beginPath();
+  g.arc(x, y, rr - 1, -Math.PI * 0.78, -Math.PI * 0.22);
+  g.strokeStyle = withAlpha(meta.color, avail || seen ? 0.75 : 0.3);
+  g.lineWidth = 2.4;
+  g.stroke();
+  g.restore();
 
   // 内圈细环：底盘从"一个圆"变成"一枚徽章"，图标才不像直接贴在背景上。
   // 六边形和圆角方放内环会糊成一团，只给圆的这几种画。
@@ -298,19 +369,26 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
     g.stroke();
   }
 
-  const col = avail || seen ? meta.color : withAlpha(meta.color, 0.55);
+  // 还没走到的节点也要读得出类型：地图得回答"那边有什么"，玩家才能选。
+  // 退后的层次交给底盘灰度和边框透明度，图标本身别压到像一颗空圈。
+  const col = avail || seen ? meta.color : withAlpha(meta.color, 0.78);
   g.save();
-  g.globalAlpha = avail || seen ? 1 : 0.85;
-  glyph(nd.type, x, y, rr * 1.3, col);
+  g.globalAlpha = fade * (avail || seen ? 1 : 0.92);
+  // 图标库是 24×24 满框构图，1.3 倍半径会顶到边框内侧；1.14 留出一圈底盘。
+  glyph(nd.type, x, y, rr * 1.14, col);
   g.restore();
 
-  // 已走过的打勾
+  // 已走过的打勾：底色用面板色、勾用走过的路那支金，不用荧光绿 ——
+  // 绿色在整屏「暗金 + 身份色」里是最跳的一点，会把「已过」读成「奖励」。
   if (seen && !avail) {
     g.beginPath();
     g.arc(x + rr * 0.75, y - rr * 0.75, 9, 0, Math.PI * 2);
-    g.fillStyle = withAlpha(C.green, 0.9);
+    g.fillStyle = 'rgba(10,12,18,.92)';
     g.fill();
-    text('✓', x + rr * 0.75, y - rr * 0.74, { size: 12, color: '#04140c', align: 'center', weight: 900 });
+    g.strokeStyle = withAlpha(C.gold, 0.55);
+    g.lineWidth = 1;
+    g.stroke();
+    text('✓', x + rr * 0.75, y - rr * 0.74, { size: 11, color: C.gold, align: 'center', weight: 900 });
   }
 
   if (isCur) {
@@ -331,107 +409,33 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
     if (hv) text(meta.k, x, y - baseR - 16, { size: 14, align: 'center', color: meta.color, weight: 700 });
     onClick(x - baseR - 8, y - baseR - 8, (baseR + 8) * 2, (baseR + 8) * 2, () => enterNode(nd.key), 'node');
   }
+  g.restore();
 }
 
-/** 三道竖直光柱：给三列节点一个"塔"的结构，不然只是一堆飘着的圆。 */
+/** 五道竖直光柱：给五列槽位一个"塔"的结构，不然只是一堆飘着的圆。 */
 function columns(t: number) {
   const st = stageOf(G.stage);
-  for (let c = 0; c < 3; c++) {
+  // 光柱宽随列距收：列距 150 时 92 宽的光柱会连成一片，五列反而读成一根
+  const colW = Math.round(DX * 0.4);
+  // 五列比三列多出三分之二的面积，单列浓度要跟着降，否则整屏发蓝
+  const a = 0.052 + Math.sin(t * 0.8) * 0.012;
+  for (let c = 0; c < MAP_COLS; c++) {
     const x = xOf(c);
     const grd = g.createLinearGradient(0, TOP_Y - 60, 0, BOT_Y + 70);
     grd.addColorStop(0, 'rgba(120,150,220,0)');
-    grd.addColorStop(0.5, withAlpha(st.color, 0.05 + Math.sin(t * 0.8 + c) * 0.012));
+    grd.addColorStop(0.5, withAlpha(st.color, a + Math.sin(t * 0.8 + c) * 0.012));
     grd.addColorStop(1, 'rgba(120,150,220,0)');
     g.fillStyle = grd;
-    g.fillRect(x - 46, TOP_Y - 60, 92, BOT_Y - TOP_Y + 130);
+    g.fillRect(x - colW / 2, TOP_Y - 60, colW, BOT_Y - TOP_Y + 130);
   }
-  // 镜头边缘的渐隐：把"还有路没画出来"这件事说在暗处
-  const fadeTop = g.createLinearGradient(0, TOP_Y - 74, 0, TOP_Y - 18);
-  fadeTop.addColorStop(0, 'rgba(6,8,13,.92)');
-  fadeTop.addColorStop(1, 'rgba(6,8,13,0)');
-  g.fillStyle = fadeTop;
-  g.fillRect(360, TOP_Y - 74, VW - 380, 56);
-  const fadeBot = g.createLinearGradient(0, BOT_Y + 60, 0, BOT_Y + 10);
-  fadeBot.addColorStop(0, 'rgba(6,8,13,.92)');
-  fadeBot.addColorStop(1, 'rgba(6,8,13,0)');
-  g.fillStyle = fadeBot;
-  g.fillRect(360, BOT_Y + 10, VW - 380, 50);
+  // 视野边缘不做矩形渐隐：一块"暗玻璃"有自己的左右硬边，顶上会出现一条
+  // 明显的方框。改成每个节点和每条线按自己离边界的距离淡出（edgeFade），
+  // 形状是圆是线，边界就是形状本身。
 }
 
-function star(cx: number, cy: number, n: number, r1: number, r2: number) {
-  g.beginPath();
-  for (let i = 0; i < n * 2; i++) {
-    const a = (i * Math.PI) / n - Math.PI / 2;
-    const rr = i % 2 ? r2 : r1;
-    const px = cx + Math.cos(a) * rr;
-    const py = cy + Math.sin(a) * rr;
-    if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
-  }
-  g.closePath();
-}
-
-/** emoji 在部分系统会被渲染成方框或彩色贴纸，节点图标一律手画。 */
+/** 节点图标统一走 `gfx/art` 的图标库；这一层只负责把类型映射过去。 */
 function glyph(type: MapNode['type'], x: number, y: number, s: number, col: string) {
-  g.save();
-  g.strokeStyle = col;
-  g.fillStyle = col;
-  g.lineWidth = Math.max(2, s * 0.11);
-  g.lineCap = 'round';
-  g.lineJoin = 'round';
-
-  if (type === 'fight') {
-    // 一把剑：菱形剑身 + 护手 + 柄。之前用两条线交叉，远看像餐叉
-    g.beginPath();
-    g.moveTo(x, y - s * 0.58);
-    g.lineTo(x + s * 0.1, y - s * 0.5);
-    g.lineTo(x + s * 0.1, y + s * 0.02);
-    g.lineTo(x - s * 0.1, y + s * 0.02);
-    g.lineTo(x - s * 0.1, y - s * 0.5);
-    g.closePath();
-    g.fill();
-    g.beginPath();
-    g.moveTo(x - s * 0.32, y + s * 0.1);
-    g.lineTo(x + s * 0.32, y + s * 0.1);
-    g.stroke();
-    g.beginPath();
-    g.moveTo(x, y + s * 0.1);
-    g.lineTo(x, y + s * 0.44);
-    g.stroke();
-    g.beginPath();
-    g.arc(x, y + s * 0.52, s * 0.07, 0, Math.PI * 2);
-    g.fill();
-  } else if (type === 'elite') {
-    // 骷髅：圆颅 + 两个眼窝 + 三颗牙。只画弧线的版本会被读成笑脸
-    g.beginPath();
-    g.arc(x, y - s * 0.06, s * 0.34, Math.PI * 0.86, Math.PI * 2.14);
-    g.lineTo(x + s * 0.24, y + s * 0.26);
-    g.lineTo(x - s * 0.24, y + s * 0.26);
-    g.closePath();
-    g.stroke();
-    g.beginPath();
-    g.arc(x - s * 0.15, y - s * 0.1, s * 0.085, 0, Math.PI * 2);
-    g.arc(x + s * 0.15, y - s * 0.1, s * 0.085, 0, Math.PI * 2);
-    g.fill();
-    g.lineWidth = Math.max(1.4, s * 0.055);
-    for (let i = -1; i <= 1; i++) {
-      g.beginPath();
-      g.moveTo(x + i * s * 0.14, y + s * 0.1);
-      g.lineTo(x + i * s * 0.14, y + s * 0.24);
-      g.stroke();
-    }
-  } else if (type === 'rest') {
-    star(x, y, 4, s * 0.48, s * 0.14);
-    g.fill();
-  } else if (type === 'event') {
-    g.font = `800 ${Math.round(s * 0.9)}px ${FONT_UI}`;
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText('?', x, y + 1);
-  } else {
-    star(x, y, 8, s * 0.52, s * 0.24);
-    g.fill();
-  }
-  g.restore();
+  drawArtIcon(NODE_ICON[type], x, y, s, col);
 }
 
 function header(st: { name: string; sub: string; color: string }) {
@@ -453,9 +457,19 @@ function leftPanel() {
   const h = 620;
 
   panel(x, y, w, h, { r: 14, fill: 'rgba(10,12,18,.86)' });
-  roundRect(x + 1, y + 1, w - 2, 2, 12);
-  g.fillStyle = 'rgba(255,255,255,.05)';
-  g.fill();
+  // 顶光条跟着这一幕的颜色走，和浮层面板的 box() 同一种收法：
+  // 这块面板属于这一屏，不是浮在书架上的一个独立窗口。
+  g.save();
+  roundRect(x, y, w, h, 14);
+  g.clip();
+  const st = stageOf(G.stage);
+  const tg = g.createLinearGradient(x, 0, x + w, 0);
+  tg.addColorStop(0, withAlpha(st.color, 0.1));
+  tg.addColorStop(0.45, withAlpha(st.color, 0.62));
+  tg.addColorStop(1, withAlpha(st.color, 0.08));
+  g.fillStyle = tg;
+  g.fillRect(x, y, w, 2.4);
+  g.restore();
 
   // 生命
   text('生命', x + 20, y + 28, { size: 13, color: C.dim, weight: 600 });
@@ -483,17 +497,15 @@ function leftPanel() {
   text(`增益 · ${powers.length}`, x + 20, y + 146, { size: 13, color: C.dim, weight: 600 });
   if (!powers.length) {
     text('还没有。精英和幕 Boss 会掉。', x + 20, y + 170, { size: 12, color: C.faint });
-    for (let i = 0; i < 3; i++) {
-      g.save();
-      roundRect(x + 20 + i * 48, y + 186, 40, 46, 6);
-      g.fillStyle = 'rgba(255,255,255,.018)';
-      g.fill();
-      g.setLineDash([3, 4]);
-      g.strokeStyle = C.line;
-      g.lineWidth = 1;
-      g.stroke();
-      g.restore();
-    }
+    // 原来这里是三个并排的空槽：玩家会读成"增益最多三个"，而实际没有上限。
+    // 换成一条待填的虚线带，只表示"位置空着"，不承诺容量。
+    g.save();
+    g.setLineDash([4, 5]);
+    g.strokeStyle = withAlpha(C.lineHi, 0.3);
+    g.lineWidth = 1;
+    roundRect(x + 20, y + 184, w - 40, 32, 6);
+    g.stroke();
+    g.restore();
   } else {
     // 池子从十二个涨到四十七个之后，这里不能再按"两列六行"排：
     // 一局捡到十几张时最后一行会压到「全塔」那一块上。改成三列，

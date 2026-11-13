@@ -1,10 +1,9 @@
 import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
-import { C, font, FONT_UI, FONT_NUM, withAlpha } from './theme';
-import { EFFS, effFace, resolveEff } from '../core/model';
+import { C, font, FONT_TITLE, FONT_UI, FONT_NUM, withAlpha } from './theme';
+import { EFFS, effFace } from '../core/model';
 import { cardGrade, cardKind, cardType, costGlyph, GRADE_META, isXCost, CARD_TYPE_META } from '../core/cards';
-import { applyCardBonus } from '../core/cards/powers';
-import type { CardDef, PowerDef } from '../core/model';
+import type { CardDef, EffOut, PowerDef } from '../core/model';
 import { drawArtIcon } from './art/icons';
 
 
@@ -552,7 +551,7 @@ function drawCardEffects(c: CardEffectsView) {
 /** 手牌、奖励、牌组共用一种卡面；颜色按三类，不泄露主题。 */
 export function drawCard(
   x: number, y: number, w: number, h: number,
-  card: CardDef, atk: number, blk: number, opts: CardOpts = {},
+  card: CardDef, out: EffOut, opts: CardOpts = {},
 ) {
   // 身份只算一次，下面所有分支读 kind。
   const kind = cardKind(card);
@@ -561,8 +560,7 @@ export function drawCard(
   const typeMeta = CARD_TYPE_META[cardType(card)];
   const tc = kind === 'junk' ? C.faint : typeMeta.color;
   const eff = EFFS[card.eff] ?? EFFS.strike;
-  // 卡面数值必须走 statOf / resolveEff，和结算同一函数，不能手写数字。
-  const out = applyCardBonus(resolveEff(card.eff, atk, blk, 1, card.mods));
+  // 卡面不再自己折算：调用方传的就是 planStrike 给结算用的同一份 EffOut。
   const face = effFace(out);
   const per = face.per;
   const r = 12;
@@ -773,6 +771,138 @@ export function drawPowerEmblem(
   if (opts.note) {
     text(opts.note, x + w / 2, y + h + 18, { size: 14, align: 'center', color: C.dim });
   }
+  g.restore();
+}
+
+/** 三选一用的目录卡：序号 + 徽记 + 标题 + 说明 + 底部事实行 + 动作提示。 */
+export interface ChoiceCardOpts {
+  /** 身份色：顶光条、边框、徽记、hover 辉光全从它派生 */
+  color: string;
+  /** 左上角序号，读成"目录里的第几条" */
+  tag: string;
+  /** 右上角徽记的一个字 */
+  mark: string;
+  title: string;
+  desc: string;
+  hovered: boolean;
+  /** 底部事实行：标签（如「初始增益 · 2」）+ 值（如「借书证 · 课表」） */
+  factLabel: string;
+  fact: string;
+  /** 值为"空"时压暗，不假装这是一条正经信息 */
+  factMuted?: boolean;
+  /** 说明占几行槽位（默认 3）。槽位是排版锚点：卡高按它算，不留多余空档。 */
+  descLines?: number;
+  /** 动作提示：常态 / hover 两版 */
+  cta: [string, string];
+}
+
+/**
+ * 目录卡：和知识卡、增益徽记共用一套语言 —— 身份色洗底、顶光条、标题下细线、
+ * 底部一条分隔线收住事实。三张卡的说明行数可以不同，但事实行是固定锚点，
+ * 底边始终对齐；否则第一张写三行、后两张写两行，横着看就是三条不齐的底线。
+ */
+export function choiceCard(x: number, y: number, w: number, h: number, o: ChoiceCardOpts) {
+  const pad = 30;
+  const r = 14;
+  g.save();
+  // 抬升只动画，不动命中矩形：鼠标停在原处时卡不会自己跑开再回来
+  if (o.hovered) g.translate(0, -7);
+
+  g.save();
+  g.shadowColor = o.hovered ? withAlpha(o.color, 0.72) : 'rgba(0,0,0,.6)';
+  g.shadowBlur = o.hovered ? 32 : 14;
+  g.shadowOffsetY = 6;
+  roundRect(x, y, w, h, r);
+  g.fillStyle = '#0c0f16';
+  g.fill();
+  g.restore();
+
+  roundRect(x, y, w, h, r);
+  const bg = g.createLinearGradient(x, y, x + w * 0.8, y + h);
+  bg.addColorStop(0, withAlpha(o.color, o.hovered ? 0.22 : 0.15));
+  bg.addColorStop(0.55, '#111520');
+  bg.addColorStop(1, '#0a0c11');
+  g.fillStyle = bg;
+  g.fill();
+
+  g.save();
+  roundRect(x, y, w, h, r);
+  g.clip();
+  const bar = g.createLinearGradient(x, 0, x + w, 0);
+  bar.addColorStop(0, withAlpha(o.color, 0.1));
+  bar.addColorStop(0.5, withAlpha(o.color, o.hovered ? 1 : 0.7));
+  bar.addColorStop(1, withAlpha(o.color, 0.1));
+  g.fillStyle = bar;
+  g.fillRect(x, y, w, 3);
+  g.restore();
+
+  roundRect(x + 1.5, y + 1.5, w - 3, h - 3, r - 1);
+  g.strokeStyle = withAlpha(o.color, o.hovered ? 0.9 : 0.34);
+  g.lineWidth = o.hovered ? 2 : 1.4;
+  g.stroke();
+
+  text(o.tag, x + pad, y + 42, { size: 12, weight: 700, color: withAlpha(o.color, 0.72) });
+
+  // 徽记和增益徽记右上角那个标签同一个位置：玩家已经学会"右上角是身份"
+  const mx = x + w - pad - 16;
+  const my = y + 38;
+  g.beginPath();
+  g.arc(mx, my, 17, 0, Math.PI * 2);
+  g.fillStyle = withAlpha(o.color, o.hovered ? 0.26 : 0.14);
+  g.fill();
+  g.strokeStyle = withAlpha(o.color, o.hovered ? 0.8 : 0.45);
+  g.lineWidth = 1.2;
+  g.stroke();
+  text(o.mark, mx, my + 1, {
+    size: 19, weight: 700, align: 'center', family: FONT_TITLE, color: o.color,
+  });
+
+  const sep = g.createLinearGradient(x + pad, 0, x + w - pad, 0);
+  sep.addColorStop(0, withAlpha(o.color, 0.42));
+  sep.addColorStop(1, withAlpha(o.color, 0));
+  g.fillStyle = sep;
+  g.fillRect(x + pad, y + 60, w - pad * 2, 1.4);
+
+  text(o.title, x + pad, y + 106, {
+    size: 27, weight: 700, family: FONT_TITLE, color: C.ink,
+  });
+  // 标题下的细线按实测字宽收尾，和首页标题那条渐隐金线同一种收法
+  g.font = font(27, 700, FONT_TITLE);
+  const tw = Math.min(w - pad * 2 - 40, g.measureText(o.title).width);
+  const ul = g.createLinearGradient(x + pad, 0, x + pad + tw + 40, 0);
+  ul.addColorStop(0, withAlpha(o.color, o.hovered ? 0.95 : 0.62));
+  ul.addColorStop(1, withAlpha(o.color, 0));
+  g.fillStyle = ul;
+  g.fillRect(x + pad, y + 118, tw + 40, 2);
+
+  g.font = font(13, 400, FONT_UI);
+  g.fillStyle = C.ink2;
+  g.textAlign = 'left';
+  // 装不下的说明必须留省略号：静默截断的文案会被读成"这句本来就这样"
+  const maxLines = o.descLines ?? 3;
+  const lines = wrapText(o.desc, w - pad * 2);
+  lines.slice(0, maxLines).forEach((ln, i) => {
+    const cut = i === maxLines - 1 && lines.length > maxLines;
+    g.fillText(cut ? ln.slice(0, -1) + '…' : ln, x + pad, y + 140 + i * 21);
+  });
+
+  const fy = y + h - 92;
+  const fs = g.createLinearGradient(x + pad, 0, x + w - pad, 0);
+  fs.addColorStop(0, withAlpha(o.color, 0.22));
+  fs.addColorStop(1, withAlpha(o.color, 0.04));
+  g.fillStyle = fs;
+  g.fillRect(x + pad, fy, w - pad * 2, 1);
+
+  text(o.factLabel, x + pad, fy + 24, { size: 11, weight: 700, color: C.faint });
+  text(o.fact, x + pad, fy + 48, {
+    size: 13, weight: 600, color: o.factMuted ? C.faint : C.ink2, maxW: w - pad * 2,
+  });
+
+  text(o.hovered ? o.cta[1] : o.cta[0], x + w - pad, y + h - 20, {
+    size: 12, align: 'right', weight: 700,
+    color: o.hovered ? o.color : C.faint,
+  });
+
   g.restore();
 }
 

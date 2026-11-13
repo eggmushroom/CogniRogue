@@ -1,30 +1,35 @@
 import { g, roundRect, VH, VW, wrapText } from '../gfx/canvas';
-import { C, font, FONT_TITLE, FONT_UI, topicColor, withAlpha } from '../gfx/theme';
-import { action, button, drawCard, drawPowerEmblem, squeeze, text } from '../gfx/ui';
+import { C, font, FONT_TITLE, FONT_UI, SCRIM, topicColor, withAlpha } from '../gfx/theme';
+import { action, button, choiceCard, drawCard, drawPowerEmblem, squeeze, text } from '../gfx/ui';
 import { consumeWheel, hover, onClick } from '../input';
 import { easeOut } from '../gfx/geom';
-import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf, resolveEff } from '../core/model';
+import { EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
 import { clamp, G } from '../core/infra';
 import { countQuestions, sourceBank } from '../core/library';
 import {
-  BASICS, baseIdOf, basicsSummary, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded,
-  isXCost, statOf, upGain, UP_MARK,
+  BASICS, baseIdOf, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded,
+  isXCost, PACK, rulesStatic, statOf, upGain, UP_MARK,
 } from '../core/cards';
-import { applyCardBonus } from '../core/cards/powers';
 import { answer, cancelPanel } from '../core/combat';
 import { liveStatOf } from '../core/combat/link';
+import { basicsSummary, planStrike } from '../core/combat/strike';
 import {
-  ackPower, chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal, startRun,
-  skipReward, takeCard, upgradeCard,
+  ackPower, chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal, restWanted,
+  startRun, skipReward, takeCard, upgradeCard,
 } from '../core/journey';
-import type { PowerDef, Question, QView } from '../core/model';
+import type { Feedback, PowerDef, Question, QView } from '../core/model';
 import { drawReport } from './report';
 import { requestPackFile, pastePack } from './packio';
 
 /* ── 通用外壳 ─────────────────────────────────────────────── */
 
-function dim(a: number) {
-  g.fillStyle = `rgba(3,4,8,${a})`;
+/**
+ * 以前每个面板各写一个 0.72~0.84 的 alpha：战斗里开选卡 / 牌组浮层时，
+ * 底边下方会透出一排「幽灵手牌」，地图上的浮层还会读出左侧 HUD 标题。
+ * 现在统一走 theme 的 SCRIM；dimQuestion() 的渐变是另一套，不动。
+ */
+function dim() {
+  g.fillStyle = `rgba(3,4,8,${SCRIM})`;
   g.fillRect(0, 0, VW, VH);
 }
 
@@ -152,7 +157,9 @@ export function drawOverlay(t: number, quiz: QuizState = IDLE_QUIZ) {
 
 /* ── 答题 ─────────────────────────────────────────────────── */
 
-const QX = 76;
+// 右缘 944：敌人状态牌左端 950、名字从 966 起。留 22px 给名字描边，
+// 别再把首字切掉。整块左移而不是缩 QW —— 题干换行、选项条、底部说明都不动。
+const QX = 52;
 const QW = 892;
 
 /** 调试/冒烟用：答题面板现场，判定有没有换过框。 */
@@ -179,10 +186,21 @@ const IDLE_QUIZ: QuizState = {
 };
 
 /**
- * 答题与判定共用一份几何，判定只改颜色，盒子高度不变。
- * 选项带按四行固定：按实际个数算高度，少选项的题在判定时会突然长高。
+ * 一个 Panel 的三个 state：ask / settle / result 共用锚点 (x, y) 与宽度。
+ *
+ * 以前三者共用**整个盒子**：高度由四行选项带撑着，结果态把选项压成 2×2 后
+ * 下半就空出一百多像素。现在 settle 仍是答题那一块（判定当场不换框，
+ * 这条是 CHANGELOG 里消掉"选项消失 → 等演出 → 反馈弹出"割裂感的初衷），
+ * result 则按自己的内容量高度：题干 + 两行小片 + 结果文字 + 释义 + 按钮。
+ *
+ * y 只由答题态的高度决定，所以两个 state 的上边缘严丝合缝地对齐；
+ * 盒子收起来时变的是底边，不是位置。冒烟断言因此从"几何全等"
+ * 改成"锚点不变、结果态不高于答题态"。
  */
-function quizGeom(question: string, n: number) {
+function quizPanel(
+  question: string, n: number,
+  state: 'ask' | 'settle' | 'result', fb?: Feedback,
+) {
   g.font = font(26, 700, FONT_UI);
   const lines = wrapText(question, QW - 68);
   const lineH = 36;
@@ -191,14 +209,32 @@ function quizGeom(question: string, n: number) {
   const fixedH = headH + lines.length * lineH + 24 + 76;
   const oh = clamp(Math.floor((VH - 96 - fixedH) / 4) - gap, 54, 70);
   const band = 4 * (oh + gap) - gap;
-  const h = headH + lines.length * lineH + 24 + band + 76;
-  const y = Math.max(48, (VH - h) / 2);
+  const askH = headH + lines.length * lineH + 24 + band + 76;
+  const y = Math.max(48, (VH - askH) / 2);
   const qy = y + headH;
   const oy = qy + lines.length * lineH + 24;
   const rowH = Math.min(96, (band - (n - 1) * gap) / n);
   const rowsH = n * rowH + (n - 1) * gap;
+
+  // result 的内容量：小片行数 + 每条结果文字 + 释义预算 + 按钮区。
+  // 先量内容再定高度，而不是拿一个固定盒子去裁内容。
+  const chipRows = Math.ceil(n / 2);
+  const chipRowsH = chipRows * CHIP_H + (chipRows - 1) * CHIP_GAP;
+  const noteCount = fb?.apNote ? Math.min(2, wrapText(fb.apNote, QW - 68).length) : 0;
+  const expCount = fb?.explain ? Math.min(2, wrapText(fb.explain, QW - 116).length) : 0;
+  // 按钮顶固定在 y+h-76。resultH 就是 ry0 到按钮顶的距离，精确等于内容高度
+  // + 8px 呼吸；不多留一寸，否则结果文字与「继续」之间又会长出空白。
+  const resultH = 26
+    + (fb?.linkNote ? 22 : 0)
+    + (fb && (fb.blk > 0 || fb.heal > 0 || fb.draw > 0 || fb.eff === 'pierce') ? 20 : 0)
+    + noteCount * 19 + (noteCount ? 6 : 0)
+    + (expCount ? expCount * 20 + 18 : 0)
+    + 8;
+  const fbH = headH + lines.length * lineH + 24 + chipRowsH + 12 + resultH + 76;
+
   return {
-    x: QX, y, w: QW, h, lines, lineH, headH, gap, oh, band,
+    x: QX, y, w: QW, h: state === 'result' ? fbH : askH,
+    askH, lines, lineH, headH, gap, oh, band,
     qy, oy, rowH, oy0: oy + (band - rowsH) / 2,
   };
 }
@@ -218,7 +254,7 @@ function drawQuestion(idx: number, q: Question, view: QView) {
   const card = defOf(ent);
   // 题面是点开那一刻的快照，选项顺序来自本次打乱；反馈面板读同一份。
   const options = view.options;
-  const gm = quizGeom(q.q, options.length);
+  const gm = quizPanel(q.q, options.length, 'ask');
   const { x, y, w } = gm;
   const col = C.blue;
   quizFrameInfo = { drawn: true, phase: 'ask', geom: { x, y, w, h: gm.h } };
@@ -236,8 +272,8 @@ function drawQuestion(idx: number, q: Question, view: QView) {
 
   const st = liveStatOf(ent);
   const eff = EFFS[card.eff] ?? EFFS.strike;
-  // 卡面和实际结算都吃 applyCardBonus；答题面板少了这一步，压书石/校规在场时会少 1。
-  const out = applyCardBonus(resolveEff(card.eff, st.atk, st.blk, 1, card.mods));
+  // 与卡面、真实结算同一份 EffOut；加成已经算进每段，不再另折算一次。
+  const out = planStrike(ent);
   const sumW = 300;
   const sx = x + w - 84 - sumW;
   text('答对就拿到的效果', sx, y + 50, { size: 12, color: C.dim, align: 'left' });
@@ -298,7 +334,7 @@ function drawQuestion(idx: number, q: Question, view: QView) {
     onClick(x + 34, by, w - 68, gm.rowH, () => answer(i), 'opt');
   });
 
-  text('答对：效果按卡面结算，带借书证时退回 1 点行动力。答错：这一手作废，不扣行动力、牌进弃牌堆。',
+  text('答对：按卡面结算，带借书证再退 1 点 · 答错：这一手作废，不扣行动力，牌进弃牌堆',
     x + 34, y + gm.h - 37, { size: 13, color: C.dim, maxW: w - 68 });
 }
 
@@ -312,7 +348,7 @@ function drawFeedback(t: number, quiz: QuizState) {
   if (p.k !== 'feedback') return;
   const fb = p.fb;
   const col = fb.right ? C.green : C.red;
-  const gm = quizGeom(fb.question, fb.options.length);
+  const gm = quizPanel(fb.question, fb.options.length, quiz.settling ? 'settle' : 'result', fb);
   const { x, y, w, h } = gm;
   const n = fb.options.length;
   quizFrameInfo = {
@@ -425,8 +461,9 @@ function drawFeedback(t: number, quiz: QuizState) {
     g.rect(x + 24, ry0 - 4, w - 48, Math.max(0, ryEnd - ry0 + 8));
     g.clip();
     let ry = ry0;
-    // 释义行数按剩余高度分配，长解析不能把按钮顶掉。
-    const contentEnd = y + h - 132;
+    // 释义行数按剩余高度分配，长解析不能把按钮顶掉。按钮顶就是 y+h-76，
+    // 留 8px 呼吸；几何里的 resultH 与这里用同一个锚点，不再各留一次余量。
+    const contentEnd = y + h - 84;
 
     if (fb.right) {
       const eff = EFFS[fb.eff] ?? EFFS.strike;
@@ -517,7 +554,7 @@ function drawReward(t: number) {
   if (!rewardWasOpen) { rewardEnter = t; rewardWasOpen = true; }
   const age = t - rewardEnter;
 
-  dim(0.78);
+  dim();
   const w = 1220;
   const h = 640;
   const x = (VW - w) / 2;
@@ -563,17 +600,16 @@ function drawReward(t: number) {
     const px = cx0 + i * (cw + gap);
     const hv = hover(px, cy, cw, ch);
     const lift = hv ? -10 : 0;
-    // 预览用 statOf 的数值；直接画 c.atk 会和入牌组后的卡面不一致。
+    // 预览用牌本身的数值；直接画 c.atk 会和入牌组后的卡面不一致。
     const id = p.ledger ? c.id + UP_MARK : c.id;
-    const st = statOf(id);
-    drawCard(px, cy + lift, cw, ch, c, st.atk, st.blk, {
+    drawCard(px, cy + lift, cw, ch, c, planStrike(id, { noBoost: true }), {
       glow: hv, up: p.ledger, rule: c.link?.note,
     });
     onClick(px, cy, cw, ch, () => takeCard(i), 'rewardcard');
   });
 
   action(x + w / 2 - 340, y + h - 74, 300, 54, '跳过，不要卡', () => skipReward());
-  text('牌组越厚，关键卡越难抽到。', x + w / 2 + 40, y + h - 46, { size: 13, color: C.faint });
+  text('牌组会变厚。', x + w / 2 + 40, y + h - 46, { size: 13, color: C.faint });
 }
 
 /* ── 增益掉落 ─────────────────────────────────────────────── */
@@ -582,11 +618,11 @@ function drawReward(t: number) {
 /** 增益多久兑现一次，用玩家读得懂的话；作用域内部名不对玩家露出。 */
 function scopeLine(scope: PowerDef['scope']): string {
   switch (scope) {
-    case 'always': return '整局常驻：它不进牌组，每一次结算都算上它。';
+    case 'always': return '整局常驻，每次结算都算。';
     case 'fight': return '整局常驻，但每场战斗只兑现一次。';
     case 'stage': return '整局常驻，但每一幕只兑现一次。';
     case 'run': return '整局常驻，整局只兑现一次，用完就没了。';
-    default: return '拾取即结算：效果已经落下了，之后不再挂任何时机。';
+    default: return '拾取即结算，之后不再触发。';
   }
 }
 
@@ -595,12 +631,15 @@ function drawPowerDrop() {
   if (p.k !== 'powerdrop') return;
   const pw = POWER_BY_ID[p.id];
   if (!pw) return;
-  dim(0.82);
+  dim();
 
   const cw = 252;
   const ch = 322;
   const w = 800;
-  const h = ch + 268;
+  // 面板高度跟着说明行数走：`desc` 是可选的（只说 card 装不下的边界），
+  // 写死 590 会让没有说明的增益留出半屏空白，而三行的又会被按钮压住最后一行。
+  const lines = pw.desc ? wrapText(pw.desc, w - 130).slice(0, 3) : [];
+  const h = lines.length ? 580 + (lines.length - 1) * 22 : 546;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
   // 没有"不要"：增益不占牌位、不稀释牌组，拒绝没有好处。
@@ -614,18 +653,17 @@ function drawPowerDrop() {
   onClick(cx, cy, cw, ch, () => ackPower(), 'powerdrop');
 
   g.font = font(14, 400, FONT_UI);
-  const lines = wrapText(pw.desc, w - 100).slice(0, 3);
   lines.forEach((ln, i) => {
-    text(ln, x + 50, cy + ch + 46 + i * 22, { size: 14, color: C.ink2 });
+    text(ln, x + 50, cy + ch + 34 + i * 22, { size: 14, color: C.ink2 });
   });
 
-  action(x + w / 2 - 110, y + h - 76, 220, 50, '知道了', () => ackPower());
+  action(x + w / 2 - 110, y + h - 80, 220, 50, '知道了', () => ackPower());
 }
 
 /* ── 复习点 ───────────────────────────────────────────────── */
 
 function drawRest(t: number) {
-  dim(0.72);
+  dim();
   const w = 1000;
   const h = 412;
   const x = (VW - w) / 2;
@@ -635,9 +673,14 @@ function drawRest(t: number) {
   heading('复习', x + 44, y + 66, '这一层没有敌人。休息，或者动一动牌组。');
 
   const opts: Array<{ t: string; s: string; fn: () => void; col: string }> = [
-    { t: '休息', s: `回复 ${Math.round(G.maxHp * BAL.restPct)} 点生命`, col: C.green, fn: restHeal },
-    { t: '精炼一张卡', s: '挑中的那一张：攻/挡底数 +3（同名的其余几张不变）', col: C.gold, fn: () => openCardPick('up', { k: 'rest' }) },
-    { t: '遗忘', s: '永久移除一张卡（牌组只剩 4 张时不能再删）', col: C.purple, fn: () => openCardPick('rm', { k: 'rest' }) },
+    // 回复量走 restWanted()：它和 restHeal() 是同一个算法，修书胶、地图册都算进去了。
+    // 近似满血时会被当前生命截断，但那是结算时的事，这里报的是「这一下给多少」。
+    { t: '休息', s: `回复 ${restWanted()} 点生命`, col: C.green, fn: restHeal },
+    // 下面两条说明都压在两行内：wrapText 按 240px 折，长句会把最后一个
+    // 括号挤成孤零零一行（以前「遗忘」末尾只剩「删）」两个字）。
+    // 精炼加成同样不是常数：抛光布会抬高 upGain()。
+    { t: '精炼一张卡', s: `攻 / 挡底数 +${upGain()}，同名的其余几张不变`, col: C.gold, fn: () => openCardPick('up', { k: 'rest' }) },
+    { t: '遗忘', s: '永久移除一张卡；只剩 4 张时不可删', col: C.purple, fn: () => openCardPick('rm', { k: 'rest' }) },
   ];
 
   const bw = 288;
@@ -677,7 +720,7 @@ function drawRest(t: number) {
  * 取消不付 `G.pendingCost`，选了才付。
  */
 function drawCardPick(mode: 'up' | 'rm') {
-  dim(0.8);
+  dim();
   const w = 1280;
   const h = 740;
   const x = (VW - w) / 2;
@@ -687,11 +730,13 @@ function drawCardPick(mode: 'up' | 'rm') {
   const pending = G.pendingCost;
   heading(mode === 'up' ? '精炼哪一张' : '遗忘哪一张', x + 44, y + 66,
     mode === 'up'
-      ? '卡面数值会永久改变，只强化挑中的那一张。基础牌也能精炼，但只强化你挑中的那一张。'
+      ? '卡面数值会永久改变，只强化挑中的那一张；基础牌也能精炼。'
       : '移除后这张卡本局不会再出现。牌组会更薄，也更好抽；基础牌也能丢。');
   if (pending > 0) {
-    text(`选完要付 ${pending} 点生命；取消则不付。`, x + 44, y + 106, {
-      size: 13, color: C.red, weight: 700,
+    // heading 的副标题基线在 y+100，代价提示要和它同一行、靠右对齐。
+    // 早先放在 (x+44, y+106)，两行只差 6px，带代价的事件里会直接叠成一团。
+    text(`选完要付 ${pending} 点生命；取消则不付。`, x + w - 44, y + 100, {
+      size: 13, color: C.red, weight: 700, align: 'right',
     });
   }
 
@@ -723,11 +768,11 @@ function drawCardPick(mode: 'up' | 'rm') {
     const hv = hover(px, py, cw, ch);
     const st = statOf(o.id);
     const up = mode === 'up';
-    // 卡面画选后的数值，必须和 statOf 同一套折算，否则选完才发现涨得比卡面多。
+    // 卡面画选后的数值，前后两次预览都走 planStrike，选完不会和真结算对不上。
     const gain = upGain();
     const after = { atk: st.atk + (up ? gain : 0), blk: st.blk + (up ? gain : 0) };
     const faceOf = (atk: number, blk: number) => {
-      const out = applyCardBonus(resolveEff(o.d.eff, atk, blk, 1, o.d.mods));
+      const out = planStrike(o.id, { atk, blk, noBoost: true });
       return { dmg: out.hits.reduce((n, v) => n + v, 0), blk: out.blk };
     };
     const b = faceOf(st.atk, st.blk);
@@ -739,7 +784,7 @@ function drawCardPick(mode: 'up' | 'rm') {
         b.blk !== a.blk ? `挡 ${b.blk}→${a.blk}` : '',
       ].filter(Boolean).join('  ')
       : undefined;
-    drawCard(px, py, cw, ch, o.d, after.atk, after.blk, {
+    drawCard(px, py, cw, ch, o.d, planStrike(o.id, { atk: after.atk, blk: after.blk, noBoost: true }), {
       // 只给真的已精炼的牌画金边和 + 号；全部画上会读成四张都强化过。
       up: isUpgraded(o.id), glow: hv, note, rule: o.d.link?.note,
     });
@@ -748,7 +793,7 @@ function drawCardPick(mode: 'up' | 'rm') {
     const total = G.deck.filter((v) => baseIdOf(v) === base).length;
     if (total > 1) {
       text(`第 ${seen[base]}/${total} 张`, px + cw - 12, py + ch - 10, {
-        size: 12, align: 'right', color: C.faint, weight: 600,
+        size: 12, align: 'right', color: C.dim, weight: 600,
       });
     }
     // 热区只登记当前露在列表里的那一段；按整卡登记会点到被裁掉的牌。
@@ -784,7 +829,7 @@ function drawEvent() {
   const h = 130 + bodyH + 26 + optH + 24;
   const y = Math.max(80, (VH - h) / 2);
 
-  dim(0.76);
+  dim();
   box(x, y, w, h, withAlpha(C.purple, 0.45), null);
 
   heading(p.ev.title, x + 44, y + 66, `事件 · 第 ${(G.node?.r ?? 0) + 1} 层`);
@@ -808,7 +853,7 @@ function drawEvent() {
     g.lineWidth = hv ? 1.8 : 1.2;
     g.stroke();
     text(o.t, x + 70, by + 26, { size: 19, weight: 600, color: hv ? C.ink : C.ink2 });
-    text(o.sub, x + 70, by + 52, { size: 13, color: C.dim });
+    text(o.sub(), x + 70, by + 52, { size: 13, color: C.dim });
     onClick(x + 44, by, w - 88, 74, () => chooseEventOption(i), 'eventopt');
   });
 }
@@ -816,7 +861,7 @@ function drawEvent() {
 /* ── 牌组 / 牌堆 ──────────────────────────────────────────── */
 
 function drawGallery(title: string, list: string[]) {
-  dim(0.8);
+  dim();
   const w = 1280;
   const h = 740;
   const x = (VW - w) / 2;
@@ -846,8 +891,7 @@ function drawGallery(title: string, list: string[]) {
     const px = gx0 - x - 30 + area.x + col * (cw + gapx);
     const py = area.y + row * (ch + gapy);
     const d = defOf(id);
-    const st = statOf(id);
-    drawCard(px, py, cw, ch, d, st.atk, st.blk, { up: isUpgraded(id), rule: d.link?.note });
+    drawCard(px, py, cw, ch, d, planStrike(id, { noBoost: true }), { up: isUpgraded(id), rule: d.link?.note });
   });
   area.restore();
   overflowAffordance(area, x + 30, w - 60);
@@ -864,88 +908,55 @@ function drawGallery(title: string, list: string[]) {
 /**
  * 开局三选一；模式只决定初始增益数量，不改价码和卡面。
  *
- * 刻意不读 MODES 的 color / icon：首页、复习点、事件、战后选卡都是暗底 +
- * 单一金边的目录卡片，三块各染绿/金/红会读成另一套 UI。难度差别交给
- * 增益个数和它的名字，彩色只留给 hover 与面板边线。
+ * 三张卡读的是 MODES 自带的身色与徽记：模式是"身份"，不是"难度条"。
+ * 之前刻意把三张都压成同色金边，结果它们既不像卡、也不像徽记，只像
+ * 三个并排的网页按钮 —— 和战后选卡、增益掉落那一套语言断开。
+ * 视觉细节全部交给 choiceCard()，这里只负责布局与命中。
  */
 function drawBoon() {
-  dim(0.84);
-  const w = 1040;
-  const h = 486;
+  dim();
+  const w = 1060;
+  const h = 490;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
   box(x, y, w, h, withAlpha(C.gold, 0.35));
-  heading('这次从哪个模式开始', x + 44, y + 64,
-    '只决定开局带几个增益；答错价码、卡面、题库三档完全一样。');
+  heading('这次从哪个模式开始', x + 44, y + 62,
+    '差别只在开局带哪几个增益。');
 
   const pad = 44;
-  const gap = 24;
+  const gap = 26;
   const cw = (w - pad * 2 - gap * 2) / 3;
-  const ch = 272;
-  const cy = y + 140;
+  const ch = 270;
+  const cy = y + 144;
   MODES.forEach((m, i) => {
     const cx = x + pad + i * (cw + gap);
-    const mid = cx + cw / 2;
-    const hv = hover(cx, cy, cw, ch);
-
-    roundRect(cx, cy, cw, ch, 14);
-    g.fillStyle = hv ? withAlpha(C.gold, 0.1) : 'rgba(255,255,255,.035)';
-    g.fill();
-    g.strokeStyle = withAlpha(C.gold, hv ? 0.85 : 0.28);
-    g.lineWidth = hv ? 2 : 1.3;
-    g.stroke();
-
-    // 编号 + 渐隐金线是首页标题下那条分割线的缩小版，三张卡读成同一套目录卡片。
-    text(`0${i + 1}`, mid, cy + 30, {
-      size: 12, align: 'center', color: C.faint, weight: 700,
-    });
-    const lg = g.createLinearGradient(cx + 36, 0, cx + cw - 36, 0);
-    lg.addColorStop(0, withAlpha(C.gold, 0));
-    lg.addColorStop(0.5, withAlpha(C.gold, hv ? 0.8 : 0.45));
-    lg.addColorStop(1, withAlpha(C.gold, 0));
-    g.fillStyle = lg;
-    g.fillRect(cx + 36, cy + 46, cw - 72, 1.4);
-
-    text(m.name, mid, cy + 84, {
-      size: 26, weight: 700, align: 'center', family: FONT_TITLE,
-      color: hv ? C.gold : C.ink,
-    });
-
-    g.font = font(13, 400, FONT_UI);
-    g.fillStyle = C.ink2;
-    g.textAlign = 'center';
-    wrapText(m.desc, cw - 48).slice(0, 3)
-      .forEach((ln, j) => g.fillText(ln, mid, cy + 118 + j * 20));
-    g.textAlign = 'left';
-
-    text(`初始增益 · ${m.powers.length}`, mid, cy + 196, {
-      size: 12, align: 'center', color: C.faint, weight: 700,
-    });
-    text(
-      m.powers.length
+    choiceCard(cx, cy, cw, ch, {
+      color: m.color,
+      tag: `0${i + 1}`,
+      mark: m.icon,
+      title: m.name,
+      desc: m.desc,
+      hovered: hover(cx, cy, cw, ch),
+      factLabel: `初始增益 · ${m.powers.length}`,
+      fact: m.powers.length
         ? m.powers.map((id) => POWER_BY_ID[id]?.name ?? id).join(' · ')
         : '无 · 全靠路上捡',
-      mid, cy + 218, {
-        size: 13, align: 'center', weight: 600,
-        color: m.powers.length ? C.ink2 : C.faint,
-      },
-    );
-
-    text(hv ? '从这里开始 →' : '点击选择', mid, cy + ch - 24, {
-      size: 13, align: 'center', color: hv ? C.gold : C.faint, weight: 700,
+      factMuted: !m.powers.length,
+      descLines: 2,
+      cta: ['点击选择', '从这里开始 →'],
     });
     // 这个 label 是冒烟测试点开局的入口：坐标可以改，名字不能改。
     onClick(cx, cy, cw, ch, () => startRun(m.id), `mode:${m.id}`);
   });
 
-  text('开局选一次，整局不变；想换就重开一局。Esc 返回。',
-    x + 44, y + h - 30, { size: 12, color: C.faint });
+  text('选定后整局不变，想换就重开一局。Esc 返回。',
+    x + 44, y + h - 26, { size: 12, color: C.faint });
 }
 
 /* ── 说明 ─────────────────────────────────────────────────── */
 
 function drawHelp() {
-  dim(0.8);
+  dim();
   const w = 1120;
   const x = (VW - w) / 2;
   const colW = (w - 96 - 36) / 2;
@@ -954,15 +965,15 @@ function drawHelp() {
   const blocks: Array<[string, string[]]> = [
     [`初始牌组：10 张（8 基础 + 2 随机知识）`, [
       `开局 ${BASICS.length} 张基础牌（${basicsSummary()}），不答题、随时可打，各要 1 点行动力；再加 2 张随机知识卡。`,
-      '基础牌无法从游戏中获得，但可以精炼或遗忘。它们的数值低于知识卡，只保证手牌不会完全卡死。',
+      '基础牌无法从游戏中获得，只能精炼或遗忘。',
     ]],
     ['三类牌：攻击 / 防御 / 技能', [
       '攻击（猛击 / 洞察 / 串联 / 内化）：把行动力换成伤害，内化按实际伤害回血。',
       '防御（巩固）：伤害减半、格挡翻倍。',
       '技能（专注）：伤害偏低，抽一张牌。',
-      '增益不是牌：精英和 Boss 掉落，拾取即生效，不进牌组、不花行动力。',
+      '另有一类增益：精英和 Boss 掉落，拾取即生效，不进牌组、不花行动力。',
     ]],
-    ['牌面只讲机械，不讲知识', [
+    ['卡面怎么读', [
       '卡面上只有费用、类别、牌名、效果和数值。左上角是费用：0–3 点，或 X（花光行动力，花几点结算几次）；付不起时变红。',
       '费用右边的字母是等级：C 不用答题、B 答对 1 次、A 两次、S 三次，攒够这一场就免答。',
       '右下角纹章是效果原型，顶部色条是攻击 / 防御 / 技能三类。',
@@ -970,9 +981,9 @@ function drawHelp() {
     ]],
     ['答对算数，答错这一手作废', [
       '答对：卡面效果按原值结算，这张牌攒一次免答；带借书证时退回 1 点行动力。',
-      '答错：这一手不结算，也不扣行动力；本场少一道新题，牌进弃牌堆。',
+      '答错：这一手不结算，也不扣行动力；牌进弃牌堆。题目在点开牌那一刻就消耗了，答对答错都一样。',
       '攒满等级（C 0 / B 1 / A 2 / S 3）之后，这一场剩下的时间它直接打、不再出题。计数每场清零。',
-      '默认不补格挡、不补抽；橡皮、草稿纸、装订线各改其中一条。',
+      '答错不补格挡、不补抽。橡皮、草稿纸、装订线各改其中一条。',
     ]],
     ['每一场都有自己的题池', [
       '开战时按牌组算题量：牌组里贵的牌越多，这一场新题越多。顶栏「题 N」是本场还没问过的新题。',
@@ -983,32 +994,34 @@ function drawHelp() {
       '学习：借书证 + 课表，2 个初始增益。',
       '复习：只带借书证，1 个初始增益。',
       '测试：没有初始增益；答对不退行动力，也没有额外防御。',
-      '模式只影响开局带哪几个增益，不改答错价码、卡面、题库和已攒下的记忆。',
+      '模式只决定开局带哪几个增益。',
     ]],
     ['行动力是唯一的节奏', [
-      `每回合 ${BAL.baseAp} 点行动力、抽 ${BAL.drawPerTurn} 张牌；每张牌标 0–3 点，X 费吃光剩下的全部。`,
+      // 读 rulesStatic()：BAL 是不带增益的声明值，写死在帮助页会和实际抽牌数差开。
+      // 首回合的沙漏 / 折角是「此刻」才成立的修正，由下面两条增益说明负责，不在这里算。
+      `每回合 ${rulesStatic().apMax} 点行动力、抽 ${rulesStatic().draw} 张牌；每张牌标 0–3 点，X 费吃光剩下的全部。`,
       '带借书证时答对退 1 点：1 费牌等于免费，2 费净花 1 点、3 费净花 2 点。',
-      '答错不扣行动力；基础牌不答题，所以一分不退。',
+      '答错不扣行动力。基础牌不答题，也不退行动力。',
       '双面镜让每回合第一次答对抽 1 张，荧光笔让每场第一次答对多退 1 点。',
       '键盘：1–4 选选项，空格 / 回车推进面板，空场时空格结束回合。',
     ]],
-    ['增益是掉落，不是牌', [
+    ['增益不进牌组', [
       '精英和幕 Boss 战后各掉一个增益，拾取即生效、整局常驻；不进牌组、不占手牌、不花行动力。',
-      '常驻类改规则（沙漏、索引卡、长明灯……）；每场一次类挂在第一次答对 / 答错或第一次出牌上。',
+      '常驻类一直改着规则（沙漏、索引卡、长明灯……）；每场一次类只在第一次答对、第一次答错或第一次出牌时响。',
       '池子里每种只有一个，拿过就不再掉，也不叠层。',
     ]],
     ['一百层，五幕', [
-      '整座塔 100 层，每 20 层是一幕，幕末一只 Boss。打赢会换一张新地图、血回满、生命上限 +14。',
+      `整座塔 100 层，每 20 层是一幕，幕末一只 Boss。打赢会换一张新地图、血回满、生命上限 +${rulesStatic().stageMaxHp}。`,
       '一幕一套物种：目录厅教你出牌、虫蛀区搅你的牌堆、报刊区靠反伤、修复室叠甲、禁书区挑你错得最多的主题。',
       '层号越高，怪越厚、打得越疼。',
       '地图一屏显示 8 层；滚轮或按住拖动可以看到整张 20 层，先看清上面是不是精英。',
       '节点类型全部可见：战斗、精英、复习、事件、Boss。',
-      '复习点三选一：回复 62% 生命（修书胶再加）、精炼一张卡（攻 / 挡底数 +3）、或永久移除一张。',
+      `复习点三选一：回复 ${Math.round(rulesStatic().restPct * 100)}% 生命、精炼一张卡（攻 / 挡底数 +${upGain()}）、或永久移除一张。`,
       '精炼按张算：牌组里每份副本各占一格，只强化挑中的那一张，同名的另一张不动；精炼过的那张带一个 + 号。',
-      '牌组越厚，关键卡越难抽到，所以战后拿不拿那张奖励卡是真正的构筑决定。',
+      '牌组会变厚。',
     ]],
     ['它会记住你', [
-      '复习状态存在本地；起手固定 10 张（4 斩击 + 4 格挡 + 2 张随机低费知识卡，A / S 级要自己挣），模式只改开局增益数量。',
+      '复习状态存在本地；起手固定 10 张（4 斩击 + 4 格挡 + 2 张随机低费知识卡，A / S 级要自己挣）。',
       '结算页给出本局答题数、正确率和答错次数。',
     ]],
   ];
@@ -1018,34 +1031,93 @@ function drawHelp() {
   const measured = blocks.map(([t, lines]) => ({
     t, lines: lines.flatMap((ln) => wrapText(ln, colW - 8)),
   }));
-  const halves = [measured.slice(0, 4), measured.slice(4)];
-  const colH = halves.map((half) => half.reduce(
-    (n, b) => n + 26 + b.lines.length * 20 + 10, 0,
-  ));
-  const contentH = Math.max(...colH);
-  const h = Math.min(VH - 48, 128 + contentH + 44);
+
+  /**
+   * 布局按内容量算，不写死块数 / 行距。
+   *
+   * 原来两件事都是魔数：切点写 `slice(0, 4)`，行距写 20。结果加一段说明就可能
+   * 把右栏顶出面板，而加内容的人看不出来。这里改成：
+   *   1. 切点取「两栏高度差最小」的保序位置（块的顺序有意义，不能重排）；
+   *   2. 仍放不下时逐步收紧行距，直到真正放下；到下限还放不下才交给滚动。
+   * 收紧只动行距和标题间距，不动字号 —— 折行结果不变，测量的行数一直有效。
+   *
+   * 下限是分开的：正文 14px 配 16px 行距仍清楚，但标题 18px 需要 22px，
+   * 再低就会压到下一行。所以不能用一个统一比例直接乘。
+   */
+  const PAD_TOP = 20;
+  const GAP_HEAD = 10;          // 块之间
+  const NAT_LH = 20;            // 常规行距
+  const NAT_TH = 26;            // 常规标题行高
+  const MIN_LH = 16;
+  const MIN_TH = 22;
+  const CHROME_H = 128 + 46;    // 标题区 + 底部快捷键
+  const AVAIL_H = VH - 48 - CHROME_H;
+
+  const heightsOf = (lh: number, th: number) =>
+    measured.map((b) => th + b.lines.length * lh + GAP_HEAD);
+
+  /** 保序最优切点：找使两栏高度差最小的位置。 */
+  const splitAt = (hs: number[]) => {
+    const total = hs.reduce((a, b) => a + b, 0);
+    let at = 1;
+    let best = Infinity;
+    let acc = 0;
+    for (let i = 1; i < hs.length; i++) {
+      acc += hs[i - 1];
+      const diff = Math.abs(acc - (total - acc));
+      if (diff < best) { best = diff; at = i; }
+    }
+    return at;
+  };
+  const sum = (ns: number[]) => ns.reduce((a, b) => a + b, 0);
+  const maxColOf = (hs: number[], at: number) => Math.max(sum(hs.slice(0, at)), sum(hs.slice(at)));
+
+  let LH = NAT_LH;
+  let TH = NAT_TH;
+  let heights = heightsOf(LH, TH);
+  let cut = splitAt(heights);
+  let maxCol = maxColOf(heights, cut);
+  // 逐步收紧而不是一次算出比例：行距要取整、切点还会随高度改变（实测一次估算
+  // 会差 12px，结果「压紧了但没放下」—— 最后一行仍被渐隐压暗，比直接滚动更糟）。
+  for (let k = 0.99; PAD_TOP + maxCol > AVAIL_H && k > 0; k -= 0.01) {
+    LH = Math.max(MIN_LH, Math.round(NAT_LH * k));
+    TH = Math.max(MIN_TH, Math.round(NAT_TH * k));
+    heights = heightsOf(LH, TH);
+    cut = splitAt(heights);
+    maxCol = maxColOf(heights, cut);
+    if (LH === MIN_LH && TH === MIN_TH) break;   // 到底了，剩下交给滚动
+  }
+
+  const halves = [measured.slice(0, cut), measured.slice(cut)];
+  // 正文从 bodyTop + PAD_TOP 开始（fillText 的 y 是基线，标题要往下让），这段留白
+  // 也是内容的一部分。不把它算进 contentH，面板就永远比内容矮一行 —— 底部那行被
+  // 干净地切掉，看不出是「画不下」还是「就这么多」。
+  const contentH = PAD_TOP + maxCol;
+  const h = Math.min(VH - 48, CHROME_H + contentH);
   const y = Math.max(24, (VH - h) / 2);
   box(x, y, w, h, withAlpha(C.gold, 0.35));
-  heading('怎么玩', x + 48, y + 70, '一句话：出牌要答题（C 级除外），答对了卡才生效。');
+  heading('怎么玩', x + 48, y + 70, '出牌要答题（C 级除外），答对了卡才生效。');
   // 正文进滚动区；直接照画会把最后一块切掉半行，比看不到更糟。
   const bodyTop = y + 128;
   const bodyH = h - 128 - 46;
-  // fillText 的 y 是基线，标题要往下让 20px，否则被裁剪切掉上半截。
-  const area = scrollArea(x + 24, bodyTop, w - 48, bodyH, contentH + 26, 'help');
+  // 这里传 contentH 而不是 contentH + 常数：多给的那一点会让 max > 0，从而点亮
+  // 底部 68px 渐隐 —— 内容其实刚好放得下，却被自己的「还有更多」提示盖住了最后
+  // 一块。只有真的超出（h 撞到 VH 上限）时 max 才为正，渐隐才该出现。
+  const area = scrollArea(x + 24, bodyTop, w - 48, bodyH, contentH, 'help');
 
   halves.forEach((half, ci) => {
-    let by = area.y + 20;
+    let by = area.y + PAD_TOP;
     for (const b of half) {
       text(b.t, cols[ci], by, { size: 18, weight: 700, color: C.gold });
-      by += 26;
+      by += TH;
       g.font = font(14, 400, FONT_UI);
       g.fillStyle = C.ink2;
       g.textAlign = 'left';
       for (const seg of b.lines) {
         g.fillText(seg, cols[ci] + 4, by);
-        by += 20;
+        by += LH;
       }
-      by += 10;
+      by += GAP_HEAD;
     }
   });
 
@@ -1060,7 +1132,7 @@ function drawHelp() {
 function drawPack() {
   const p = G.panel;
   if (p.k !== 'pack') return;
-  dim(0.8);
+  dim();
   const w = 900;
   const h = 520;
   const x = (VW - w) / 2;
@@ -1068,7 +1140,7 @@ function drawPack() {
   box(x, y, w, h, withAlpha(C.cyan, 0.4));
 
   heading('载入自己的题库', x + 44, y + 66,
-    '主题不限，只校验格式。只换题目，卡池恒定；md / JSON 都行，样例见 packs/algorithms.md。');
+    '主题不限。只换题目，卡池不变；md / JSON 都行，样例见 packs/algorithms.md。');
 
   const lines = [
     '## 主题                → 可选，名字随便写，不写就进「未分类」',
@@ -1076,8 +1148,9 @@ function drawPack() {
     'A) 选项 / B) 选项 …    → 2–4 个',
     '= B                   → 正确答案字母（不能越过选项数）',
     '+ 解析（可选，答完会显示）',
-    '点开一张牌 → 从当前这一章的 BANK 抽题；章节没题就抽全部题目',
-    '卡面（101 张 / 攻挡 / 效果）内置，md 改不了',
+    '! 固定顺序            → 有「以上都对」这类选项时必写',
+    '点开一张牌 → 从当前这一章的题目里抽；这一章没题就抽全部',
+    `卡面（${PACK.cards.length} 张 / 攻挡 / 效果）内置，md 换不掉`,
   ];
   roundRect(x + 44, y + 120, w - 88, 216, 10);
   g.fillStyle = 'rgba(255,255,255,.035)';
@@ -1097,7 +1170,7 @@ function drawPack() {
     const src = sourceBank();
     text(`当前题库：${src.name} · ${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个题池`,
       x + 44, y + 430, { size: 13, color: C.dim });
-    text('只校验格式：题干、2–4 个选项、= 答案字母；写错会列出第几行。复习进度按内置卡片 id 保存，不会丢。',
+    text('校验题干、2–4 个选项、= 答案字母，以及「以上都对」这类选项有没有写「! 固定顺序」；写错会指出位置。复习进度按内置卡片 id 保存。',
       x + 44, y + 454, { size: 13, color: C.faint });
   }
 }

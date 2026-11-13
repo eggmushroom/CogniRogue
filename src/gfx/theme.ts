@@ -11,12 +11,13 @@ export const C = {
   ink2: '#c1cadc',
   // 暗背景上的次级文字原来压得太灰，长句读起来费眼；整体抬一档，
   // 但仍和 ink / ink2 拉开层级，不乱主次。
-  dim: '#939fb6',
+  dim: '#a3aec4',
   // 再抬一档：这一层承担图例、卡牌底注、脚注、面板提示，全都是要读的字，
   // 不是装饰。原来的 #59647c 在面板色上只有 3.1:1；#717e98 约 4.4:1，
-  // 仍卡在 AA 的 4.5:1 之下。再抬一档过线，和 dim 的层级差依然在。
+  // 仍卡在 AA 的 4.5:1 之下。#7e8ca6 刚过线，但叠在书架纹理和 11~13px
+  // 小字上仍读得吃力，所以 dim / faint 同幅度再抬一档，保持两者层级差不变。
   // 这是全局对比度，不是调字号：局部放字会把固定版式撑乱。
-  faint: '#7e8ca6',
+  faint: '#8e9cb5',
 
   gold: '#e8b64c',
   goldDim: '#8a6b2c',
@@ -43,6 +44,14 @@ export const C = {
   hpFoe: '#ab5049',
   hpBoss: '#9b7088',
 } as const;
+
+/**
+ * 全屏遮罩的**氛围**不透明度：浮层（scenes/overlay.ts）和结算页（scenes/report.ts）
+ * 共用。它只负责让书架纹理退到面板后面，不负责挡字——`scenes/layers.ts`
+ * 在只留背景的面板下根本不画世界层，所以底层没有文字可透出来。
+ * 答题 / 判定面板走 `dimQuestion()` 的渐变，刻意让右侧战场可见。
+ */
+export const SCRIM = 0.34;
 
 export const FONT_UI =
   '"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif';

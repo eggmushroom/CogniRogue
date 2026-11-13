@@ -7,17 +7,16 @@ import * as FX from './gfx/fx';
 import { bindInput, beginInput, clearWheel, endInput, hover, keyHandler, setInputLock } from './input';
 import { C } from './gfx/theme';
 import { G, onFx } from './core/infra';
+import { after } from './core/infra/schedule';
 import { loadQuestionBank } from './core/library';
 import { answer, cancelPanel, endTurn } from './core/combat';
 import { ackPower, dismissFeedback } from './core/journey';
 import {
-  drawBattle, DISCARD_TO, ENEMY, ENEMY_GROUND, HERO, heroHand,
+  DISCARD_TO, ENEMY, ENEMY_GROUND, HERO, heroHand,
   resetBattleView, syncBattle,
 } from './scenes/battle';
-import { drawMap } from './scenes/map';
 import { drawOverlay, quizFrame } from './scenes/overlay';
-import { drawTitle } from './scenes/title';
-import { drawAtlas } from './scenes/atlas';
+import { drawSceneBackdrop, drawSceneWorld, worldLayer } from './scenes/layers';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game');
 if (!canvas) throw new Error('#game 不存在');
@@ -78,6 +77,12 @@ let panelWasOpen = false;
 /** 敌人动作演出剩余时间，用来锁输入：core 的 endTurn 是同步的。 */
 let enemyHold = 0;
 
+/** 组合根交给世界层的两个入口；场景自己不认识浮层状态。 */
+const SCENE_HOOKS = {
+  openHelp: () => { G.panel = { k: 'help' }; },
+  openPack: () => { G.panel = { k: 'pack', msg: '', ok: true }; },
+};
+
 onFx((e) => {
   const enemy = G.enemy;
   switch (e.t) {
@@ -115,9 +120,19 @@ onFx((e) => {
       FX.shake(8);
       FX.floatText(HERO.x, HERO.y - 40, `-${e.n}`, C.red, 52, { vy: -80 });
       break;
+    case 'enemyHit': {
+      // 一段一事件：扣血与光刃在 core 的同一个调度点发生，这里只负责画这一段。
+      const dur = FX.enemyStrike({
+        n: e.n, absorbed: e.absorbed, seq: e.seq, times: e.times, totalAbsorbed: e.totalAbsorbed,
+        from: { x: ENEMY.x, y: ENEMY.y },
+        to: { x: HERO.x, y: HERO.y },
+      });
+      enemyHold = Math.max(enemyHold, dur);
+      break;
+    }
     case 'enemyAct': {
       const dur = FX.enemyAct({
-        k: e.k, n: e.n, times: e.times, taken: e.taken, absorbed: e.absorbed,
+        k: e.k, n: e.n,
         from: { x: ENEMY.x, y: ENEMY.y },
         to: { x: HERO.x, y: HERO.y },
         discard: DISCARD_TO,
@@ -227,22 +242,19 @@ function frame(now: number) {
   setInputLock(panelHold > 0 || enemyHold > 0);
 
   const sh = FX.shakeOffset();
+  const layer = worldLayer(G.panel.k);
   g.save();
   g.translate(sh.x, sh.y);
 
-  if (G.screen === 'atlas') {
-    drawAtlas(t);
-  } else if (G.screen === 'title') {
-    drawTitle(t, () => { G.panel = { k: 'help' }; }, () => { G.panel = { k: 'pack', msg: '', ok: true }; });
-  } else if (G.screen === 'map') {
-    drawMap(t, dt);
-  } else {
-    syncBattle();
-    drawBattle(t, dt);
+  // 背景层永远画；世界层按浮层声明的可见性决定画不画。答题 / 判定要留着
+  // 战场和光刃，其余浮层只留书架 —— 于是遮罩不必再靠高 alpha 去挡底层文字。
+  drawSceneBackdrop(G.screen, t);
+  if (layer === 'full') {
+    if (G.screen !== 'atlas' && G.screen !== 'title' && G.screen !== 'map') syncBattle();
+    drawSceneWorld(G.screen, t, dt, SCENE_HOOKS);
+    // 特效和战场在同一层：光刃端点用 HERO/ENEMY 坐标，场景震动时它得跟着走。
+    FX.draw();
   }
-
-  // 特效和战场在同一层：光刃端点用 HERO/ENEMY 坐标，场景震动时它得跟着走。
-  FX.draw();
   g.restore();
 
   FX.drawFlash();
@@ -253,8 +265,8 @@ function frame(now: number) {
       autoProgress: 1 - autoIn / (AUTO_MS / 1000), autoPaused, autoCancelled,
     });
   }
-  // 面板盖住战场时，残留的飘字和粒子按 4 倍速散掉，比直接清空柔和
-  FX.update(dt * (panelShown() ? 4 : 1));
+  // 只留背景时不画残留特效，但按 4 倍速散掉：关掉面板时画面已经是干净的。
+  FX.update(dt * (layer === 'backdrop' || panelShown() ? 4 : 1));
 
   // 自动推进只在结果展开、指针不在面板上、玩家没按过键时走
   if (G.panel.k === 'feedback' && !quizSettling && quizReveal > 0.3) {
@@ -298,7 +310,8 @@ async function boot() {
     const el = document.querySelector('#boot');
     if (el) {
       el.classList.add('gone');
-      setTimeout(() => el.remove(), 500);
+      // 连 DOM 清理也走项目唯一的调度器：表现层不持有第二套时钟。
+      after(500, () => el.remove());
     }
     requestAnimationFrame((n) => { last = n; frame(n); });
   });

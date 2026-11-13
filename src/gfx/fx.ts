@@ -349,11 +349,9 @@ export const enemyActCount = () => debris.length + (poseT < POSE_DUR ? 1 : 0)
   + strikes.filter((s) => s.target === 'hero').length;
 
 export interface EnemyActSpec {
-  k: EnemyActKind;
+  /** 攻击段由 `enemyStrike` 一段一事件地演，不再在这里成组编排。 */
+  k: Exclude<EnemyActKind, 'atk'>;
   n: number;
-  times?: number;
-  taken?: number;
-  absorbed?: number;
   /** 敌人 / 玩家 / 弃牌堆的位置 */
   from: Vec;
   to: Vec;
@@ -362,35 +360,43 @@ export interface EnemyActSpec {
   ground?: Vec;
 }
 
-/** 编排一次敌人动作，返回演完要多久 —— 调用方拿这个数锁输入。 */
+/**
+ * 敌人一段攻击的演出。core 的执行器在每一段扣血的同刻发一个 enemyHit，
+ * 这里只画这一段：节拍由 `SEG_MS` 决定，表现层不再自己排 `setTimeout`。
+ */
+export function enemyStrike(o: {
+  n: number; absorbed: number; seq: number; times: number; totalAbsorbed: number;
+  from: Vec; to: Vec;
+}): number {
+  poseKind = 'atk';
+  poseAt = { ...o.from };
+  poseGround = { ...o.from };
+  poseT = 0;
+  // 扣血为 0 但确实有格挡吸收，才是"全挡下"；伤害本来就 0 的情况不算。
+  const blocked = o.n === 0 && o.absorbed > 0;
+  attack({
+    from: { x: o.from.x - 30, y: o.from.y + (Math.random() - 0.5) * 70 },
+    to: { x: o.to.x + (Math.random() - 0.5) * 40, y: o.to.y - 10 },
+    color: blocked ? C.blue : C.red,
+    kind: 'strike',
+    dmg: Math.max(1, o.n),
+    target: 'hero',
+    seq: o.seq,
+    blocked,
+  });
+  if (o.seq === o.times - 1 && o.totalAbsorbed > 0) {
+    floatText(o.to.x, o.to.y - 110, `吸收 ${o.totalAbsorbed}`, C.blue, 30, { vy: -50, weight: 600 });
+  }
+  return 0.5;
+}
+
+/** 编排一次敌人非攻击动作，返回演完要多久 —— 调用方拿这个数锁输入。 */
 export function enemyAct(o: EnemyActSpec): number {
   poseKind = o.k;
   poseAt = { ...o.from };
   poseGround = { ...(o.ground ?? o.from) };
   poseT = 0;
-  const { from, to } = o;
-
-  if (o.k === 'atk') {
-    const times = Math.max(1, o.times ?? 1);
-    const taken = Math.max(0, o.taken ?? o.n);
-    // taken 为 0 但确实有格挡吸收，才是"全挡下"；伤害本来就 0 的情况不算
-    const blocked = taken === 0 && (o.absorbed ?? 0) > 0;
-    for (let i = 0; i < times; i++) {
-      const fire = () => attack({
-        from: { x: from.x - 30, y: from.y + (Math.random() - 0.5) * 70 },
-        to: { x: to.x + (Math.random() - 0.5) * 40, y: to.y - 10 },
-        color: blocked ? C.blue : C.red,
-        kind: 'strike',
-        dmg: Math.max(1, Math.round(taken / times)),
-        target: 'hero',
-        seq: i,
-        blocked,
-      });
-      if (i === 0) fire(); else setTimeout(fire, i * 150);
-    }
-    if (blocked) floatText(to.x, to.y - 110, `吸收 ${o.absorbed}`, C.blue, 30, { vy: -50, weight: 600 });
-    return 0.5 + (times - 1) * 0.15;
-  }
+  const { from } = o;
 
   if (o.k === 'def') {
     // 读数与两层细环都落在脚下：和常驻的地面封环同一套语言。

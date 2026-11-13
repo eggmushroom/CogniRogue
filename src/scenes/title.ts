@@ -1,16 +1,13 @@
 import { g, VH, VW } from '../gfx/canvas';
 import { C, FONT_TITLE, withAlpha } from '../gfx/theme';
 import { action, text } from '../gfx/ui';
-import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { G } from '../core/infra';
 import { resumeRun, runSaveInfo } from '../core/journey';
 import { countQuestions, sourceBank } from '../core/library';
 import { PACK } from '../core/cards';
 
+/** 世界层：只画标题、按钮和它们的热区；书架由 layers.ts 的背景层统一画。 */
 export function drawTitle(t: number, openHelp: () => void, openPack: () => void) {
-  drawBackdrop(t, 0.72);
-  drawMotes(t);
-
   const cx = VW / 2;
 
   // 标题光
@@ -84,7 +81,7 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   );
 
   if (G.deck.length) {
-    text('上一次的牌组还在。开新局会用固定的 10 张起手牌。', cx, py + 50, {
+    text('开新局用固定的 10 张起手牌。', cx, py + 50, {
       size: 12, align: 'center', color: C.faint,
     });
   }

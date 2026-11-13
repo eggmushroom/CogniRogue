@@ -7,5 +7,7 @@ export * from './deck';
 export * from './questions';
 export * from './foe';
 export * from './pending';
+export * from './strike';
+export * from './settlement';
 export * from './play';
 export * from './answer';

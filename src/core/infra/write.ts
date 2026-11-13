@@ -68,6 +68,11 @@ export function gainAp(n: number): number {
   return G.ap - before;
 }
 
+/** 回合开始把行动力上限设成规则算出的值；当前值由 resetAp 跟上。 */
+export function setApMax(n: number): void {
+  G.apMax = clamp(Math.round(n), 0, BAL.apCap);
+}
+
 /** 回合开始把行动力重置成上限。 */
 export function resetAp(): void {
   G.ap = clamp(G.apMax, 0, BAL.apCap);

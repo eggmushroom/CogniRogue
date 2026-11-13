@@ -237,37 +237,35 @@ export const POWERS: PowerDef[] = [
     id: 'librarycard', icon: '借', name: '借书证', color: '#9dbf9a',
     scope: 'always',
     card: '每次答对，退回 1 点行动力',
-    desc: '答对退 1 点行动力全靠它；没有它，答对不退。',
+    desc: '没有它时，答对不退行动力。',
   },
   {
     id: 'hourglass', icon: '时', name: '沙漏', color: '#e8b64c',
     scope: 'always',
     card: '每场战斗的第一回合，行动力 +1',
-    desc: '只在每场第一回合给 1 点，用来抢开场节奏。',
   },
   {
     id: 'index', icon: '索', name: '索引卡', color: '#6f9ee8',
     scope: 'always',
     card: '手牌少于 3 张时，每回合多抽 2 张',
-    desc: '手牌少于 3 张时才生效，补的是打空之后的下一回合。',
+    desc: '打空之后，下一回合补回来。',
   },
   {
     id: 'binder', icon: '订', name: '装订线', color: '#4fd6cf',
     scope: 'fight',
     card: '每场战斗第一次答错，伤害和格挡按一半结算',
-    desc: '这一场第一次答错改成半额结算，消耗的新题照旧。',
   },
   {
     id: 'mirrorcard', icon: '镜', name: '双面镜', color: '#a78bfa',
     scope: 'always',
     card: '每回合第一次答对，抽 1 张',
-    desc: '每回合第一次答对抽 1 张，一回合最多一次。',
+    desc: '抽到的牌当回合就能打。',
   },
   {
     id: 'lamp', icon: '灯', name: '长明灯', color: '#e8c86c',
     scope: 'always',
     card: '每回合开始获得 1 点格挡',
-    desc: '每回合开局先给 1 点格挡，省下一张防御牌。',
+    desc: '和卡牌给的格挡叠加。',
   },
   {
     id: 'marker', icon: '笔', name: '荧光笔', color: '#d06fa8',
@@ -279,37 +277,33 @@ export const POWERS: PowerDef[] = [
     id: 'paperweight', icon: '镇', name: '镇纸', color: '#8fb0c8',
     scope: 'always',
     card: '每场战斗开局多 2 点格挡',
-    desc: '只在每场开局生效；第一回合最容易叠不出挡。',
   },
   {
     id: 'dogear', icon: '折', name: '折角', color: '#d8a24c',
     scope: 'always',
     card: '每场战斗第一回合多抽 2 张',
-    desc: '第一回合多抽 2 张，只在开场那一下。',
   },
   {
     id: 'bookmark', icon: '签', name: '书签', color: '#7fc4a8',
     scope: 'fight',
     card: '每场战斗第一次答对，获得 2 点格挡',
-    desc: '这一场第一次答对给 2 点格挡，和双面镜互不替代。',
   },
   {
     id: 'eraser', icon: '擦', name: '橡皮', color: '#d98b8b',
     scope: 'fight',
     card: '每场战斗第一次答错，补 3 点格挡',
-    desc: '这一场第一次答错补 3 点格挡，救不了那一手的伤害。',
+    desc: '补的格挡挡不了这一下。',
   },
   {
     id: 'syllabus', icon: '课', name: '课表', color: '#9aa7d8',
     scope: 'always',
     card: '每回合第一次打出基础牌，获得 1 点格挡',
-    desc: '只认基础牌，不认题；换题库、题用完都照常生效。',
   },
   {
     id: 'sticky', icon: '贴', name: '便签', color: '#e6d05a',
     scope: 'always',
     card: '战后选卡从三张变四张',
-    desc: '战后选卡从三选一变四选一。',
+    desc: '四张里挑一张，也可以跳过。',
   },
   /* ── 第二批：拆答错线（书套 / 草稿纸 / 放大镜），另补答对与硬仗 ── */
   {
@@ -322,13 +316,12 @@ export const POWERS: PowerDef[] = [
     id: 'scratch', icon: '稿', name: '草稿纸', color: '#c8b08f',
     scope: 'fight',
     card: '每场战斗第一次答错，补抽 1 张',
-    desc: '这一场第一次答错补抽 1 张，默认规则是不补抽的。',
   },
   {
     id: 'loupe', icon: '镜', name: '放大镜', color: '#6fc4d8',
     scope: 'fight',
     card: '每场战斗第一次答题，去掉一个错误选项',
-    desc: '这一场第一道题去掉一个干扰项，不是给答案。',
+    desc: '划掉的是错误选项，不是正确答案。',
   },
   {
     id: 'margin', icon: '注', name: '批注', color: '#e08a5c',
@@ -346,7 +339,7 @@ export const POWERS: PowerDef[] = [
     id: 'mend', icon: '胶', name: '修书胶', color: '#c49a6c',
     scope: 'always',
     card: '复习点回复量 +18%',
-    desc: '复习点回血从 62% 抬到 80%，只影响节点之间。',
+    desc: '复习点回血 +18%。',
   },
 
   /* ── 常驻：每张牌、每一击 ── */
@@ -354,31 +347,30 @@ export const POWERS: PowerDef[] = [
     id: 'press', icon: '压', name: '压书石', color: '#a89078',
     scope: 'always',
     card: '每张牌的伤害 +1',
-    desc: '每张牌每个伤害段都 +1，基础牌也算。',
+    desc: '多段伤害的每一段都算，基础牌也算。',
   },
   {
     id: 'code', icon: '规', name: '校规', color: '#8fa8c0',
     scope: 'always',
     card: '每张牌的格挡 +1',
-    desc: '只给本来就有格挡的牌 +1，纯攻击牌不长甲。',
+    desc: '纯攻击牌不加。',
   },
   {
     id: 'nightlight', icon: '夜', name: '夜灯', color: '#c8b46c',
     scope: 'always',
     card: '每次受到攻击，伤害 -1',
-    desc: '每一下受到的攻击 -1，多段攻击被削得更多。',
+    desc: '多段攻击的每一下都减。',
   },
   {
     id: 'board', icon: '板', name: '板书', color: '#7f9e88',
     scope: 'always',
     card: '每回合多抽 1 张',
-    desc: '每回合无条件多抽 1 张。',
   },
   {
     id: 'tab', icon: '页', name: '索引贴', color: '#c8a0b8',
     scope: 'always',
     card: '回合结束时保留 2 点格挡',
-    desc: '回合结束保留 2 点格挡，这是格挡唯一跨回合的来源。',
+    desc: '格挡只在这一处跨回合。',
   },
   {
     id: 'stamp', icon: '印', name: '藏书印', color: '#b08c6c',
@@ -390,19 +382,18 @@ export const POWERS: PowerDef[] = [
     id: 'tea', icon: '茶', name: '茶', color: '#c0a878',
     scope: 'always',
     card: '过幕时最大生命额外 +10',
-    desc: '过幕时在 +14 上限之外再加 10。',
+    desc: '和过幕的 +14 叠加。',
   },
   {
     id: 'shelf', icon: '挡', name: '书挡', color: '#8c9ea8',
     scope: 'always',
     card: '同一种卡的上限 +1',
-    desc: '同一种卡的上限从 3 张抬到 4 张。',
   },
   {
     id: 'polish', icon: '亮', name: '抛光布', color: '#c8c09a',
     scope: 'instant',
     card: '精炼一张牌的加成 +2',
-    desc: '以后每次精炼从 +3 变 +5，越早拿到越值。',
+    desc: '之后每次精炼都多 +2。',
   },
 
   /* ── 每场一次：答对 / 答错之外的时机 ── */
@@ -410,7 +401,7 @@ export const POWERS: PowerDef[] = [
     id: 'gluepot', icon: '壶', name: '胶水壶', color: '#a8b090',
     scope: 'fight',
     card: '每场战斗第一次答错，那张牌留在手里',
-    desc: '这一场第一次答错，牌留在手里，这一回合还能再打；回合结束照常进弃牌堆。',
+    desc: '这一回合还能再打；回合结束进弃牌堆。',
   },
   {
     id: 'seal', icon: '蜡', name: '封蜡', color: '#b87878',
@@ -434,7 +425,6 @@ export const POWERS: PowerDef[] = [
     id: 'felt', icon: '毡', name: '毡垫', color: '#a09a88',
     scope: 'fight',
     card: '每场战斗第一次洗牌时，清掉弃牌堆里的 2 张杂念',
-    desc: '每场第一次洗牌时清掉弃牌堆里 2 张杂念。',
   },
   {
     id: 'brush', icon: '毫', name: '毛笔', color: '#b89070',
@@ -448,13 +438,11 @@ export const POWERS: PowerDef[] = [
     id: 'ledger', icon: '账', name: '账本', color: '#a89478',
     scope: 'stage',
     card: '每幕第一次战后奖励多一个选项，并让选中的牌直接精炼',
-    desc: '每幕第一次战后奖励多一个选项，选中的牌直接精炼。',
   },
   {
     id: 'atlas', icon: '图', name: '地图册', color: '#8898a8',
     scope: 'stage',
     card: '每幕第一次复习，额外回复 15 点生命',
-    desc: '每幕第一次复习多回 15 点。',
   },
 
   /* ── 整局一次 ── */
@@ -462,7 +450,6 @@ export const POWERS: PowerDef[] = [
     id: 'wish', icon: '愿', name: '许愿条', color: '#d8b8d0',
     scope: 'run',
     card: '整局一次：致死时以 35% 生命活下来',
-    desc: '整局一次：致死后以 35% 生命活下来。',
   },
 
   /* ── 拾取即结算：不挂时机，直接改这一局的底盘 ── */
@@ -470,25 +457,21 @@ export const POWERS: PowerDef[] = [
     id: 'spine', icon: '脊', name: '书脊', color: '#a08c78',
     scope: 'instant',
     card: '最大生命 +18，并立即回复 18 点',
-    desc: '最大生命 +18，并立刻回复这 18 点。',
   },
   {
     id: 'exlibris', icon: '票', name: '藏书票', color: '#c8a888',
     scope: 'instant',
     card: '立即获得 2 张随机知识卡',
-    desc: '立刻得到 2 张随机知识卡，直接进牌组。',
   },
   {
     id: 'slim', icon: '刀', name: '裁纸刀', color: '#a8b0b8',
     scope: 'instant',
     card: '立即移除 2 张基础牌',
-    desc: '立刻移除 2 张基础牌，牌组变薄。',
   },
   {
     id: 'resin', icon: '脂', name: '树脂', color: '#b8a070',
     scope: 'instant',
     card: '所有基础牌立即精炼',
-    desc: '立刻把全部基础牌精炼成 +3 版本。',
   },
 
   /* ── 第四批：挂在局内动作顺序上（结束回合、打第几张、洗牌、先打哪种牌） ── */
@@ -496,19 +479,17 @@ export const POWERS: PowerDef[] = [
     id: 'feather', icon: '羽', name: '羽毛', color: '#d8c8a8',
     scope: 'always',
     card: '回合结束时若没有格挡，获得 2 点格挡',
-    desc: '回合结束没格挡才给 2 点，奖励最后再挡。',
   },
   {
     id: 'ink', icon: '墨', name: '墨水瓶', color: '#7f8fa8',
     scope: 'always',
     card: '每回合第 3 张牌打出时，抽 1 张',
-    desc: '每回合第 3 张牌抽 1 张，一回合只数一次。',
+    desc: '一回合只数一次。',
   },
   {
     id: 'archive', icon: '档', name: '档案盒', color: '#a89a78',
     scope: 'always',
     card: '每次洗牌，获得 2 点格挡',
-    desc: '每次洗牌给 2 点格挡。',
   },
   {
     id: 'pulse', icon: '拍', name: '节拍器', color: '#d08a6c',
@@ -554,17 +535,17 @@ export interface ModeDef {
 export const MODES: ModeDef[] = [
   {
     id: 'study', icon: '学', name: '学习', color: '#8fc8b0',
-    desc: '两个初始增益：借书证 + 课表。答对退 1 点，每回合第一张基础牌补 1 点格挡。',
+    desc: '两个初始增益。答对退行动力，每回合第一张基础牌补格挡。',
     powers: ['librarycard', 'syllabus'],
   },
   {
     id: 'review', icon: '复', name: '复习', color: '#e8c86c',
-    desc: '一个初始增益：只带借书证。答对退 1 点，没有额外防御。',
+    desc: '只带借书证。答对退行动力，没有额外防御。',
     powers: ['librarycard'],
   },
   {
     id: 'test', icon: '测', name: '测试', color: '#d98b8b',
-    desc: '没有初始增益：退款和防御都要在路上捡。基础牌仍然随时可打。',
+    desc: '没有初始增益。答对不退行动力，也没有额外防御。',
     powers: [],
   },
 ];
@@ -677,10 +658,16 @@ export const BAL = {
   },
 };
 
-export const NODE_META: Record<NodeType, { k: string; g: string; color: string }> = {
-  fight: { k: '战斗', g: '⚔', color: '#c9744a' },
-  elite: { k: '精英', g: '☠', color: '#d9534f' },
-  rest: { k: '复习', g: '✦', color: '#4fd6cf' },
-  event: { k: '事件', g: '?', color: '#a78bfa' },
-  boss: { k: '首领', g: '✺', color: '#e8b64c' },
+/**
+ * 节点类型的名字与身份色。**图标不在这里**：节点图标是 `gfx/art/icons` 的
+ * `skull / book / ask / crown / strike`，和卡面效果图标同一套 24×24 描边。
+ * 这里原来还留着一个 emoji 字段（⚔☠✦?✺），从未被绘制过 —— 它只会让人以为
+ * "改这里的字符就能换图标"，实际改了没有任何反应。
+ */
+export const NODE_META: Record<NodeType, { k: string; color: string }> = {
+  fight: { k: '战斗', color: '#c9744a' },
+  elite: { k: '精英', color: '#d9534f' },
+  rest: { k: '复习', color: '#4fd6cf' },
+  event: { k: '事件', color: '#a78bfa' },
+  boss: { k: '首领', color: '#e8b64c' },
 };

@@ -1,4 +1,3 @@
-import { resolveEff } from '../model/effects';
 import type { CardDef, CardId } from '../model/types';
 
 /**
@@ -30,20 +29,3 @@ export const basicDeck = (): CardId[] => BASICS.map((c) => c.id);
 
 /** 按 id 找基础牌定义（`defOf` 的兜底链里用）。 */
 export const basicDef = (id: string): CardDef | undefined => BASICS.find((c) => c.id === id);
-
-/** 帮助面板用：数值从卡面推导，不手写。 */
-export function basicsSummary(): string {
-  const groups: { name: string; count: number; hit: number; blk: number }[] = [];
-  for (const c of BASICS) {
-    const o = resolveEff(c.eff, c.atk, c.blk);
-    const g = groups.find((x) => x.name === c.name);
-    if (g) { g.count += 1; continue; }
-    groups.push({ name: c.name, count: 1, hit: o.hits[0], blk: o.blk });
-  }
-  return groups
-    .map((g) => {
-      const nums = [g.hit > 0 ? `${g.hit} 伤` : '', g.blk > 0 ? `${g.blk} 挡` : ''].filter(Boolean);
-      return `${g.name} ×${g.count}（${nums.join('/')}）`;
-    })
-    .join('、');
-}

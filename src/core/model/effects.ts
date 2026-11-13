@@ -113,18 +113,12 @@ export function effFace(out: EffOut): EffFace {
 }
 
 /**
- * 纯文本描述，给题目面板、帮助面板这类只有一行字的地方用。
+ * 从 `planStrike` 给出的结果生成同一段文案。
+ * 文案只认 EffOut，不接收 atk/blk：卡面写的数就是打出来的数，
+ * 没有「裸卡面」这个第二数值来源可供误用。
  *
  * `x` 是给 X 费牌写的：那一行必须说清"这是**每一点**行动力的效果"，
  * 否则玩家会以为「造成 8×2 伤害」就是全部，花 3 点也只打两次。
- */
-export function effSummary(key: Eff, atk: number, blk: number, mods?: EffMods, x = false): string {
-  return effSummaryOf(resolveEff(key, atk, blk, 1, mods), key, x);
-}
-
-/**
- * 从已经结算过 `applyCardBonus` 的结果生成同一段文案。
- * 答题面板必须走这个入口：只调 `effSummary` 会漏掉压书石 / 校规。
  */
 export function effSummaryOf(o: EffOut, key: Eff, x = false): string {
   const f = effFace(o);

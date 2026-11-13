@@ -1,20 +1,26 @@
 import { G, resetTurnState } from '../infra/state';
 import { readStore, writeStore } from '../infra/storage';
 import { BAL, MODE_BY_ID, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS } from '../model/data';
-import { floorOf } from '../map';
+import { MAP_COLS, floorOf } from '../map';
 import { baseIdOf, isKnownCardId } from '../cards/registry';
 import { LEGACY_CARD_IDS } from '../cards/legacy';
 import { enterStage } from '../library/stage';
 import type { GameState, MapNode, ModeId, PowerId } from '../model/types';
 
-/** 一局的断点：只在节点之间存，只存白名单字段，版本号不对就当没有。 */
-const SNAP_V = 8;
-const KEY = `cognirogue.run.v${SNAP_V}`;
+/**
+ * 一局的断点：只在节点之间存，只存白名单字段，版本号不对就当没有。
+ *
+ * `SNAP_V` 和 `SAVE_KEY` 是导出的：测试要造一份"合法存档"，以前是手抄
+ * `v: 8` + 字符串 key，升版本时全都要跟着改，漏一处就变成"合法存档读不出来"。
+ * 版本号只有这里一处真值，谁能读到就引用它。
+ */
+export const SNAP_V = 9;
+export const SAVE_KEY = `cognirogue.run.v${SNAP_V}`;
 
 /** 断点里要保存的 GameState 字段；`Pick` 让新增字段要么显式纳入，要么明确不存。 */
 type SavedFields = Pick<GameState,
   | 'stage' | 'mode' | 'hp' | 'maxHp' | 'deck' | 'powers' | 'map' | 'pos' | 'seen'
-  | 'topicWrong' | 'floors' | 'runOk' | 'runBad' | 'answerDraws' | 'upGrade'
+  | 'topicWrong' | 'floors' | 'runOk' | 'runBad' | 'answerDraws' | 'upGrade' | 'eventsSeen'
   | 'qPicked' | 'stageOk' | 'stageBad'
 >;
 
@@ -55,6 +61,7 @@ export function saveRun() {  if (G.screen !== 'map' || !G.map.length || G.panel.
     map: G.map,
     pos: G.pos,
     seen: G.seen,
+    eventsSeen: G.eventsSeen,
     topicWrong: G.topicWrong,
     floors: G.floors,
     runOk: G.runOk,
@@ -67,12 +74,12 @@ export function saveRun() {  if (G.screen !== 'map' || !G.map.length || G.panel.
     onceRun: usedIds(G.onceRun),
     upGrade: G.upGrade,
   };
-  writeStore(KEY, JSON.stringify(snap));
+  writeStore(SAVE_KEY, JSON.stringify(snap));
   infoCache = undefined;
 }
 
 export function clearRun() {
-  writeStore(KEY, '');
+  writeStore(SAVE_KEY, '');
   infoCache = undefined;
 }
 
@@ -107,6 +114,7 @@ export function resumeRun(): boolean {
   Object.assign(G, {
     screen: 'map', mode: s.mode, stage: s.stage, stageTopic: '', panel: { k: 'none' }, log: [],
     deck: s.deck, map: s.map, pos: s.pos, seen: s.seen, node: null,
+    eventsSeen: s.eventsSeen,
     hp: s.hp, maxHp: s.maxHp, block: 0,
     ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
     draw: [], discard: [], hand: [], powers: s.powers,
@@ -156,7 +164,7 @@ function isMapNode(v: unknown): v is MapNode {
 }
 
 function readSnapshot(): Snapshot | null {
-  const raw = readStore(KEY);
+  const raw = readStore(SAVE_KEY);
   if (!raw) return null;
   let s: Snapshot;
   try {
@@ -172,10 +180,10 @@ function readSnapshot(): Snapshot | null {
   if (!Array.isArray(s.map) || s.map.length !== STAGE_ROWS) return null;
   // key 与数组位置对不上能过形状校验，但点下去取到 undefined
   if (!s.map.every((row, r) => Array.isArray(row)
-    && row.length > 0 && row.length <= 3
+    && row.length > 0 && row.length <= MAP_COLS
     && row.every((nd, i) => isMapNode(nd)
       && nd.r === r && nd.i === i && nd.key === `${r}:${i}`
-      && (nd.col as number) >= 0 && (nd.col as number) <= 2))) return null;
+      && (nd.col as number) >= 0 && (nd.col as number) < MAP_COLS))) return null;
   // 入口与 Boss 各行只有一个节点，坏档在这里没有可点的下一步
   if (s.map[0].length !== 1 || s.map[0][0].type !== 'fight') return null;
   if (s.map[STAGE_ROWS - 1].length !== 1 || s.map[STAGE_ROWS - 1][0].type !== 'boss') return null;
@@ -204,6 +212,8 @@ function readSnapshot(): Snapshot | null {
   if (!s.powers.every((id) => typeof id === 'string' && !!POWER_BY_ID[id])) return null;
   if (new Set(s.powers).size !== s.powers.length) return null;
   if (!isBoolRecord(s.seen) || !isNonNegRecord(s.topicWrong)) return null;
+  // 只要求形状：见过的事件 id 不参与规则，题库里删掉一个事件也不该让整局读不回来
+  if (!Array.isArray(s.eventsSeen) || !s.eventsSeen.every((id) => typeof id === 'string')) return null;
   if (!isNonNegRecord(s.qPicked)) return null;
   // 不认识的 id 直接判坏档，静默忽略会让那张牌读档后再可用
   for (const key of ['onceStage', 'onceRun'] as const) {
