@@ -1,10 +1,10 @@
 import { BAL } from '../model/data';
-import type { Foe, FoeTpl } from '../model/types';
+import type { Foe, FoeTpl, Move } from '../model/types';
 import { G, checkPending, log, topTopic } from '../infra/state';
 import { after } from '../infra/schedule';
+import { STAGE_ROWS } from '../model/data';
 import { JUNK_ID } from '../cards/registry';
 import { onceThisFight, rulesOf } from '../cards/powers';
-import { FLOOR_MAX } from '../map/gen';
 import { requestSettle } from './pending';
 import { discardHand, startTurn } from './deck';
 import { foeSettlement, planHeroHits, settle } from './settlement';
@@ -16,33 +16,43 @@ import type { Settlement } from './settlement';
  * 敌人回合和玩家出牌共用 `settlement.ts` 的计划与执行器：每一段的扣血和它的
  * 光刃事件落在同一个调度点，不再「一帧扣完、表现层用原生 setTimeout 补播」。
  */
-/** 造一只怪：强度按全局层号 floorOf 算，血量与伤害同源，曲线开方（前陡后缓）。 */
+/**
+ * 幕内强度台阶：每 5 层上一档，一共四档。查表而不是比例 ——
+ * "第 16 层比第 1 层厚 12 点"是能写进卡面的数，"厚 1.42 倍"不是。
+ */
+const TIER = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3];
+
+/**
+ * 造一只怪：血量 = 模板值 + 台阶 × 每档加点，伤害就是模板值。
+ *
+ * 两个数都在 `FOES` 里，可以直接和玩家看到的数字对上。原来的实现是
+ * 「模板 × 0.55 × 开方曲线 × 精英倍率」—— 四个数乘在一起，想让第一幕的杂兵
+ * 多 2 点血，得反算改哪一个。
+ */
 export function makeFoe(tpl: FoeTpl, floor: number): Foe {
-  const t = Math.max(0, Math.min(1, (floor - 1) / (FLOOR_MAX - 1)));
-  const hpK = 1 + BAL.growth.floor * Math.sqrt(t);
-  const dmgK = 1 + BAL.growth.all * t;
-  // 精英/Boss 另加厚度倍率（普通怪 1.0），让打大怪的场次拖到 3 回合以上。
-  const typeK = tpl.type === 'fight' ? 1 : BAL.hpType;
-  const hp = Math.round(tpl.hp * hpK * BAL.hp * typeK);
+  const row = Math.max(1, Math.min(STAGE_ROWS, floor - (tpl.stage - 1) * STAGE_ROWS));
+  const hp = tpl.hp + tpl.hpStep * TIER[row - 1] + BAL.foeHpAdd;
   return {
     ...tpl,
     maxHp: hp,
     hp,
-    dmg: Math.round(tpl.dmg * dmgK * BAL.dmg),
+    dmg: tpl.dmg + BAL.foeDmgAdd,
     block: 0,
     mv: 0,
   };
 }
 
+const PLAIN_ATK: Move = { k: 'atk' };
+
 export function moveOf(e: Foe) {
-  const arr = e.moves && e.moves.length ? e.moves : [{ k: 'atk' as const, m: 1 }];
+  const arr = e.moves && e.moves.length ? e.moves : [PLAIN_ATK];
   return arr[(e.mv || 0) % arr.length];
 }
 
 /** 这一步攻击的最终伤害：意图与结算同源，修正都加在 total 上。 */
 function attackOf(e: Foe) {
   const m = moveOf(e);
-  const per = Math.round(e.dmg * (m.m ?? 1));
+  const per = Math.max(0, e.dmg + (m.add ?? 0));
   const times = m.times ?? 1;
   let reviewer = 0;
   let oblivionAdd = 0;
@@ -137,18 +147,28 @@ export function endTurn() {
   }
   const m = moveOf(e);
 
-  if (m.k === 'atk' && G.turn === 1 && (BAL.calmFirstTurn || onceThisFight('whistle'))) {
-    // 第一回合留观察期，否则答错从开局起就是拿血换。
-    // 口哨买的就是这一回合，一场一次。
-    log(`${e.name} 还在观察你，这一回合没有出手`, 'hi');
+  /**
+   * 口哨：第一回合的第一击落空。
+   *
+   * 它和 `calmFirstTurn`（平衡实验用的全局开关）曾经共用一个 `||`：开关一打开，
+   * 短路让 `onceThisFight('whistle')` 根本不执行，玩家拿着这张牌打一整局都不会
+   * 触发，而且不会有任何报错。两者要分开求值 —— 口哨按自己的条件结账，
+   * 实验开关只决定结果。条件里的 `m.k === 'atk'` 不能拆：首动不是攻击时不该消费。
+   */
+  const whistled = m.k === 'atk' && G.turn === 1 && onceThisFight('whistle');
+  if (m.k === 'atk' && G.turn === 1 && (whistled || BAL.calmFirstTurn)) {
+    log(whistled
+      ? `${e.name} 的这一击被你闪开了`
+      : `${e.name} 还在观察你，这一回合没有出手`, 'hi');
     s.events.push({ t: 'enemyAct', k: 'calm', n: 0 });
   } else if (m.k === 'atk') {
     const f = attackOf(e);
     let dmg = f.total;
-    // 封蜡：这一场第一次挨打减半，落在格挡之前，否则半份伤害会被格挡吃掉。
-    if (onceThisFight('seal')) {
-      dmg = Math.round(dmg * BAL.sealCut);
-      log(`封蜡：这一击被削去一半（${f.total} → ${dmg}）`, 'hi');
+    // 封蜡：这一场第一次挨打少受几点，落在格挡之前，否则减免会被格挡吃掉。
+    if (onceThisFight('seal') && dmg > 0) {
+      const before = dmg;
+      dmg = Math.max(0, dmg - BAL.sealCut);
+      log(`封蜡：这一击被削去 ${before - dmg} 点（${before} → ${dmg}）`, 'hi');
     }
     // 夜灯：每次挨打减固定值，同样在格挡之前，可以削到 0。
     const cut = rulesOf({ handLeft }).dmgCut;
@@ -163,7 +183,11 @@ export function endTurn() {
     // guardCap 是「段真正落地时」的有效格挡：羽毛的补甲由执行器在第一段之前写入，
     // 所以预演就要把它算进去，否则玩家会平白多吃一段伤害。
     let guard = G.block + feather;
-    if (e.mech === 'pierce') { guard = Math.ceil(guard / 2); log(`${e.name}：穿透了一半格挡`, 'bad'); }
+    if (e.mech === 'pierce') {
+      const cut = e.mechV ?? BAL.mech.pierceBlock;
+      guard = Math.max(0, guard - cut);
+      log(`${e.name}：无视 ${cut} 点格挡`, 'bad');
+    }
     planHeroHits(s, splitDamage(dmg, f.times), guard);
     const absorbed = s.hits.reduce((n, h) => n + h.absorbed, 0);
     const taken = s.hits.reduce((n, h) => n + h.dealt, 0);

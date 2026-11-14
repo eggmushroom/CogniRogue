@@ -1,4 +1,4 @@
-import { BAL, MISS_RULE } from '../model/data';
+import { BAL } from '../model/data';
 import { EFFS } from '../model/effects';
 import type { CardDef, CardId, Feedback, QView, Question } from '../model/types';
 import { G, checkPending, log, topTopic } from '../infra/state';
@@ -7,7 +7,6 @@ import { defOf } from '../cards/registry';
 import { gradeNeed } from '../cards/grade';
 import { onceThisFight, rulesOf } from '../cards/powers';
 import { costNow, isXCost, refundOf } from '../cards/cost';
-import { memOf, saveMem } from '../library/memory';
 import { recordAnswer } from '../library/stagemem';
 import {
   addNote, buildSettlement, emptySettlement, mergeSettlement, planThorns, settle, viewOf,
@@ -39,7 +38,6 @@ class AnswerCtx {
     readonly spent: number,
     readonly repeat: number,
     readonly xcost: boolean,
-    readonly mem: ReturnType<typeof memOf>,
   ) {
     this.s = emptySettlement(id);
   }
@@ -79,10 +77,16 @@ function resolveRight(ctx: AnswerCtx) {
   }
 
   // 答对攒等级，攒够 `gradeNeed` 这场就免答；按卡 id 记，同名牌副本共用。
+  // 批注在这一场第一次答对时多攒一级，和这次答对本来攒的那级一起加。
   const need = gradeNeed(ctx.card);
+  const bonus = need > 0 && onceThisFight('margin') ? BAL.marginCharge : 0;
   if (need > 0) {
     const before = G.charge[ctx.card.id] ?? 0;
-    G.charge[ctx.card.id] = Math.min(need, before + 1);
+    G.charge[ctx.card.id] = Math.min(need, before + 1 + bonus);
+    if (bonus) {
+      addNote(ctx.s, `批注：这一场第一道答对，这张牌多攒 ${bonus} 次免答`
+        + `（${G.charge[ctx.card.id]}/${need}）。`);
+    }
     if (G.charge[ctx.card.id] >= need && before < need) {
       addNote(ctx.s, `这一场「${ctx.card.name}」已免答：再打它不用答题。`);
     }
@@ -93,20 +97,10 @@ function resolveRight(ctx: AnswerCtx) {
   G.stageOk += 1;
   // 记的是本回合答对的题主题，`topTopic()` 之后可能被改写，结算时重对一次。
   if (ctx.q.topic === topTopic()) G.topOkTopic = ctx.q.topic;
-  ctx.mem.reps += 1;
-  ctx.mem.ok += 1;
-  // 答对涨稳固度；批注在这一场第一道答对时额外多涨一点。
-  let stabGain = MISS_RULE.stabGain;
-  if (onceThisFight('margin')) {
-    stabGain += BAL.marginStab;
-    addNote(ctx.s, `批注：这一场第一道答对，稳固度额外 +${BAL.marginStab}。`);
-  }
-  ctx.mem.stab = Math.min(60, Math.max(ctx.mem.stab * (1 + 0.8 * stabGain), ctx.mem.stab + stabGain));
-  ctx.mem.due = Math.round(ctx.mem.stab);
   // 荧光笔：这一手多退 1 点，在 settleAnswerAp 统一结算。
   if (onceThisFight('marker')) {
-    G.markerRefund += 1;
-    addNote(ctx.s, '荧光笔：这一场第一道答对，这一手多退 1 点行动力。');
+    G.markerRefund += BAL.markerPlus;
+    addNote(ctx.s, `荧光笔：这一场第一道答对，这一手多退 ${BAL.markerPlus} 点行动力。`);
   }
 }
 
@@ -133,23 +127,18 @@ function resolveWrong(ctx: AnswerCtx) {
     addNote(ctx.s, `橡皮：这一场第一次答错，补了 ${BAL.eraserBlock} 点格挡。`);
   }
 
-  G.topicWrong[ctx.q.topic] = (G.topicWrong[ctx.q.topic] || 0) + 1;
+  // 错题簿决定「遗忘」盯哪个主题（`topTopic()`）：书套让这一场第一次答错不上账。
+  // 记的是主题不是卡，所以它保护的是"这一题所属的主题"。
   G.runBad += 1;
   G.stageBad += 1;
-  ctx.mem.lapses += 1;
-  ctx.mem.bad += 1;
+  if (onceThisFight('slipcase')) {
+    addNote(ctx.s, '书套：这一道答错不记进错题簿，「遗忘」不会因此盯上这个主题。');
+  } else {
+    G.topicWrong[ctx.q.topic] = (G.topicWrong[ctx.q.topic] || 0) + 1;
+  }
 
   const missNote = onPlayerMiss(ctx.s);
   if (missNote) addNote(ctx.s, missNote);
-
-  // 稳固度下降、到期提前：惩罚靠日程不靠扣血。
-  // 书套：这一场第一次答错，两项都不动。
-  if (onceThisFight('slipcase')) {
-    addNote(ctx.s, '书套：这一场第一次答错，稳固度和到期都没动。');
-  } else {
-    ctx.mem.stab = Math.max(1, ctx.mem.stab * MISS_RULE.stabDrop);
-    ctx.mem.due = 1;
-  }
 }
 
 function settleAnswerAp(ctx: AnswerCtx) {
@@ -179,15 +168,19 @@ function settleAnswerAp(ctx: AnswerCtx) {
 }
 
 function finishAnswer(ctx: AnswerCtx) {
-  // 装订线：这一场第一次答错，仍然按一半结算。
+  // 装订线：这一场第一次答错，这一手照样打出去，只是按费用削减。
   // 两份计划合并，而不是把 11 个字段手工拷一遍：橡皮刚记的格挡、
   // 装订线的自伤与联动说明，全都由 mergeSettlement 保住。
   if (!ctx.right && onceThisFight('binder')) {
-    const half = buildSettlement(ctx.id, { mult: 0.5, repeat: ctx.repeat });
-    const added = viewOf(half);
-    ctx.s = mergeSettlement(ctx.s, half);
+    const n = Math.max(1, ctx.spent);
+    const cut = buildSettlement(ctx.id, {
+      cut: { atk: BAL.binderAtkCut * n, blk: BAL.binderBlkCut * n },
+      repeat: ctx.repeat,
+    });
+    const added = viewOf(cut);
+    ctx.s = mergeSettlement(ctx.s, cut);
     if (ctx.v.nextNote) addNote(ctx.s, `${ctx.v.nextNote}。`);
-    addNote(ctx.s, `装订线：这一手按一半结算`
+    addNote(ctx.s, `装订线：这一手照样打出去`
       + `（${added.dmg} 伤害${added.blk ? `，${added.blk} 格挡` : ''}${added.drawn ? `，抽 ${added.drawn} 张` : ''}）。`);
   }
 
@@ -197,9 +190,8 @@ function finishAnswer(ctx: AnswerCtx) {
     G.discard.push(ctx.id);
     G.hand.splice(ctx.idx, 1);
   }
-  saveMem();
 
-  // 章节记忆按题号记，和卡牌记忆分开。
+  // 章节记忆按题号记；跨局的卡牌熟练度表已经删掉，这里只留会影响出题的那一份。
   recordAnswer({ stageTopic: G.stageTopic, qid: ctx.qid, right: ctx.right });
   G.answers.push({
     qid: ctx.qid, topic: ctx.q.topic, stageTopic: G.stageTopic, stage: G.stage, right: ctx.right, choice: ctx.choice,
@@ -211,20 +203,26 @@ function finishAnswer(ctx: AnswerCtx) {
   const effName = EFFS[ctx.card.eff].name;
   const v = ctx.v;
   const shape = v.hits.length > 1 ? `${v.hits.join('+')} 伤害` : `${v.dmg} 伤害`;
-  const missNote = ctx.backToHand ? '，牌留在手里' : '，进弃牌堆';
+  /**
+   * 「效果作废」是**结论**，不是答错的规则：装订线这一手答错也照样出一半伤害，
+   * 按 `ctx.right` 分支就会在结算说明写「按一半结算（7 伤害）」的同时，
+   * 日志同一手写「效果作废」。所以这里只看这一手到底产出了什么。
+   */
+  const dead = v.dmg === 0 && v.blk === 0 && v.heal === 0 && v.drawn === 0 && v.selfHp === 0;
+  const outcome = ctx.right || !dead
+    ? `，${shape}` +
+      (v.absorbed ? `（${v.absorbed} 被挡）` : '') +
+      (v.blk ? `，${v.blk} 格挡` : '') +
+      (v.selfHp ? `，失去 ${v.selfHp} 生命` : '') +
+      (v.heal ? `，回 ${v.heal}` : '') +
+      (v.drawn ? `，抽 ${v.drawn}` : '')
+    : '，效果作废';
+  const missNote = ctx.right ? '' : ctx.backToHand ? '，牌留在手里' : '，进弃牌堆';
   const leftNote = G.qLeft.length
     ? `本场还剩 ${G.qLeft.length} 道新题`
     : '本场新题已用完，开始复用';
   log(
-    `「${effName}·${ctx.q.topic}」${ctx.right ? '答对' : '答错'}` +
-      (ctx.right
-        ? `，${shape}${v.absorbed ? `（${v.absorbed} 被挡）` : ''}` +
-          (v.blk ? `，${v.blk} 格挡` : '') +
-          (v.selfHp ? `，失去 ${v.selfHp} 生命` : '') +
-          (v.heal ? `，回 ${v.heal}` : '') +
-          (v.drawn ? `，抽 ${v.drawn}` : '')
-        : `，效果作废${v.blk ? `，${v.blk} 格挡` : '，这张牌不带格挡'}${missNote}`) +
-      `　·　${leftNote}`,
+    `「${effName}·${ctx.q.topic}」${ctx.right ? '答对' : '答错'}${outcome}${missNote}　·　${leftNote}`,
     ctx.right ? 'hi' : 'bad',
   );
 
@@ -268,7 +266,7 @@ export function answer(choice: number) {
   const repeat = xcost ? Math.max(1, spent) : 1;
 
   const ctx = new AnswerCtx(
-    idx, qid, choice, id, card, q, view, right, spent, repeat, xcost, memOf(card.id),
+    idx, qid, choice, id, card, q, view, right, spent, repeat, xcost,
   );
   if (right) resolveRight(ctx);
   else resolveWrong(ctx);

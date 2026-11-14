@@ -13,6 +13,7 @@
     "smoke": "node tools/smoke.mjs",
     "shots": "node tools/shots.mjs",
     "stage": "esbuild tools/stagecheck.ts --bundle --platform=node --format=esm --outfile=.cache/stagecheck.mjs --log-level=warning && node .cache/stagecheck.mjs",
+    "cards": "esbuild tools/cards.ts --bundle --platform=node --format=esm --outfile=.cache/cards.mjs --log-level=warning && node .cache/cards.mjs",
     "words": "node tools/words.mjs"
   },
   "devDependencies": {

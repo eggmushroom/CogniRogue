@@ -5,7 +5,7 @@ import { emit } from '../infra/events';
 import { shuffle } from '../infra/util';
 import { PACK } from '../cards/pack';
 import { baseIdOf, UP_MARK } from '../cards/registry';
-import { applyInstant, onceThisStage, rulesOf } from '../cards/powers';
+import { applyInstant, onceThisStage, rulesStatic } from '../cards/powers';
 import { finishNode } from './nodes';
 
 /**
@@ -16,7 +16,7 @@ function rewardPool(n: number): CardDef[] {
   const copies: Record<string, number> = {};
   G.deck.forEach((id) => { copies[baseIdOf(id)] = (copies[baseIdOf(id)] || 0) + 1; });
   // 上限读规则表：书挡会抬高每种卡的上限，奖励池必须跟着变宽。
-  const cap = rulesOf().maxCopies;
+  const cap = rulesStatic().maxCopies;
   const fresh = PACK.cards.filter((c) => !copies[c.id]);
   const room = PACK.cards.filter((c) => (copies[c.id] || 0) < cap);
   // 三张来自不同主题
@@ -34,7 +34,7 @@ export function openReward() {
   // 便签：把这一屏从三选一变成四选一（`R.rewardPicks`），整局常驻。
   // 账本：这一幕**第一次**战后奖励再多一张，而且选中的那张直接精炼：
   // 只是"多一个选项"的话，它仍然被便签完全覆盖；多出来的精炼才是它自己的账。
-  const base = rulesOf().rewardPicks;
+  const base = rulesStatic().rewardPicks;
   const ledger = onceThisStage('ledger');
   const bonus = ledger ? BAL.ledgerPicks : 0;
   G.panel = { k: 'reward', cards: rewardPool(base + bonus), ledger };

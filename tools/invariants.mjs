@@ -131,6 +131,17 @@ const RULES = [
     ban: /本身也是|只保证|救不了这一手|越早拿到越值|真正的|默认规则|照常生效|照旧|互不替代|一句话[：:]|换句话说|这意味着|简单说|需要注意的是|仍然随时|不会丢/g,
   },
   {
+    id: 'numeric/integer-only',
+    why: '游戏数值只许用整数和加减乘：小数、百分比、"×0.55 存活率"这类写法没有唯一读法（+18% 是加 18 个百分点还是乘 1.18？），'
+      + '也说不清卡面上那个数是怎么来的。血量、伤害、格挡、回复、稳固度、地图配比全部是整数；'
+      + '需要"每 N 级领 M 道"这种比例关系时，写成整数乘除并把 M / N 放进 BAL（`qPer` / `qOf`），不要留 0.6。'
+      + '字符串内容不扫：「0.1 + 0.2 在多数语言里不等」是题面，不是公式',
+    applies: (rel) => rel.startsWith('src/core/') && ts(rel),
+    owners: [],
+    skipStrings: true,
+    ban: /\b\d+\.\d+(?![%\d])/g,
+  },
+  {
     id: 'panel/single-reader',
     why: '读面板内部字段统一走 infra/state.ts 的 panelOf(k)。手写 `as unknown as { view: ... }` 会在'
       + '面板字段改名后静默读 undefined —— stagecheck 里就有一个 `type: \'battle\'` 被断言藏了整整一版',
@@ -154,6 +165,16 @@ function stripComments(code) {
   return code
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
     .replace(/(^|\s)\/\/[^\n]*/g, (m, lead) => lead + ' '.repeat(m.length - lead.length));
+}
+
+/**
+ * 把字符串字面量的**内容**抹成空白，引号保留。
+ *
+ * 只给「扫数值」这类规则用：题面里的 `"0.1 + 0.2 在多数语言里不等"` 是内容，
+ * 不是写进公式的小数。抹掉内容之后，规则只看得到代码里的数字。
+ */
+function maskStrings(code) {
+  return code.replace(/(['"`])(?:\\.|(?!\1)[^\\\n])*\1/g, (m) => m[0] + ' '.repeat(m.length - 2) + m[0]);
 }
 
 const files = [...walk(join(ROOT, 'src'), 'src'), ...walk(join(ROOT, 'tools'), 'tools')];
@@ -185,7 +206,8 @@ for (const rule of RULES) {
   const hits = [];
   for (const rel of inScope) {
     if (owners.has(rel)) continue;
-    const code = source(rel);
+    const raw = source(rel);
+    const code = rule.skipStrings ? maskStrings(raw) : raw;
     for (const m of code.matchAll(rule.ban)) {
       const line = code.slice(0, m.index).split('\n').length;
       hits.push(`${rel}:${line}`);

@@ -1,18 +1,16 @@
 import type { ReportRow } from '../model/types';
 import { CURRICULUM, MODE_BY_ID } from '../model/data';
 import { G } from '../infra/state';
-import { saveMem } from '../library/memory';
 import { saveStageMem, stageDigest } from '../library/stagemem';
 import { baseIdOf } from '../cards/registry';
 import { curFloor } from '../map/gen';
 import { clearRun } from './save';
 
 /**
- * 一局的结算：只读记忆与统计，不改规则、不驱动战斗。
+ * 一局的结算：只读统计，不改规则、不驱动战斗。
  * 掌握度按章节算，不按卡牌。
  */
 export function endRun(win: boolean) {
-  saveMem();
   // 一局结束就没有断点了
   clearRun();
   const rows: ReportRow[] = CURRICULUM.map((plan) => {
@@ -27,7 +25,9 @@ export function endRun(win: boolean) {
   // 押注没了，结算页也就不再有"你押的档准不准"：现在只剩一个问题：
   // 这一局的伤害里，多少是你记住的，多少是你当时蒙对的那一下。
   const asks = G.runOk + G.runBad;
-  const acc = asks ? G.runOk / asks : 0;
+  // 准确率一次算成整数百分比：三处分支和显示读的是同一个数，不会出现
+  // 「显示 80% 却落进 60% 那一档」这种小数与取整不同步。
+  const acc = asks ? Math.round((G.runOk * 100) / asks) : 0;
   /**
    * 结论只回答一件事：下一局先改哪里。
    *
@@ -39,13 +39,13 @@ export function endRun(win: boolean) {
   let verdict: string;
   if (!asks) {
     verdict = '这一局一道题都没答。点开知识卡才会出题；基础牌不出题，也不退行动力。';
-  } else if (acc >= 0.8) {
-    verdict = `你答对了 ${Math.round(acc * 100)}%。答对才结算，免答次数也是这么攒的。`;
-  } else if (acc >= 0.6) {
-    verdict = `你答对了 ${Math.round(acc * 100)}%。`
+  } else if (acc >= 80) {
+    verdict = `你答对了 ${acc}%。答对才结算，免答次数也是这么攒的。`;
+  } else if (acc >= 60) {
+    verdict = `你答对了 ${acc}%。`
       + (weak ? `错得最多的是「${weak.t}」，下一局先把它连着答两轮。` : '');
   } else {
-    verdict = `你答对了 ${Math.round(acc * 100)}%。牌组 ${G.deck.length} 张，`
+    verdict = `你答对了 ${acc}%。牌组 ${G.deck.length} 张，`
       + (weak ? `错的集中在「${weak.t}」。先把这一章连着答两轮，再压薄牌组。` : '先压薄牌组。');
   }
 

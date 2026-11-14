@@ -3,6 +3,10 @@ import type { CardDef, CardId } from '../model/types';
 /**
  * 初始基础牌：4 张基础斩击 + 4 张基础格挡。不答题，不可获取，但可以精炼、遗忘。
  * 数值低于知识卡，只保证这一回合有牌可打，不保证打得赢。
+ *
+ * 这里的 `atk` / `blk` 就是**打出去的那个数**，和知识卡一个口径。所以这两张
+ * 必须跟着 `npm run cards` 一起看 —— 它们曾经不在卡表里，效果原型去掉倍率时
+ * 基础格挡从 6 点悄悄掉到 3 点，新手第一幕的存活层数少了一半，而所有断言都是绿的。
  */
 const STRIKE: CardDef = {
   id: 'base:strike', topic: '基础', name: '基础斩击',
@@ -11,7 +15,7 @@ const STRIKE: CardDef = {
 
 const GUARD: CardDef = {
   id: 'base:guard', topic: '基础', name: '基础格挡',
-  atk: 0, blk: 3, cost: 1, eff: 'guard', kind: 'basic', type: 'defense',
+  atk: 0, blk: 6, cost: 1, eff: 'guard', kind: 'basic', type: 'defense',
 };
 
 export const BASICS: CardDef[] = [

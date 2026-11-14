@@ -2,7 +2,7 @@ import type { AnswerRecord, StageDigest } from '../model/types';
 import { readStore, storeAvailable, writeStore } from '../infra/storage';
 
 /**
- * 按章节记的学习档案：`MEM` 记卡，这里记章节 + 题号。
+ * 按章节记的学习档案：章节 + 题号的正确/错误次数，出题和结算页读它。
  * 不参与战斗结算，只在答题后记账、结算 / 过幕时落盘。
  */
 

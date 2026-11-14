@@ -1,7 +1,7 @@
 import type { MapNode, NodeType } from '../model/types';
 import { STAGES, STAGE_ROWS, stageOf } from '../model/data';
 import { G } from '../infra/state';
-import { shuffle, pick } from '../infra/util';
+import { shuffle, pick, roll } from '../infra/util';
 
 /**
  * 一幕的分支地图与层号换算。一局 100 层，但地图一次只装 20 行，过幕换图。
@@ -41,10 +41,11 @@ export function curFloor(): number {
  */
 function rowSize(r: number): number {
   if (r === 1) return 2;
-  const x = Math.random();
-  if (x < 0.1) return 1;
-  if (x < 0.44) return 2;
-  if (x < 0.84) return 3;
+  // 整数份数：10 份独木桥、34 份双列、40 份三列、16 份四岔。
+  const x = roll();
+  if (x <= 10) return 1;
+  if (x <= 44) return 2;
+  if (x <= 84) return 3;
   return 4;
 }
 
@@ -85,7 +86,7 @@ function rowCols(n: number, prev: number[]): number[] {
  */
 function diversify(row: MapNode[], allowRest: boolean) {
   if (row.length < 2 || !row.every((nd) => nd.type === 'fight')) return;
-  row[row.length - 1].type = allowRest && Math.random() < 0.5 ? 'rest' : 'event';
+  row[row.length - 1].type = allowRest && roll() <= 50 ? 'rest' : 'event';
 }
 
 /**
@@ -110,7 +111,7 @@ export function genStage(stage = G.stage): MapNode[][] {
     const row = cols.map((c) => {
       let type: NodeType;
       if (r === MAP_ROWS - 2) type = 'rest';
-      else if (r === 1) type = Math.random() < 0.55 ? 'fight' : 'event';
+      else if (r === 1) type = roll() <= 55 ? 'fight' : 'event';
       else type = rollType(r, def.mix, rowRest);
       if (type === 'elite') elites += 1;
       return { col: c, type } as MapNode;
@@ -120,7 +121,15 @@ export function genStage(stage = G.stage): MapNode[][] {
     if (!row.some((nd) => nd.type === 'rest')) lastRest = false;
     else lastRest = true;
   }
-  rows.push([{ col: entry, type: 'boss' } as MapNode]);
+  // Boss 的列跟着复习点那一行走，不固定在中列：
+  // 固定在中列时，最后一条边可能横跨两列 —— 那正是别处都在避免的长斜线
+  // （`stagecheck` 的「每个节点都挨着上一行」会偶发红，就是这一行）。
+  const gate = rows[rows.length - 1];
+  const bossCol = gate.reduce(
+    (best, nd) => (Math.abs(nd.col - entry) < Math.abs(best - entry) ? nd.col : best),
+    gate[0].col,
+  );
+  rows.push([{ col: bossCol, type: 'boss' } as MapNode]);
 
   // 一幕里一只精英都没有会显得太平：精英是增益牌唯一的稳定来源。
   // 从第 6..14 行里挑一个能改成精英的节点。不能在随机位置直接改：
@@ -144,7 +153,7 @@ export function genStage(stage = G.stage): MapNode[][] {
         .sort((p, q) => p.d - q.d || p.j - q.j);
       x.next = [s[0].j];
       // 第二条边只在"横向还在一列之内"时开：既是岔路，也不至于变成蜘蛛网
-      if (s[1] && s[1].d <= 1 && Math.random() < 0.62) x.next.push(s[1].j);
+      if (s[1] && s[1].d <= 1 && roll() <= 62) x.next.push(s[1].j);
     });
     b.forEach((y, j) => {
       if (a.some((x) => x.next.includes(j))) return;
@@ -162,15 +171,20 @@ export function genStage(stage = G.stage): MapNode[][] {
   return rows;
 }
 
-/** 按一幕的配比抽一个节点类型。前 5 行不出精英，上一行是复习点时不再出复习点。 */
+/**
+ * 按一幕的配比抽一个节点类型。前 5 行不出精英，上一行是复习点时不再出复习点。
+ *
+ * 配比是**整数份数**（38 / 20 / 26 / 16 份），抽签也画在整数上：四类各占几份，
+ * 一目了然。比例形式（0.38）读起来像是"38% 的层"，其实只是权重，还得乘 100 才看得懂。
+ */
 function rollType(r: number, mix: { fight: number; event: number; rest: number; elite: number }, lastRest: boolean): NodeType {
   const elite = r < 5 ? 0 : mix.elite;
   const rest = lastRest ? 0 : mix.rest;
   const total = mix.fight + mix.event + rest + elite;
-  let x = Math.random() * total;
-  if ((x -= mix.fight) < 0) return 'fight';
-  if ((x -= mix.event) < 0) return 'event';
-  if ((x -= rest) < 0) return 'rest';
+  let x = 1 + Math.floor(Math.random() * total);
+  if ((x -= mix.fight) <= 0) return 'fight';
+  if ((x -= mix.event) <= 0) return 'event';
+  if ((x -= rest) <= 0) return 'rest';
   return elite > 0 ? 'elite' : 'fight';
 }
 

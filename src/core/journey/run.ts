@@ -7,7 +7,6 @@ import { startDeck } from '../cards/starter';
 import { applyInstant, clearRunOnce, clearStageOnce, rulesOf } from '../cards/powers';
 import { enterStage } from '../library/stage';
 import { saveStageMem } from '../library/stagemem';
-import { tickDue } from '../library/memory';
 import { availableNodes, curFloor, FLOOR_MAX, genStage } from '../map/gen';
 import { setSettleHandler, startBattle, resetBattleFields } from '../combat';
 import { drawEvent } from './events';
@@ -22,7 +21,6 @@ setSettleHandler(settlePending);
 /** 一局的编排：开局、进节点、结算后决定下一步。 */
 /** 幕 Boss 死掉是换图，只有第五幕的 Boss 结束一局。 */
 export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []) {
-  tickDue();
   // 开局前先把上一局的答题流水落盘
   saveStageMem();
   clearRun();

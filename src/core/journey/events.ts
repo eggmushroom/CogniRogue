@@ -3,7 +3,7 @@ import type { CardDef, CardPickFrom, EventDef, Panel } from '../model/types';
 import { G, log } from '../infra/state';
 import { healHp, loseHp, raiseMaxHp } from '../infra/write';
 import { emit } from '../infra/events';
-import { pick } from '../infra/util';
+import { pick, roll } from '../infra/util';
 import { PACK } from '../cards/pack';
 import { baseIdOf, defOf, isUpgraded, upGain, upgradedId } from '../cards/registry';
 import { canOnceStage, onceThisStage, rulesStatic } from '../cards/powers';
@@ -97,9 +97,15 @@ function hurtBy(n: number) {
   return lost;
 }
 
-/** 复习基础回复量，不含地图册那一次额外。唯一算法，别的写法都是副本。 */
+/**
+ * 复习基础回复量，不含地图册那一次额外。唯一算法，别的写法都是副本。
+ *
+ * 是固定点数而不是按上限的比例：`上限 × 62%` 在后期（上限 126）一次回 78 点，
+ * 等于半条命，而回血是这一局唯一的续航 —— 复习点于是变成"回血或什么都别做"。
+ * 固定 45 点让它是一个有价格的选项：上限越高，一次复习补得越不够。
+ */
 function restBase(): number {
-  return Math.round(G.maxHp * rulesStatic().restPct);
+  return Math.max(1, rulesStatic().restHp);
 }
 
 /**
@@ -318,7 +324,7 @@ export const EVENTS: EventDef[] = [
         t: '顺着读下去',
         sub: () => `一半概率得到一张（已精炼）知识卡，一半概率失去 ${FX.wrongPageCost} 点生命`,
         run: () => {
-          if (Math.random() < 0.5) {
+          if (roll() <= 50) {
             const c = grantCard(true);
             return c
               ? `这一页正好接得上：你抄下了「${c.topic}」（已精炼）。`
@@ -472,7 +478,7 @@ export const EVENTS: EventDef[] = [
         t: '一张张揭开',
         sub: () => '一半概率得到一张随机知识卡，一半概率什么也没有',
         run: () => {
-          if (Math.random() < 0.5) {
+          if (roll() <= 50) {
             const c = grantCard(false);
             return c
               ? `最底下那张还是干的：你收下了「${c.topic}」。`

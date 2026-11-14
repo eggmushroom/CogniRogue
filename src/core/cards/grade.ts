@@ -2,6 +2,7 @@ import type { CardDef, CardGrade, CardId } from '../model/types';
 import { defOf } from './registry';
 import { costOf } from './cost';
 import { cardKind } from './kinds';
+import { BAL } from '../model/data';
 
 /**
  * 卡牌等级跟费用走：C 0 / B 1 / A 2 / S 3 或 X。等级就是本场要答对的次数。
@@ -43,7 +44,11 @@ export const needsAsk = (id: CardId | null | undefined, charge: Record<string, n
 };
 
 /**
- * 一场预抽多少题：按牌组知识卡的等级总和估算，乘 0.6 加 3 道余量，限 6–20。
+ * 一场预抽多少题：按牌组知识卡的等级总和估算。
+ *
+ * 算式是整数乘除（总和 × 3 ÷ 5 + 3 道余量），不是百分比：牌组里每 5 级领 3 道，
+ * 多出来的 3 道留给"答错重打同一张"。写成 0.6 的话，改牌组时没人算得出
+ * 「本场还剩几道新题」会变成多少 —— 而那是玩家在战斗界面看得见的数。
  */
 export function battleQuestionCount(deck: CardId[]): number {
   let need = 0;
@@ -53,6 +58,6 @@ export function battleQuestionCount(deck: CardId[]): number {
     // 等级跟费用走，精炼不加等级。
     need += gradeNeed(card);
   }
-  const n = Math.round(need * 0.6) + 3;
+  const n = Math.round((need * BAL.qPer) / BAL.qOf) + BAL.qPad;
   return Math.max(6, Math.min(20, n));
 }

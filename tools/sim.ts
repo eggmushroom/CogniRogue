@@ -6,11 +6,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { BAL, MISS_RULE, MODE_BY_ID, POWER_BY_ID } from '../src/core/model';
+import { BAL, MODE_BY_ID, POWER_BY_ID } from '../src/core/model';
 import type { CardDef, CardId, ModeId, PowerId } from '../src/core/model';
 import {
   G, PACK, answer, availableNodes, bankQuestionCount, canPay, cardAskState, chooseEventOption, defOf, dismissFeedback,
-  endTurn, enterNode, forgetCard, loadQuestionBank, openCardPick, playBasic, playFree, resetMemory, restHeal,
+  endTurn, enterNode, forgetCard, loadQuestionBank, openCardPick, playBasic, playFree, restHeal,
   skipReward, startRun, takeCard, ackPower, askCard, mergePacks, upgradeCard, cardKind, cardGrade,
   moveOf, cancelPanel, isUpgraded, JUNK_ID, setScheduler,
 } from '../src/core';
@@ -51,10 +51,6 @@ let TAKE = true;
 let DECK_MAX = 14;
 /** 旧路径对照：绕开精英、事件一律离开、跳过战后奖励。 */
 let OLD_PATH = false;
-/** 每个水平开跑前清空记忆。默认关：记忆跨局累积才是真实玩家。 */
-let FRESH = false;
-/** 每局都清空记忆：模拟第一次打开这个题库。 */
-let FRESH_RUN = false;
 /** 复习点：血低于这个比例就休息，否则精炼。 */
 let SMART = true;
 
@@ -68,7 +64,7 @@ let MODE: ModeId | null = null;
 let BOON: PowerId | null = null;
 
 for (const arg of process.argv.slice(2)) {
-  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|deck|path|rf|fresh|freshrun|rest|sm|smart|ht|nopow|mode|boon)=([\w.-]+)$/.exec(arg);
+  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|deck|path|rf|rest|sm|smart|ht|nopow|mode|boon)=([\w.-]+)$/.exec(arg);
   if (!m) continue;
   const v = Number(m[2]);
   if (m[1] === 'mode') { MODE = m[2] as ModeId; continue; }
@@ -77,10 +73,8 @@ for (const arg of process.argv.slice(2)) {
   if (m[1] === 'take') { TAKE = v > 0; continue; }
   if (m[1] === 'deck') { DECK_MAX = Math.max(10, Math.round(v)); continue; }
   if (m[1] === 'path') { OLD_PATH = m[2] === 'old'; continue; }
-  if (m[1] === 'fresh') { FRESH = v > 0; continue; }
-  if (m[1] === 'freshrun') { FRESH_RUN = v > 0; continue; }
-  if (m[1] === 'hp') BAL.hp = v;
-  else if (m[1] === 'dmg') BAL.dmg = v;
+  if (m[1] === 'hp') BAL.foeHpAdd = v;
+  else if (m[1] === 'dmg') BAL.foeDmgAdd = v;
   else if (m[1] === 'ap') { BAL.baseAp = v; }
   else if (m[1] === 'hand') BAL.drawPerTurn = v;
   else if (m[1] === 'ad') BAL.answerDraw = v;
@@ -90,9 +84,8 @@ for (const arg of process.argv.slice(2)) {
   else if (m[1] === 'rf') BAL.refund = v > 0 ? 1 : 0;
   else if (m[1] === 'smart') { SMART = v > 0; }
   else if (m[1] === 'nopow') { NOPOW = v > 0; }
-  else if (m[1] === 'rest') BAL.restPct = v;
+  else if (m[1] === 'rest') BAL.restHp = v;
   else if (m[1] === 'sm') BAL.stageMaxHp = v;
-  else if (m[1] === 'ht') BAL.hpType = v;
 }
 if (OLD_PATH) TAKE = false;
 
@@ -191,7 +184,6 @@ function advance(idx: number) {
 }
 
 function runOne(p: number, st: Stat) {
-  if (FRESH_RUN) resetMemory();
   startRun(MODE, BOON ? [BOON] : []);
   let guard = 0;
   let answers = 0;
@@ -315,7 +307,7 @@ function runOne(p: number, st: Stat) {
         // 挡不挡得住，是这个游戏每一回合真正的决定。机器人必须会挡：
         // 只会打输出的话，模拟出来的"掉血量"是半个玩家，数值就全被带偏了。
         const mv = G.enemy ? moveOf(G.enemy) : null;
-        const inc = mv && mv.k === 'atk' ? Math.round(G.enemy!.dmg * (mv.m ?? 1)) * (mv.times ?? 1) : 0;
+        const inc = mv && mv.k === 'atk' ? (G.enemy!.dmg + (mv.add ?? 0)) * (mv.times ?? 1) : 0;
         if (inc - G.block >= 6) {
           const gd = G.hand.findIndex((id) => {
             const d = defOf(id);
@@ -408,7 +400,6 @@ const summary: Array<{
 }> = [];
 
 for (const lv of LEVELS) {
-  if (FRESH) resetMemory();
   const st: Stat = {
     wins: 0, floors: 0, answers: 0, right: 0, runs: 0, draws: 0,
     deck: 0, kinds: 0, battles: 0, turns: 0, powers: 0,
@@ -448,9 +439,8 @@ if (mid) {
     + `，每场 ${(mid.free / Math.max(0.01, mid.battles)).toFixed(2)} 次）`);
   console.log(`初始牌组：一局打出 ${mid.basics.toFixed(1)} 张基础牌`
     + `　·　一局拿到 ${mid.powers.toFixed(1)} 个增益`);
-  console.log(`答错：${mid.misses.toFixed(1)} 次/局`
-    + `（这一手作废、牌进弃牌堆；稳固度答错 ×${MISS_RULE.stabDrop}，答对 ×${MISS_RULE.stabGain}）`);
-  console.log(`路径：${OLD_PATH ? '旧基线' : '真实'} · 取卡：${TAKE ? `战后拿卡（目标 ≤${DECK_MAX} 张）` : '战后跳过'}` + ` · 记忆：${FRESH_RUN ? '每局重置' : FRESH ? '每个水平重置' : '跨局累积'}`);
+  console.log(`答错：${mid.misses.toFixed(1)} 次/局（这一手作废、牌进弃牌堆）`);
+  console.log(`路径：${OLD_PATH ? '旧基线' : '真实'} · 取卡：${TAKE ? `战后拿卡（目标 ≤${DECK_MAX} 张）` : '战后跳过'}`);
 }
 
 // 验收标准：水平越高胜率必须更高。

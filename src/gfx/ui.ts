@@ -596,7 +596,7 @@ export function drawCard(
     g.restore();
   }
   const rows = (per > 0 ? 1 : 0)
-    + (out.blk > 0 || out.pierce || out.healRatio > 0 || out.draw > 0 ? 1 : 0)
+    + (out.blk > 0 || out.pierce || out.healPer > 0 || out.draw > 0 ? 1 : 0)
     + (out.selfHp > 0 ? 1 : 0)
     + (xc ? 0.75 : 0)
     + ruleLines.length;

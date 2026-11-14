@@ -28,8 +28,8 @@ export function liveStatOf(id: CardId): LiveStat {
   if (link) {
     if (link.atkFrom) {
       const unit = link.atkFrom === 'drawn' ? G.drawnThisTurn : G.block;
-      const per = link.per ?? 1;
-      atk = (link.floor ?? 0) + Math.max(0, Math.round(unit * per));
+      // 换算是一比一：抽一张 +1 伤、护甲等额伤害。没有系数，也不需要取整。
+      atk = (link.floor ?? 0) + Math.max(0, unit);
       reasons.push(link.atkFrom === 'drawn'
         ? `本回合抽了 ${unit} 张牌 → 底数 ${atk}`
         : `当前 ${unit} 点格挡 → 底数 ${atk}`);
@@ -57,16 +57,24 @@ export function liveStatOf(id: CardId): LiveStat {
 /**
  * 一手真的结算完之后记账：消耗上一张的加成、记下这张打过一次、
  * 需要时给下一张留一笔。返回一句要写进结算说明的话。
+ *
+ * `spent` 是「这一手兑现了那笔加成吗」：只有真的有伤害段的牌才算兑现。
+ * 0 伤害的牌（合页 / 归零点 / 没甲的铸甲为刃）既不消耗、也不谎称"已兑现" ——
+ * 否则「续火」的 ×2 会在一次纯防御出牌里无声消失，玩家读到的是"已兑现"。
  */
-export function commitLink(id: CardId): string {
+export function commitLink(id: CardId, spent = true): string {
   const card = defOf(id);
   const link = card.link;
   const key = baseIdOf(id);
   const notes: string[] = [];
 
   if (G.nextBoost) {
-    notes.push(`「${G.nextBoost.from}」的加成已兑现`);
-    G.nextBoost = null;
+    if (spent) {
+      notes.push(`「${G.nextBoost.from}」的加成已兑现`);
+      G.nextBoost = null;
+    } else {
+      notes.push(`「${G.nextBoost.from}」的加成留着：这一手没有伤害`);
+    }
   }
   G.cardPlays[key] = (G.cardPlays[key] ?? 0) + 1;
   if (link?.grow) notes.push(`「${card.name}」本场第 ${G.cardPlays[key]} 次`);
@@ -78,6 +86,9 @@ export function commitLink(id: CardId): string {
   }
   return notes.join(' · ');
 }
+
+/** 这一手的段值里有没有真伤害：临时加成只被「打得出伤害」的牌兑现。 */
+export const boostSpent = (hits: number[]): boolean => hits.some((h) => h > 0);
 
 /**
  * 战斗里那行**状态**说明。只在手牌里真有会读它的牌时才提，

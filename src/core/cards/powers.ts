@@ -23,7 +23,8 @@ export interface Rules {
   answerDraw: number;
   basicBlock: number;
   rewardPicks: number;
-  restPct: number;
+  /** 复习点回复几点生命 */
+  restHp: number;
   atkBonus: number;
   blkBonus: number;
   dmgCut: number;
@@ -63,7 +64,7 @@ export function rulesStatic(): Rules {
     answerDraw: hasPower('mirrorcard') ? BAL.answerDrawCap : 0,
     basicBlock: hasPower('syllabus') ? BAL.syllabusBlock : 0,
     rewardPicks: BAL.rewardPicks + (hasPower('sticky') ? BAL.stickyChoice : 0),
-    restPct: BAL.restPct + (hasPower('mend') ? BAL.mendRest : 0),
+    restHp: BAL.restHp + (hasPower('mend') ? BAL.mendRest : 0),
     atkBonus: hasPower('press') ? BAL.pressAtk : 0,
     blkBonus: hasPower('code') ? BAL.codeBlk : 0,
     dmgCut: hasPower('nightlight') ? BAL.nightCut : 0,
@@ -87,9 +88,9 @@ export function rulesOf(ctx: RulesCtx = {}): Rules {
   // 只在静态层上叠加「此刻」才成立的三项；其余字段原样透传。
   return {
     ...base,
-    apMax: base.apMax + (first && hasPower('hourglass') ? 1 : 0),
+    apMax: base.apMax + (first && hasPower('hourglass') ? BAL.hourglassAp : 0),
     draw: base.draw
-      + (hasPower('index') && handLeft <= 2 ? BAL.indexDraw : 0)
+      + (hasPower('index') && handLeft <= BAL.indexHand ? BAL.indexDraw : 0)
       + (first && hasPower('dogear') ? BAL.dogearDraw : 0),
     startBlock: first ? base.startBlock + (hard && hasPower('corner') ? BAL.cornerBlock : 0) : 0,
   };
@@ -246,8 +247,8 @@ function upgradeBasics(): number {
 export function wishGuard(): boolean {
   if (!onceThisRun('wish')) return false;
   G.pending = null;
-  // 按上限的一个比例活下来，而不是固定点数：固定点数在第四幕等于没救。
-  reviveHp(G.maxHp * BAL.wishPct);
+  // 是固定点数而不是比例：一个"以 30 点活下来"的承诺，玩家一眼能算清够挨几下。
+  reviveHp(BAL.wishHp);
   log(`许愿条燃尽了：你在最后一刻活了下来（${G.hp}/${G.maxHp}）`, 'hi');
   return true;
 }

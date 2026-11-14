@@ -57,7 +57,7 @@ export function devJump() {
   if (d.startsWith('foe:')) {
     const arg = d.slice(4);
     const MOVES: Record<string, Move> = {
-      atk: { k: 'atk', m: 1 },
+      atk: { k: 'atk' },
       jam: { k: 'jam', n: 2 },
       def: { k: 'def', v: 12 },
       buff: { k: 'buff', v: 2 },
@@ -149,7 +149,7 @@ export function devJump() {
     dismissFeedback();
   } else if (d === 'report') {
     // 只是为了让文档截图里不是一排 0：正常游戏里这些数字全部来自真实答题。
-    // 章节掌握读的是 STAGE_MEM，所以这里造的是章节档案，不是卡牌记忆。
+    // 章节掌握读的是 STAGE_MEM，所以这里造的是章节档案。
     const demo: Array<[number, number]> = [[9, 2], [7, 4], [12, 6], [4, 5], [0, 0]];
     CURRICULUM.forEach((p, i) => {
       const e = stageMemOf(p.topic);

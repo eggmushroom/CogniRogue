@@ -6,10 +6,12 @@ import { emit } from '../infra/events';
 import type { GameEvent } from '../infra/events';
 import { gainAp, grantBlock, healHp, loseHp, spendAp } from '../infra/write';
 import { defOf } from '../cards/registry';
+import { cardType } from '../cards/kinds';
 import { onceThisFight, rulesOf } from '../cards/powers';
 import { isXCost, costNow } from '../cards/cost';
-import { commitLink, liveStatOf } from './link';
+import { boostSpent, commitLink, liveStatOf } from './link';
 import { planStrike } from './strike';
+import type { StrikeOpts } from './strike';
 import { drawCards } from './deck';
 
 /**
@@ -177,11 +179,11 @@ export function mergeSettlement(base: Settlement, extra: Settlement): Settlement
  * 一手牌的**决定**：算出每段伤害、整手资源预算和这一手的记账结果。
  * 不写任何可见状态 —— 敌人 hp/block、玩家 hp/block/ap、抽牌、事件都留给 settle。
  *
- * `mult` 只给装订线的半额结算传 0.5，其余一律 1；`repeat` 是 X 费花掉的点数，
- * 乘在**段数**上。卡面、答题面板、结算都由 planStrike 给出同一份 EffOut。
+ * `cut` 只给装订线的削减传（整数点数）；`repeat` 是 X 费花掉的点数，乘在
+ * **段数**上。卡面、答题面板、结算都由 planStrike 给出同一份 EffOut。
  */
 export function buildSettlement(
-  id: CardId, opts: { mult?: number; repeat?: number } = {},
+  id: CardId, opts: StrikeOpts = {},
 ): Settlement {
   const card = defOf(id);
   // 这一回合第几张真正生效的牌。答错不增加，所以墨水瓶/节拍器只数打出去的牌。
@@ -196,7 +198,6 @@ export function buildSettlement(
       : { dealt: 0, absorbed: 0, killed: false };
     return { raw, dealt: r.dealt, absorbed: r.absorbed };
   });
-  const dmg = hits.reduce((n, h) => n + h.dealt, 0);
 
   const s: Settlement = {
     id, eff: card.eff, target: 'enemy', hits, pierce: out.pierce,
@@ -209,10 +210,11 @@ export function buildSettlement(
   b.draw = out.draw;
   b.selfHp = out.selfHp;
   b.hurt = out.selfHp;
-  // 按实际打进去的伤害回血；0 伤害不回 1 点，满血时预算就是 0。
-  if (out.healRatio > 0 && dmg > 0) {
-    b.heal = Math.max(0, Math.min(G.maxHp - G.hp, Math.max(1, Math.round(dmg * out.healRatio))));
-  }
+  // 内化：每段最多回 healPer 点，实际回多少看这一段真打进去多少 ——
+  // 被格挡吃掉的部分不回血。只数"有没有命中"会让 1 点伤害也回满一份，
+  // 一张内化牌顶着敌人 14 点护甲还照样回满，比按伤害折算强得多。
+  const healed = hits.reduce((n, h) => n + Math.min(out.healPer, h.dealt), 0);
+  if (healed > 0) b.heal = Math.max(0, Math.min(G.maxHp - G.hp, healed));
 
   if (out.selfHp > 0) {
     log(`「${card.name}」反噬：你失去 ${out.selfHp} 点生命`, 'bad');
@@ -221,11 +223,16 @@ export function buildSettlement(
   // 节奏型增益按「真正生效的牌」计数。抽牌与行动力都只记进预算，
   // 由执行器一次写完，日志排在抽牌之后才能报实际张数。
   const R = rulesOf();
-  const ink = R.inkDraw > 0 && G.cardsThisTurn % 3 === 0 ? R.inkDraw : 0;
-  const pulse = G.cardsThisTurn === 3 && onceThisFight('pulse') ? BAL.pulseRefund : 0;
+  // 墨水瓶：卡面写「一回合只数一次」，所以只认第 3 张，不认第 6 / 9 张。
+  // 写成 `% 3 === 0` 会让一回合打六张牌的牌组白拿两次抽牌。
+  const ink = R.inkDraw > 0 && G.cardsThisTurn === BAL.inkAt ? R.inkDraw : 0;
+  const pulse = G.cardsThisTurn === BAL.pulseCards && onceThisFight('pulse') ? BAL.pulseRefund : 0;
   const varnish = !isXCost(card) && costNow(card) === 0 && onceThisFight('varnish')
     ? BAL.varnishDraw : 0;
-  if (out.hits.some((h) => h > 0) && onceThisFight('seed')) {
+  // 种纸：卡面写「第一次打出攻击牌」，按**类别**判，不按"这一手有没有伤害段"。
+  // 用伤害段判会让带伤害的防御牌（长链壁垒）触发、让 0 伤的铸甲为刃不触发 ——
+  // 玩家读的是类别，规则就该按类别。
+  if (cardType(card) === 'attack' && onceThisFight('seed')) {
     b.blk += BAL.seedBlock;
     s.instant.push(() => log(`种纸：这一场第一张攻击牌，补 ${BAL.seedBlock} 点格挡`, 'hi'));
   }
@@ -236,7 +243,8 @@ export function buildSettlement(
   b.draw += ink + varnish;
 
   // 走完才记账：答错这一手作废，上一张留的倍率继续留着。
-  s.nextNote = commitLink(id);
+  // 兑现条件由 `boostSpent` 判：0 伤害的牌不消耗上一张留的加成。
+  s.nextNote = commitLink(id, boostSpent(out.hits));
 
   s.instant.unshift(() => {
     b.draw = drawCards(b.draw);

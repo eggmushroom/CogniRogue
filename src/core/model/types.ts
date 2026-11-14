@@ -1,14 +1,5 @@
 /** 领域模型。这一层不认识 canvas，也不认识 DOM。 */
 
-/** 答错价码：三种模式共用；差异只来自开局带的增益。 */
-export interface MissRule {
-  /** 答错时稳固度乘数 */
-  stabDrop: number;
-  /** 答对时稳固度系数 */
-  stabGain: number;
-}
-
-
 export interface Question {
   /** 稳定题号：按「主题 + 规范化题干」生成，不能退回数组下标。 */
   qid: string;
@@ -59,7 +50,7 @@ export interface StageDigest {
   topic: string;
   ok: number;
   bad: number;
-  /** 当前章节的正确率，只用于结算页；不是 FSRS 稳固度。 */
+  /** 当前章节的正确率，只用于结算页。 */
   mastery: number;
   /** 错得最多的题，按 bad 降序；给下一章生成时做重点。 */
   weak: { qid: string; ok: number; bad: number }[];
@@ -80,16 +71,16 @@ export type CardGrade = 'C' | 'B' | 'A' | 'S';
 /** 效果原型：`strike` 是基准，洞察破防、巩固堆挡、内化回血、串联分段、专注抽牌。 */
 export type Eff = 'strike' | 'pierce' | 'guard' | 'drain' | 'chain' | 'focus';
 
-/** 单卡签名改动：覆盖效果原型的一部分参数，让同原型的卡数值不一样。 */
+/**
+ * 单卡签名改动：只改"这张牌怎么花出去"，不改伤害与格挡的大小。
+ * 数值本身写在卡表的 `atk` / `blk` 上 —— 这里再留一个倍率，就等于给同一张牌
+ * 留了两套数，卡面写 7 打出来 9 的时候没人知道该改哪一处。
+ */
 export interface EffMods {
-  /** 覆盖原型的攻击倍率 */
-  atkMul?: number;
-  /** 覆盖原型的格挡倍率 */
-  blkMul?: number;
   /** 覆盖结算段数（串联默认 2 段，签名卡可以打 3 段） */
   times?: number;
-  /** 覆盖回血比例（内化默认 0.5） */
-  heal?: number;
+  /** 每段命中回复几点生命（整数，不按伤害比例） */
+  healPer?: number;
   /** 覆盖抽牌数（专注默认 1） */
   draw?: number;
   /** 打出后自己失去的生命，不是费用；结算走 `loseHp`。 */
@@ -146,10 +137,8 @@ export interface PowerDef {
  * 展示与结算都走 `liveStatOf`，卡面数字和实际伤害必须同源。
  */
 export interface CardLink {
-  /** 攻击底数从哪个战场状态换算；不写就用卡面 atk */
+  /** 攻击底数从哪个战场状态换算；不写就用卡面 atk。换算是 1:1，没有系数 */
   atkFrom?: 'drawn' | 'block';
-  /** 每单位状态换算多少攻击底数，默认 1 */
-  per?: number;
   /** 状态为 0 时的保底攻击底数，默认 0 */
   floor?: number;
   /** 本场每打出过一次这张牌，它自己下次多多少攻击底数 */
@@ -206,8 +195,12 @@ export type MoveKind = 'atk' | 'def' | 'jam' | 'buff';
 
 export interface Move {
   k: MoveKind;
-  /** 攻击倍率 */
-  m?: number;
+  /**
+   * 这一招每段的伤害 = 它自己的 `dmg` **加**这个数（不写 = 0）。
+   * 早先这里是倍率（`m: 0.55`），于是"轻击"在第四幕打出的数比第一幕多一倍半；
+   * 加减法让招式的轻重在整局里保持同一个差值。
+   */
+  add?: number;
   /** 格挡值 / buff 值 */
   v?: number;
   /** 杂念张数 */
@@ -240,7 +233,7 @@ export interface StageDef {
   color: string;
   /** 立绘色相偏移；同一幕的怪共用一个色相 */
   hue: number;
-  /** 幕内每层（除去首行与末两行）的节点权重 */
+  /** 幕内每层（除去首行与末两行）的节点权重；整数份数，四类加起来是 100 份 */
   mix: { fight: number; event: number; rest: number; elite: number };
 }
 
@@ -263,6 +256,8 @@ export interface FoeTpl {
   stage: number;
   tag: string;
   hp: number;
+  /** 幕内每上一个强度台阶（5 层），血量加几点。见 `foe.ts` 的 `TIER`。 */
+  hpStep: number;
   dmg: number;
   moves: Move[];
   mech?: Mech;
@@ -313,16 +308,6 @@ export interface MapNode {
   col: number;
   type: NodeType;
   next: number[];
-}
-
-/** 复习调度里一条卡的记忆状态（FSRS-lite：稳定度 + 到期间隔，单位"局"）。 */
-export interface MemEntry {
-  stab: number;
-  due: number;
-  reps: number;
-  lapses: number;
-  ok: number;
-  bad: number;
 }
 
 /** 一次答题的流水：只给统计、阶段摘要和导出用，不参与结算。 */

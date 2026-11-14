@@ -6,15 +6,15 @@ import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS, effSummaryOf } from '../s
 import type { MapNode } from '../src/core/model';
 import {
   EVENTS, G, answer, askCard, canAsk, canPay, cancelPanel, chooseEventOption, clearRun, defOf,
-  dismissFeedback, endTurn, forgetCard, intentText, parseMem, playBasic,
+  dismissFeedback, endTurn, forgetCard, intentText, playBasic,
   runSaveInfo, skipReward, takeCard, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
   loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf, LEGACY_CARD_IDS,
   allQuestions, stageMemOf, resetStageMemory, cardKind, enterStage, BASICS, drawBattleQuestions,
   cardGrade, gradeNeed, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
-  openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight,
+  openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight, restHeal,
   upGain, rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
   grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
-  lastFeedback, onFx, effFace, planStrike, setScheduler, panelOf,
+  lastFeedback, onFx, effFace, planStrike, setScheduler, panelOf, buildSettlement,
   parseQuestionBank, shuffleOptions, SNAP_V, SAVE_KEY, drawEvent, MAP_COLS,
 } from '../src/core';
 
@@ -81,6 +81,17 @@ ok(floorOf(3, 0) === 41 && floorOf(5, 19) === 100, '层号连续：第 3 幕第 
   ok(m.every((row, r) => r === 0 || row.every((a) => m[r - 1].some((b) => Math.abs(a.col - b.col) <= 1))),
     '每个节点都挨着上一行的某个节点（边最多跨一列，不会有横贯的长斜线）');
 
+  // 一次生成一张图时，这条约束曾经偶发失败（Boss 固定在中列，复习点那行偶尔
+  // 离它两列）。连生成 200 张，把"偶尔"变成"每次"。
+  let hop = 0;
+  for (let i = 0; i < 200; i++) {
+    const g = genStage(1 + (i % 5));
+    if (!g.every((row, r) => r === 0 || row.every((a) => g[r - 1].some((b) => Math.abs(a.col - b.col) <= 1)))) {
+      hop += 1;
+    }
+  }
+  ok(hop === 0, `连生成 200 张图（五幕轮转），没有一张出现跨两列的边（${hop} 张失败）`);
+
   // 分叉与合流：只有竖线时这两个数都是 0。阈值取很松，只证明"结构在"，
   // 不锁死具体数量 —— 那是随机生成，不是常量表。
   const fork = m.flat().filter((nd) => (nd.next?.length ?? 0) >= 2).length;
@@ -145,7 +156,10 @@ dismissFeedback();
 
 ok(G.stage === 2, `过幕后进入第 ${G.stage} 幕`);
 ok(G.hp === G.maxHp, `过幕回满血（${G.hp}/${G.maxHp}）`);
-ok(G.maxHp === 40 + BAL.stageMaxHp, `生命上限 +${BAL.stageMaxHp}`);
+// 读 `rulesOf()` 而不是 `BAL`：茶会让这条规则比声明值大，卡面与结算都跟它走。
+// 失败时打印三个数，一眼看得出是"没加"还是"加多了"。
+const grown = rulesOf().stageMaxHp;
+ok(G.maxHp === 40 + grown, `生命上限 +${grown}（40 → ${G.maxHp}）`);
 ok(G.map.length === STAGE_ROWS && G.pos === null, '换了一张新图，位置在入口');
 ok(G.screen === 'map', '过幕后回到地图而不是结算页');
 ok(G.panel.k === 'powerdrop', '幕 Boss 掉一个增益（拾取即生效）');
@@ -229,7 +243,8 @@ function battle(stage: number, key: string) {
 // siphon：未挡住时下回合行动力 -1
 {
   const e = battle(5, 'whisperer');
-  e.moves = [{ k: 'atk', m: 2 }];
+  e.dmg = e.dmg * 2;
+  e.moves = [{ k: 'atk' }];
   e.mv = 0;
   G.block = 0;
   G.apDown = 0;
@@ -694,73 +709,53 @@ function missGain(eff: string) {
   ok(statOf('base:strike').atk === 4, '新增的同名卡是白板（精炼不按牌名传染）');
 }
 
-// ── 10d. 敌人成长
-// 层号越高血量与伤害越高；换幕不重置。
+// ── 10d. 敌人成长：幕内每 5 层上一个台阶
+// 血量成长是"每档 +hpStep 点"，不是比例。台阶写死成查表，玩家能算出
+// "再走两层它会变厚"，也能自己核对厚了多少。
 {
   const shard = FOES.find((f) => f.key === 'shard')!;
-  const big = { ...shard, hp: 5000 };
-  const scaleAt = (stage: number, r: number) => {
-    G.stage = stage;
+  const hpAt = (r: number) => {
+    G.stage = 1;
     G.node = { r, i: 0, key: `${r}:0`, col: 1, type: 'fight', next: [] };
-    return makeFoe(big, floorOf(stage, r)).maxHp / (big.hp * BAL.hp);
+    return makeFoe(shard, floorOf(1, r)).maxHp;
   };
-  let prev = 0;
   let mono = true;
-  let first = 0;
-  let last = 0;
-  for (let s = 1; s <= STAGES.length; s++) {
-    for (let r = 0; r < STAGE_ROWS; r++) {
-      const k = scaleAt(s, r);
-      if (prev && k <= prev) mono = false;
-      if (!first) first = k;
-      last = k;
-      prev = k;
-    }
-  }
-  ok(mono, `层号越高，血量系数越大（第 1 层 ×${first.toFixed(3)} → 第 100 层 ×${last.toFixed(3)}，逐层严格递增）`);
-  ok(last / first > 1.6,
-    `塔顶比塔底厚 ${(last / first).toFixed(2)} 倍（曲线见 BAL.growth：开方，前陡后缓）`);
+  for (let r = 1; r < STAGE_ROWS; r++) if (hpAt(r) < hpAt(r - 1)) mono = false;
+  ok(mono, `幕内血量只增不减（第 1 层 ${hpAt(0)} → 第 20 层 ${hpAt(STAGE_ROWS - 1)}）`);
+  ok(hpAt(STAGE_ROWS - 1) > hpAt(0),
+    `幕末比幕初厚 ${hpAt(STAGE_ROWS - 1) - hpAt(0)} 点（每档 +${shard.hpStep}）`);
+  ok(hpAt(5) - hpAt(4) === shard.hpStep, `第 6 层跳一档（+${hpAt(5) - hpAt(4)} 点）`);
+  ok(hpAt(4) === hpAt(0) && hpAt(9) === hpAt(5), '同一个台阶内血量不变');
 
-  // 真实整数血量也不能倒退。
-  G.stage = 1;
-  G.node = { r: 19, i: 0, key: '19:0', col: 1, type: 'fight', next: [] };
-  const endOfOne = makeFoe(shard, 20).maxHp;
-  G.stage = 2;
-  G.node = { r: 0, i: 0, key: '0:0', col: 1, type: 'fight', next: [] };
-  const startOfTwo = makeFoe(shard, 21).maxHp;
-  ok(startOfTwo >= endOfOne, `换幕不清零：第 2 幕入口 ${startOfTwo} ≥ 第 1 幕末 ${endOfOne}`);
+  // 伤害不随层数变：轻击 / 重击的差值是固定的几点，不是"后期连轻击都变重"。
+  const d0 = makeFoe(shard, floorOf(1, 0)).dmg;
+  const d19 = makeFoe(shard, floorOf(1, STAGE_ROWS - 1)).dmg;
+  ok(d0 === d19 && d0 === shard.dmg, `伤害就是招式表上的数（${d0} 点，不随层数变）`);
 
-  // 伤害走同一条曲线。
-  G.stage = 1;
-  G.node = { r: 0, i: 0, key: '0:0', col: 1, type: 'fight', next: [] };
-  const dmg1 = makeFoe(shard, 1).dmg;
-  G.stage = 5;
-  G.node = { r: 19, i: 0, key: '19:0', col: 1, type: 'fight', next: [] };
-  const dmg100 = makeFoe(shard, 100).dmg;
-  ok(dmg100 > dmg1, `层号越高伤害越高（${dmg1} → ${dmg100}）`);
+  // 幕与幕之间：越靠后的幕，怪越厚。
+  const thickest = (stage: number) => Math.max(
+    ...FOES.filter((f) => f.stage === stage && f.type === 'fight').map((f) => f.hp),
+  );
+  ok(thickest(5) > thickest(1) * 2,
+    `第五幕杂兵 ${thickest(5)} 血，是第一幕 ${thickest(1)} 的两倍以上`);
 
-  // Boss 吃全局层号，第 5 幕更厚。
-  const bossHp = (stage: number) => {
-    G.stage = stage;
-    G.node = { r: STAGE_ROWS - 1, i: 0, key: `${STAGE_ROWS - 1}:0`, col: 1, type: 'boss', next: [] };
-    return makeFoe(FOES.find((f) => f.stage === stage && f.type === 'boss')!, floorOf(stage, STAGE_ROWS - 1)).maxHp;
-  };
-  ok(bossHp(5) > bossHp(1) * 1.5, `第 5 幕 Boss ${bossHp(5)} 明显厚于第 1 幕 ${bossHp(1)}`);
+  const bossHp = (stage: number) => makeFoe(
+    FOES.find((f) => f.stage === stage && f.type === 'boss')!,
+    floorOf(stage, STAGE_ROWS - 1),
+  ).maxHp;
+  ok(bossHp(5) > bossHp(1) * 3, `第 5 幕 Boss ${bossHp(5)} 血，第一幕 ${bossHp(1)} 的三倍以上`);
 }
 
-// ── 10f. 精英加厚
-// 精英 / Boss 吃 hpType，普通怪不吃。
+// ── 10f. 精英 / Boss 比同幕杂兵厚
+// 厚度直接写在 `FOES.hp` 上（不再乘倍率），所以这里验的是数据：
+// 每一幕里最厚的杂兵，都比最薄的精英薄。
 {
-  const base = { ...FOES.find((f) => f.key === 'shard')!, hp: 1000 };
-  const hpAt = (type: 'fight' | 'elite' | 'boss') => makeFoe({ ...base, type }, 50).maxHp;
-  const fight = hpAt('fight');
-  const elite = hpAt('elite');
-  const boss = hpAt('boss');
-  ok(BAL.hpType > 1, `精英 / Boss 的加厚倍率开着（×${BAL.hpType}）`);
-  // 比倍数而不是绝对值，避免取整误差。
-  ok(Math.abs(elite / fight - BAL.hpType) < 0.01,
-    `精英血量是普通怪的 ${(elite / fight).toFixed(2)} 倍（应 ${BAL.hpType}）`);
-  ok(boss === elite, 'Boss 和精英同一档厚度');
+  for (const s of STAGES) {
+    const mine = FOES.filter((f) => f.stage === s.i);
+    const maxFight = Math.max(...mine.filter((f) => f.type === 'fight').map((f) => f.hp));
+    const minHard = Math.min(...mine.filter((f) => f.type !== 'fight').map((f) => f.hp));
+    ok(minHard > maxFight, `第 ${s.i} 幕：精英最低 ${minHard} 血 > 杂兵最高 ${maxFight} 血`);
+  }
 }
 
 // ── 10e. 增益文案
@@ -780,6 +775,117 @@ function missGain(eff: string) {
   const mirror = POWERS.find((p) => p.id === 'mirrorcard')!;
   ok(marker.card !== mirror.card,
     `荧光笔与双面镜已分开：${marker.card} / ${mirror.card}`);
+  // desc 只说 card 装不下的边界。逐字复述 card 的第二遍没有内容可装，
+  // 最后一定长成"替设计解释理由"。
+  const echo = POWERS.filter((p) => {
+    if (!p.desc) return false;
+    const norm = (s: string) => s.replace(/[。，、；：\s]/g, '');
+    return norm(p.card).startsWith(norm(p.desc)) || norm(p.desc).startsWith(norm(p.card));
+  });
+  ok(!echo.length, `增益的 desc 不复述 card（${echo.length ? `复述：${echo.map((p) => p.name).join('、')}` : '全部是边界' }）`);
+}
+
+// ── 10e2. 卡面的数字跟着数值表走
+//
+// 增益文案里的数字全是手抄的：`BAL` 里改了数值，`card` 上那一句不会跟着变，
+// 于是卡面长期在骗人 —— 不报错、断言看不见，只有玩家对不上账时才发现。
+// 这里把「哪个数该出现在哪句话里」写成断言，模板串从 `BAL` 取，改数值即红。
+// 中文数字（一半 / 三张变四张）没法从数值派生，单独走 `SEAL` 一条。
+{
+  const face: [string, string][] = [
+    ['librarycard', `退回 ${BAL.refund} 点`],
+    ['hourglass', `行动力 +${BAL.hourglassAp}`],
+    ['index', `多抽 ${BAL.indexDraw} 张`],
+    ['mirrorcard', `抽 ${BAL.answerDraw} 张`],
+    ['lamp', `获得 ${BAL.lampBlock} 点格挡`],
+    ['marker', `+${BAL.markerPlus}`],
+    ['paperweight', `多 ${BAL.paperweightBlock} 点格挡`],
+    ['dogear', `多抽 ${BAL.dogearDraw} 张`],
+    ['bookmark', `获得 ${BAL.bookmarkBlock} 点格挡`],
+    ['eraser', `补 ${BAL.eraserBlock} 点格挡`],
+    ['syllabus', `获得 ${BAL.syllabusBlock} 点格挡`],
+    ['scratch', `补抽 ${BAL.scratchDraw} 张`],
+    ['margin', `多攒 ${BAL.marginCharge} 次免答`],
+    ['corner', `多 ${BAL.cornerBlock} 点格挡`],
+    ['mend', `${BAL.mendRest} 点生命`],
+    ['press', `伤害 +${BAL.pressAtk}`],
+    ['code', `格挡 +${BAL.codeBlk}`],
+    ['nightlight', `伤害 -${BAL.nightCut}`],
+    ['board', `多抽 ${BAL.boardDraw} 张`],
+    ['tab', `保留 ${BAL.tabCarry} 点格挡`],
+    ['stamp', `回复 ${BAL.stampHeal} 点生命`],
+    ['tea', `额外 +${BAL.teaMaxHp}`],
+    ['shelf', `上限 +${BAL.shelfCopies}`],
+    ['polish', `+${BAL.polishUp}`],
+    ['clip', `退回 ${BAL.clipRefund} 点行动力`],
+    ['felt', `${BAL.feltJunk} 张杂念`],
+    ['atlas', `额外回复 ${BAL.atlasHeal} 点生命`],
+    ['wish', `${BAL.wishHp} 点生命`],
+    ['spine', `最大生命 +${BAL.spineHp}`],
+    ['exlibris', `获得 ${BAL.exlibrisCards} 张`],
+    ['slim', `移除 ${BAL.slimRemove} 张`],
+    ['feather', `获得 ${BAL.featherBlock} 点格挡`],
+    ['ink', `第 ${BAL.inkAt} 张`],
+    ['archive', `获得 ${BAL.archiveBlock} 点格挡`],
+    ['pulse', `打出 ${BAL.pulseCards} 张`],
+    ['varnish', `抽 ${BAL.varnishDraw} 张`],
+    ['seed', `获得 ${BAL.seedBlock} 点格挡`],
+    ['gluepot', '留在手里'],
+    ['sticky', `三张变${['', '一', '二', '三', '四', '五'][BAL.rewardPicks + BAL.stickyChoice]}张`],
+  ];
+  const miss = face.filter(([id, phrase]) => {
+    const p = POWERS.find((x) => x.id === id);
+    if (!p) return true;
+    return !`${p.card}${p.desc ?? ''}`.includes(phrase);
+  });
+  ok(!miss.length,
+    `增益卡面的数字跟数值表一致（${miss.length ? `对不上：${miss.map(([id]) => id).join('、')}` : `${face.length} 条`}）`);
+
+  // 封蜡的数值也走模板派生：卡面写 -8，代码里就得减 8。
+  const seal = POWERS.find((p) => p.id === 'seal')!;
+  ok(seal.card.includes(`-${BAL.sealCut}`),
+    `封蜡是减 ${BAL.sealCut} 点，卡面与代码一致`);
+
+  // 阈值也是规则的一部分：卡面写「第 N 张」，代码就得在第 N 张触发。
+  const ink = POWERS.find((p) => p.id === 'ink')!;
+  ok(ink.card.includes(`第 ${BAL.inkAt} 张`),
+    `墨水瓶卡面写的第 ${BAL.inkAt} 张就是代码认的那一张`);
+}
+
+// ── 10e3. 打出来的数全是整数
+//
+// 源码层的守卫（`numeric/integer-only`）拦的是**字面量**里的小数，这里拦
+// **算出来的**小数：某个 `Math.round` 被顺手删掉、某个系数被改回 0.5，
+// 卡面就会出现「4.5 伤害」这种打不出去也读不懂的数。
+// 覆盖面是玩家真正看得见的三个地方：全部卡面的每段伤害 / 格挡 / 回血、
+// 每一只怪的血量与伤害、数值表里每一个标量。
+{
+  const frac: string[] = [];
+  const int = (where: string, v: number) => {
+    if (!Number.isInteger(v)) frac.push(`${where}=${v}`);
+  };
+
+  for (const c of [...PACK.cards, ...BASICS]) {
+    const f = effFace(planStrike(c.id, { noBoost: true }));
+    int(`${c.name}.每段`, f.per);
+    int(`${c.name}.段数`, f.hits);
+    int(`${c.name}.格挡`, f.blk);
+    int(`${c.name}.回血`, f.healMax);
+    int(`${c.name}.抽牌`, f.drawMax);
+    int(`${c.name}.自伤`, f.selfHp);
+    // X 费按点数复制段，每段的数值必须还是整数。
+    planStrike(c.id, { noBoost: true, repeat: 3 }).hits.forEach((h, i) =>
+      int(`${c.name}.X费第${i + 1}段`, h));
+  }
+  for (const t of FOES) {
+    int(`${t.key}.血`, t.hp);
+    int(`${t.key}.每档`, t.hpStep);
+    int(`${t.key}.伤害`, t.dmg);
+  }
+  for (const [k, v] of Object.entries(BAL)) {
+    if (typeof v === 'number') int(`BAL.${k}`, v);
+  }
+  ok(!frac.length, `打出来的数全是整数（${frac.length ? `有小数：${frac.slice(0, 6).join('、')}` : `${PACK.cards.length + BASICS.length} 张牌 / ${FOES.length} 只怪`}）`);
 }
 
 // ── 10f. 增益通道
@@ -850,7 +956,7 @@ function missGain(eff: string) {
 
 // 结算路径：装订线与荧光笔的效果要真的发生。
 {
-  // 装订线：答错时这一手按一半结算。
+  // 装订线：答错时这一手照样打出去，伤害按费用削减。
   const e = battle(1, 'examiner');
   const plain = PACK.cards.find((c) => c.kind === 'knowledge' && c.eff === 'strike' && c.cost === 1)!;
   G.powers = ['binder'];
@@ -865,7 +971,14 @@ function missGain(eff: string) {
   answer((p.view.answer + 1) % p.view.options.length);
   const dealt = hp0 - e.hp;
   if (panelKind() === 'feedback') dismissFeedback();
-  ok(dealt > 0, `装订线：答错也打出了 ${dealt} 点（半额结算）`);
+  const plainPer = effFace(planStrike(plain.id, { noBoost: true })).per;
+  const want = Math.max(0, plainPer - BAL.binderAtkCut);
+  ok(dealt === want,
+    `装订线：答错也打出削减后的伤害（${plainPer} − ${BAL.binderAtkCut} = ${want}，实际 ${dealt}）`);
+  // 同一手里两个面板不能说两件相反的事：结算说明写「按一半结算（7 伤害）」，
+  // 日志却说「效果作废」。日志只能读这一手到底产出了什么，不能读对错。
+  const said = G.log[G.log.length - 1]?.msg ?? '';
+  ok(!/效果作废/.test(said), `装订线：日志不再自相矛盾（${said.slice(0, 40)}…）`);
 
   // 格挡也要减半。
   {
@@ -889,8 +1002,21 @@ function missGain(eff: string) {
     };
     const full = blockOf([], false);
     const half = blockOf(['binder'], true);
-    ok(full > 0 && half === Math.round(full / 2),
-      `装订线：答错格挡正好减半（${full} → ${half}）`);
+    const wantBlk = Math.max(0, full - BAL.binderBlkCut);
+    ok(full > 0 && half === wantBlk,
+      `装订线：答错格挡按整数削减（${full} − ${BAL.binderBlkCut} = ${wantBlk}，实际 ${half}）`);
+  }
+
+  {
+    // 削减必须落在所有加成之后。以前它乘在效果原型里，"续火 ×2"再乘一次，
+    // 7 点的牌答错反而打出 8 点（0.5 先取整成 4，再翻倍）。
+    const before = effFace(planStrike('c05', { noBoost: true })).per;
+    const cut = BAL.binderAtkCut * 2;
+    G.nextBoost = { mul: 2, add: 0, from: '续火' };
+    const after = effFace(planStrike('c05', { cut: { atk: cut, blk: 0 } }));
+    G.nextBoost = null;
+    ok(after.per === Math.max(0, before * 2 - cut),
+      `装订线：削减落在 ×2 之后（${before} ×2 = ${before * 2}，再减 ${cut} → ${after.per}）`);
   }
 
   {
@@ -972,6 +1098,28 @@ function missGain(eff: string) {
 }
 
 {
+  // 「续火」留的 ×2 只被**打得出伤害**的牌兑现。0 伤害的牌（合页 / 归零点 /
+  // 没甲的铸甲为刃）以前会把加成悄悄吃掉，说明里还写着"已兑现"。
+  battle(1, 'examiner');
+  G.powers = [];
+  G.nextBoost = null;
+  G.cardPlays = {};
+  G.cardsThisTurn = 0;
+  G.enemy!.hp = 999;
+  G.enemy!.block = 0;
+  const plainPer = effFace(planStrike('c05', { noBoost: true })).per;
+
+  buildSettlement('c85'); // 续火：给下一张留 ×2
+  const zero = buildSettlement('c93'); // 合页：0 伤害
+  ok(!!G.nextBoost && zero.hits.every((h) => h.raw === 0),
+    '续火：0 伤害的牌不消耗 ×2，加成留给下一张');
+
+  const hit = buildSettlement('c05');
+  ok(!G.nextBoost && hit.hits[0].raw === plainPer * 2,
+    `续火：下一张有伤害的牌才兑现（${plainPer} → ${hit.hits[0].raw}）`);
+}
+
+{
   // 段级执行：四段牌要发四次 dmg 事件，每次只写自己那一段，预演与落地一致。
   // 同步调度器下四段会连续落地，掉血总量仍必须等于 parts 之和。
   battle(1, 'examiner');
@@ -1031,7 +1179,7 @@ function missGain(eff: string) {
   delete e.mechV;
   e.dmg = 20;
   e.mv = 0;
-  e.moves = [{ k: 'atk', m: 1, times: 3 }];
+  e.moves = [{ k: 'atk', times: 3 }];
   const seen: { n: number; hp: number }[] = [];
   const off = onFx((ev) => { if (ev.t === 'enemyHit') seen.push({ n: ev.n, hp: G.hp }); });
   endTurn();
@@ -1146,6 +1294,59 @@ function missGain(eff: string) {
   ok(!G.onceUsed.eraser, '没这张牌时不会写账（以后拿到它仍然有效）');
 }
 
+// ── 10c. 书套 / 批注挂在活机制上
+// 这两条增益原来挂在「稳固度 / 到期日」上，而那张表只写不读：卡面写着一条规则，
+// 打起来什么也没发生。现在改挂错题簿与免答充能 —— 两个真的会改出题和出牌的东西，
+// 所以它们也必须有断言，否则下次重构又只剩文案。
+{
+  const askMiss = (id: string) => {
+    G.ap = 9;
+    G.charge = {};
+    G.hand[0] = id;
+    askCard(0);
+    if (panelKind() !== 'question') throw new Error('书套测试：没弹题');
+    const p = panelOf('question')!;
+    answer((p.view.answer + 1) % p.view.options.length);
+    if (panelKind() === 'feedback') dismissFeedback();
+  };
+  const wrongTotal = () => Object.values(G.topicWrong).reduce((n, v) => n + v, 0);
+  const oneCost = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 1)!;
+
+  battle(1, 'examiner');
+  G.powers = ['slipcase'];
+  G.topicWrong = {};
+  askMiss(oneCost.id);
+  ok(wrongTotal() === 0, `书套：这一场第一次答错不进错题簿（记了 ${wrongTotal()} 条）`);
+  askMiss(oneCost.id);
+  ok(wrongTotal() === 1, `书套：同一场第二次答错照记（记了 ${wrongTotal()} 条）`);
+
+  battle(1, 'examiner');
+  G.powers = [];
+  G.topicWrong = {};
+  askMiss(oneCost.id);
+  ok(wrongTotal() === 1, `没有书套时第一次答错就记（记了 ${wrongTotal()} 条）`);
+
+  const askRight = (id: string) => {
+    G.ap = 9;
+    G.hand[0] = id;
+    askCard(0);
+    if (panelKind() !== 'question') throw new Error('批注测试：没弹题');
+    answer(panelOf('question')!.view.answer);
+    if (panelKind() === 'feedback') dismissFeedback();
+  };
+  const heavy = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 2)!;
+  const light = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 1)!;
+
+  battle(1, 'examiner');
+  G.powers = ['margin'];
+  askRight(heavy.id);
+  ok(G.charge[heavy.id] === 2,
+    `批注：这一场第一道答对，2 费牌直接攒满免答（${G.charge[heavy.id]}/2）`);
+  askRight(light.id);
+  ok(G.charge[light.id] === 1,
+    `批注：一场只多攒一次，第二道答对回到 1（${G.charge[light.id]}）`);
+}
+
 // ── 10g. 机制结算
 // 规则表有改动不等于结算生效，每条通道跑一次真实结算。
 {
@@ -1179,7 +1380,7 @@ function missGain(eff: string) {
     G.maxHp = 200;
     G.hp = 200;
     const e = G.enemy!;
-    e.moves = [{ k: 'atk', m: 1 }];
+    e.moves = [{ k: 'atk' }];
     e.mv = 0;
     e.dmg = dmg;
     e.mechV = 0;
@@ -1192,10 +1393,34 @@ function missGain(eff: string) {
   ok(strikeBy(['nightlight'], 5) === strikeBy([], 5) - BAL.nightCut,
     `夜灯：5 点攻击少受 ${BAL.nightCut} 点`);
 
+  {
+    // 夜灯减的是**这一次攻击**，不是每一段：卡面写「每次受到攻击，伤害 -1」。
+    // 原来那条 desc 写着"多段攻击的每一下都减"，代码和卡面都没这条规则 ——
+    // 句子里编出来的规则比代码宽松，玩家会照着它算血。
+    const multi = (powers: string[]) => {
+      battle(1, 'examiner');
+      G.powers = powers as never;
+      G.maxHp = 200;
+      G.hp = 200;
+      const e = G.enemy!;
+      e.moves = [{ k: 'atk', add: -6, times: 3 }];
+      e.mv = 0;
+      e.dmg = 12; // 每段 6，三段 18
+      e.mechV = 0;
+      G.block = 0;
+      endTurn();
+      return 200 - G.hp;
+    };
+    const plain = multi([]);
+    const cut = multi(['nightlight']);
+    ok(plain === 18 && cut === plain - BAL.nightCut,
+      `夜灯：一次攻击只减 ${BAL.nightCut} 点，多段不叠加（${plain} → ${cut}）`);
+  }
+
   // 封蜡只减第一次。
   const sealTwice = strikeBy(['seal'], 10, 2);
-  ok(sealTwice === 10 * BAL.sealCut + 10,
-    `封蜡：第一次 ${10 * BAL.sealCut} 点，第二次 10 点（合计 ${sealTwice}）`);
+  ok(sealTwice === Math.max(0, 10 - BAL.sealCut) + 10,
+    `封蜡：第一次 ${Math.max(0, 10 - BAL.sealCut)} 点，第二次 10 点（合计 ${sealTwice}）`);
 
   // 胶水壶：答错之后那张牌留在手里。
   const missAndCount = (powers: string[]) => {
@@ -1250,7 +1475,7 @@ function missGain(eff: string) {
   G.maxHp = 100;
   G.hp = 1;
   const e = G.enemy!;
-  e.moves = [{ k: 'atk', m: 1 }];
+  e.moves = [{ k: 'atk' }];
   e.mv = 0;
   e.dmg = 99;
   e.mechV = 0;
@@ -1270,7 +1495,7 @@ function missGain(eff: string) {
 {
   const e = battle(1, 'examiner');
   e.dmg = 10;
-  e.moves = [{ k: 'atk', m: 1 }];
+  e.moves = [{ k: 'atk' }];
   e.mv = 0;
   e.mechV = 5;
   G.okThisTurn = 0;
@@ -1282,7 +1507,7 @@ function missGain(eff: string) {
 
   const o = battle(5, 'oblivion');
   o.dmg = 10;
-  o.moves = [{ k: 'atk', m: 1 }];
+  o.moves = [{ k: 'atk' }];
   o.mv = 0;
   G.topicWrong = { '基础动词': 1 };
   G.topOkTopic = null;
@@ -1399,7 +1624,7 @@ function missGain(eff: string) {
 {
   const e = battle(1, 'examiner');
   e.dmg = 10;
-  e.moves = [{ k: 'atk', m: 1 }];
+  e.moves = [{ k: 'atk' }];
   e.mv = 0;
   e.mechV = 5;
   G.okThisTurn = 0;
@@ -1409,7 +1634,7 @@ function missGain(eff: string) {
 
   const o = battle(5, 'oblivion');
   o.dmg = 10;
-  o.moves = [{ k: 'atk', m: 1 }];
+  o.moves = [{ k: 'atk' }];
   o.mv = 0;
   G.topicWrong = { '基础动词': 1 };
   G.topOkTopic = null;
@@ -1418,7 +1643,7 @@ function missGain(eff: string) {
   ok(intentText(o).text === '11', `遗忘意图：该主题答对 -3 → 11（${intentText(o).text}）`);
 
   // 多段 + 修正时标签写总数。
-  o.moves = [{ k: 'atk', m: 0.6, times: 2 }];
+  o.moves = [{ k: 'atk', add: -4, times: 2 }];
   o.mv = 0;
   ok(intentText(o).text === '13', `遗忘多段意图写总数 13（${intentText(o).text}）`);
   G.block = 0;
@@ -1428,33 +1653,13 @@ function missGain(eff: string) {
   ok(70 - G.hp === 13, `遗忘：意图 13 与结算同源（实受 ${70 - G.hp}）`);
 }
 
-// ── 15. 记忆
-// 坏条目丢弃，坏字段回落成有限数。
+// ── 15. 卡 id
+// 记忆表（稳固度 / 到期）已经删掉：它只写不读，`npm run sim` 连跑都不受影响。
+// 留下的是 id 本身 —— 存档、牌组、免答计数都按它认牌，所以它必须是稳定短键。
 {
-  const bad = parseMem(JSON.stringify({
-    good: { stab: 5, due: 2, reps: 3, lapses: 1, ok: 4, bad: 1 },
-    nullEntry: null,
-    stringEntry: 'x',
-    arrayEntry: [],
-    partial: { stab: null, due: 'x', reps: -1, lapses: 2.7, ok: null, bad: 1 },
-  }));
-  ok(Object.keys(bad).length === 2, `坏条目被丢弃（保留 ${Object.keys(bad).length} 条）`);
-  ok(bad.good.stab === 5 && bad.good.due === 2 && bad.good.reps === 3, '合法条目原样保留');
-  ok(Number.isFinite(bad.partial.stab) && Number.isFinite(bad.partial.due)
-    && bad.partial.reps === 0 && bad.partial.lapses === 2 && bad.partial.ok === 0,
-    `坏字段回落成有限数（stab ${bad.partial.stab} / due ${bad.partial.due} / lapses ${bad.partial.lapses}）`);
-  ok(Object.keys(parseMem('[1,2]')).length === 0, '数组形状的记忆被拒绝');
-  ok(Object.keys(parseMem('not json')).length === 0, '坏 JSON 当空');
-
-  // card id 是稳定短键，旧 key 走迁移表。
   const ids = PACK.cards.map((c) => c.id);
   ok(ids.length === 101 && ids.every((id) => /^c\d{2,3}$/.test(id)), 'card id 是稳定短键，不含题干');
   ok(new Set(ids).size === ids.length, 'card id 不重复');
-  const [oldId, newId] = Object.entries(LEGACY_CARD_IDS)[0];
-  const migrated = parseMem(JSON.stringify({
-    [oldId]: { stab: 5, due: 1, reps: 1, lapses: 0, ok: 1, bad: 0 },
-  }));
-  ok(migrated[newId]?.stab === 5, '旧记忆 key 迁移到新 card id');
 }
 
 // ── 16. 存档
@@ -1821,6 +2026,22 @@ C) 3
 
   startRun('test');
   ok(G.mode === 'test' && G.powers.length === 0, '测试：没有初始能力');
+
+  // 复习点回多少血，只认 `BAL.restHp`（+修书胶）：
+  // 面板上写「回复 N 点」、结算里回 M 点，是这类固定点数最容易被改漏的一处。
+  startRun('test');
+  G.hp = 1;
+  const plainRest = Math.min(G.maxHp - G.hp, BAL.restHp);
+  restHeal();
+  ok(G.hp - 1 === plainRest, `复习：回 ${BAL.restHp} 点（实际 ${G.hp - 1}）`);
+
+  startRun('test');
+  G.powers = ['mend'];
+  G.hp = 1;
+  const mendRest = Math.min(G.maxHp - G.hp, BAL.restHp + BAL.mendRest);
+  restHeal();
+  ok(G.hp - 1 >= mendRest - 1,
+    `修书胶：复习回 ${BAL.restHp} + ${BAL.mendRest} 点（实际 ${G.hp - 1}）`);
 }
 
 // ── 14b. 自伤卡与第四批节奏增益 ─────────────────────────────
@@ -1896,6 +2117,18 @@ C) 3
   playFree(0);
   ok(G.hand.includes('c04'), '墨水瓶：第 3 张牌把下一张摸上来');
 
+  // 一回合只数一次：卡面写的就是「一回合只数一次」，第 6 张不该再抽。
+  G.hand = ['c93', 'c93', 'c93'];
+  G.draw = ['c04'];
+  G.discard = [];
+  G.cardsThisTurn = 3;
+  G.ap = 3;
+  G.apMax = 3;
+  playFree(0);
+  playFree(0);
+  playFree(0);
+  ok(!G.hand.includes('c04'), '墨水瓶：一回合只数第 3 张，第 6 张不再抽');
+
   // 档案盒：洗牌时补 2 点格挡。直接制造“抽牌堆空、弃牌堆有牌”的洗牌条件。
   G.powers = ['archive'];
   G.onceUsed = {};
@@ -1940,6 +2173,33 @@ C) 3
   G.cardsThisTurn = 0;
   playFree(0);
   ok(G.block === 6, `种纸：第一张攻击牌补 2 点格挡（4 + 2 = ${G.block}）`);
+
+  // 种纸按**类别**判，不按"这一手有没有伤害段"：带伤害的防御牌不算攻击牌，
+  // 0 伤的攻击牌也算。以前按伤害段判，长链壁垒（防御牌、7 伤）会白拿格挡。
+  const plainBlk = (id: string) => {
+    const keep = G.powers;
+    G.powers = [];
+    const n = effFace(planStrike(id, { noBoost: true })).blk;
+    G.powers = keep;
+    return n;
+  };
+  const seedBlk = (id: string) => {
+    G.powers = ['seed'];
+    G.onceUsed = {};
+    G.panel = { k: 'none' };
+    G.busy = false;
+    G.block = 0;
+    G.pending = null;
+    G.enemy = {
+      ...FOES.find((f) => f.key === 'shard')!,
+      maxHp: 999, hp: 999, block: 0, mv: 0, dmg: 10, stage: 1,
+    };
+    return buildSettlement(id).budget.blk;
+  };
+  ok(seedBlk('c03') === plainBlk('c03'),
+    `种纸：带伤害的防御牌不触发（长链壁垒 ${plainBlk('c03')} 挡）`);
+  ok(seedBlk('c84') === plainBlk('c84') + BAL.seedBlock,
+    `种纸：0 伤的攻击牌照样触发（铸甲为刃 ${plainBlk('c84')} + ${BAL.seedBlock}）`);
 }
 
 // ── 14. 资源写入只有一条通道 ───────────────────────────────

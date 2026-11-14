@@ -1,5 +1,6 @@
 import { g } from './canvas';
 import { C, font, FONT_NUM, withAlpha } from './theme';
+import { roll } from '../core/infra/util';
 
 /**
  * 表现层的"后果"。逻辑层只发事件，怎么演由这里决定：
@@ -80,7 +81,7 @@ export function burst(
       color,
       grav: opts.grav ?? 420,
       drag: 0.92,
-      shape: Math.random() < 0.3 ? 'spark' : 'dot',
+      shape: roll() <= 30 ? 'spark' : 'dot',
     });
   }
 }
