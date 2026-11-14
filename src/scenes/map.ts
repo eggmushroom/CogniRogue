@@ -4,6 +4,7 @@ import { bar, panel, text } from '../gfx/ui';
 import { drawArtIcon } from '../gfx/art/icons';
 import type { ArtIconName } from '../gfx/art/icons';
 import { consumeDragY, consumeWheel, hover, onClick } from '../input';
+import { drawFeed } from './feed';
 import { CURRICULUM, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS, stageOf } from '../core/model';
 import { G } from '../core/infra';
 import { FLOOR_MAX, MAP_COLS, availableNodes, curFloor, floorOf } from '../core/map';
@@ -220,6 +221,9 @@ export function drawMap(t: number, dt = 1 / 60) {
 
   scrollBar();
   hint(avail.size > 0);
+  // 左面板收在 760，下面到屏幕底是空的。事件结果就落在这里：
+  // 它是**玩家唯一能读到"刚才那一下付了什么代价"的地方**。
+  drawFeed(t, { x: 36, y: 880, w: 520 });
 }
 
 /**

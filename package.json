@@ -6,7 +6,7 @@
   "description": "把间隔复习做成一场 Roguelike 牌局",
   "scripts": {
     "dev": "vite",
-    "build": "npm run check && vite build",
+    "build": "npm run verify && vite build",
     "preview": "vite preview",
     "check": "tsc --noEmit && node tools/deps.mjs && node tools/invariants.mjs",
     "sim": "esbuild tools/sim.ts --bundle --platform=node --format=esm --outfile=.cache/sim.mjs --log-level=warning && node .cache/sim.mjs",
@@ -14,6 +14,8 @@
     "shots": "node tools/shots.mjs",
     "stage": "esbuild tools/stagecheck.ts --bundle --platform=node --format=esm --outfile=.cache/stagecheck.mjs --log-level=warning && node .cache/stagecheck.mjs",
     "cards": "esbuild tools/cards.ts --bundle --platform=node --format=esm --outfile=.cache/cards.mjs --log-level=warning && node .cache/cards.mjs",
+    "coverage": "esbuild tools/coverage.ts --bundle --platform=node --format=esm --outfile=.cache/coverage.mjs --log-level=warning && node .cache/coverage.mjs",
+    "verify": "npm run check && npm run cards && npm run coverage && npm run stage",
     "words": "node tools/words.mjs"
   },
   "devDependencies": {

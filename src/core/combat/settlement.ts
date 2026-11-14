@@ -246,12 +246,10 @@ export function buildSettlement(
   // 兑现条件由 `boostSpent` 判：0 伤害的牌不消耗上一张留的加成。
   s.nextNote = commitLink(id, boostSpent(out.hits));
 
+  // 抽牌 / 行动力由执行器统一落地（见 `settle()` 的第一件事），这里只补日志。
   s.instant.unshift(() => {
-    b.draw = drawCards(b.draw);
     if (ink) log(`墨水瓶：本回合第 ${G.cardsThisTurn} 张牌，抽 ${ink} 张`, 'hi');
     if (varnish) log(`亮油：这一场第一张 0 费牌，抽 ${varnish} 张`, 'hi');
-    if (b.ap.spend) spendAp(b.ap.spend);
-    if (b.ap.gain) gainAp(b.ap.gain);
   });
   return s;
 }
@@ -299,6 +297,15 @@ export interface SettleOpts {
  * instant 在本帧同步跑完，尾部资源在最后一段的飘字之后落地。
  */
 export function settle(s: Settlement, opts: SettleOpts = {}) {
+  // 尾部资源（抽牌 / 行动力）由执行器落地，不由构造器注册闭包。
+  // 构造器只在「这一手真的打出去」时跑；答错那一手是 `emptySettlement`，
+  // 挂在它 `budget` 上的抽牌没有任何人执行 —— 草稿纸因此整条都是死的，
+  // 而所有断言（包括卡面文案）全是绿的。任何 Settlement 都该兑现自己的预算。
+  s.instant.unshift(() => {
+    s.budget.draw = drawCards(s.budget.draw);
+    if (s.budget.ap.spend) spendAp(s.budget.ap.spend);
+    if (s.budget.ap.gain) gainAp(s.budget.ap.gain);
+  });
   for (const run of s.instant) run();
   if (s.budget.blkEarly > 0) {
     grantBlock(s.budget.blkEarly);

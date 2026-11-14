@@ -63,29 +63,56 @@ let MODE: ModeId | null = null;
 /** 额外塞一张开局增益（`--boon=syllabus`），用于单张 A/B。 */
 let BOON: PowerId | null = null;
 
+/**
+ * 参数表。**认不出的参数直接退出**，不静默跳过。
+ *
+ * 早先这里是一条宽松正则 + 一长串 `else if`：正则里列着 `md` / `ht` 两个
+ * 没有任何分支处理的键，写上去既不报错也不生效；机制删掉之后 `--ht=1`
+ * （那时候叫 `hpType`）照样能写，实验结论就建在一个空参数上。
+ * 现在键必须在这里有一个分支，值必须能被那个分支理解。
+ */
+const ARG_KEYS = [
+  'hp', 'dmg', 'ap', 'hand', 'runs', 'ad', 'cap', 'start', 'calm', 'take',
+  'deck', 'path', 'rf', 'rest', 'sm', 'smart', 'nopow', 'mode', 'boon',
+];
+
 for (const arg of process.argv.slice(2)) {
-  const m = /^--(hp|dmg|ap|hand|runs|ad|cap|md|start|calm|take|deck|path|rf|rest|sm|smart|ht|nopow|mode|boon)=([\w.-]+)$/.exec(arg);
-  if (!m) continue;
-  const v = Number(m[2]);
-  if (m[1] === 'mode') { MODE = m[2] as ModeId; continue; }
-  if (m[1] === 'boon') { BOON = m[2] as PowerId; continue; }
-  if (m[1] === 'runs') { RUNS = Math.round(v); continue; }
-  if (m[1] === 'take') { TAKE = v > 0; continue; }
-  if (m[1] === 'deck') { DECK_MAX = Math.max(10, Math.round(v)); continue; }
-  if (m[1] === 'path') { OLD_PATH = m[2] === 'old'; continue; }
-  if (m[1] === 'hp') BAL.foeHpAdd = v;
-  else if (m[1] === 'dmg') BAL.foeDmgAdd = v;
-  else if (m[1] === 'ap') { BAL.baseAp = v; }
-  else if (m[1] === 'hand') BAL.drawPerTurn = v;
-  else if (m[1] === 'ad') BAL.answerDraw = v;
-  else if (m[1] === 'cap') BAL.answerDrawCap = v;
-  else if (m[1] === 'start') BAL.startBlock = v;
-  else if (m[1] === 'calm') BAL.calmFirstTurn = v > 0;
-  else if (m[1] === 'rf') BAL.refund = v > 0 ? 1 : 0;
-  else if (m[1] === 'smart') { SMART = v > 0; }
-  else if (m[1] === 'nopow') { NOPOW = v > 0; }
-  else if (m[1] === 'rest') BAL.restHp = v;
-  else if (m[1] === 'sm') BAL.stageMaxHp = v;
+  const m = /^--([a-z]+)=([\w.-]+)$/.exec(arg);
+  if (!m) {
+    console.error(`参数写法不对：${arg}（形如 --hp=6）`);
+    process.exit(2);
+  }
+  const key = m[1];
+  const raw = m[2];
+  const v = Number(raw);
+  if (!ARG_KEYS.includes(key)) {
+    console.error(`不认识的参数：--${key}=（可用：${ARG_KEYS.map((k) => `--${k}=`).join(' ')}）`);
+    process.exit(2);
+  }
+  switch (key) {
+    case 'mode': MODE = raw as ModeId; break;
+    case 'boon': BOON = raw as PowerId; break;
+    case 'runs': RUNS = Math.round(v); break;
+    case 'take': TAKE = v > 0; break;
+    case 'deck': DECK_MAX = Math.max(10, Math.round(v)); break;
+    case 'path': OLD_PATH = raw === 'old'; break;
+    case 'hp': BAL.foeHpAdd = v; break;
+    case 'dmg': BAL.foeDmgAdd = v; break;
+    case 'ap': BAL.baseAp = v; break;
+    case 'hand': BAL.drawPerTurn = v; break;
+    case 'ad': BAL.answerDraw = v; break;
+    case 'cap': BAL.answerDrawCap = v; break;
+    case 'start': BAL.startBlock = v; break;
+    case 'calm': BAL.calmFirstTurn = v > 0; break;
+    case 'rf': BAL.refund = v > 0 ? 1 : 0; break;
+    case 'smart': SMART = v > 0; break;
+    case 'nopow': NOPOW = v > 0; break;
+    case 'rest': BAL.restHp = v; break;
+    case 'sm': BAL.stageMaxHp = v; break;
+    default:
+      console.error(`参数没有处理分支：--${key}= —— 加进 ARG_KEYS 就要加一个 case`);
+      process.exit(2);
+  }
 }
 if (OLD_PATH) TAKE = false;
 

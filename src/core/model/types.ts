@@ -408,7 +408,11 @@ export type Panel =
   | { k: 'pack'; msg: string; ok: boolean }
   | { k: 'report'; data: ReportData };
 
-export interface LogLine { msg: string; kind: '' | 'hi' | 'bad' | 'turn' }
+/**
+ * 一条玩家可见的即时反馈。`seq` 是自增序号，只给界面判断"有没有新的"用 ——
+ * 数组满了会 shift 掉旧条，靠长度判断会漏掉后面的每一条。
+ */
+export interface LogLine { msg: string; kind: '' | 'hi' | 'bad' | 'turn'; seq: number }
 
 export interface GameState {
   screen: 'title' | 'map' | 'battle' | 'report' | 'atlas';

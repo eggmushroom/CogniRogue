@@ -1,6 +1,6 @@
 import { BAL, MODE_BY_ID, STAGES, STAGE_ROWS, planFor, stageOf } from '../model/data';
 import type { GameState, ModeId, PowerId } from '../model/types';
-import { G, log, resetTurnState } from '../infra/state';
+import { G, clearLog, log, resetTurnState } from '../infra/state';
 import { raiseMaxHp, refillHp } from '../infra/write';
 import { basicDeck } from '../cards/basics';
 import { startDeck } from '../cards/starter';
@@ -30,7 +30,7 @@ export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []
   const startPowers = [...new Set([...(modeDef?.powers ?? []), ...extraPowers])];
 
   Object.assign(G, {
-    screen: 'map', mode, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck,
+    screen: 'map', mode, stage: 1, stageTopic: '', panel: { k: 'none' }, deck,
     draw: [], discard: [], hand: [],
     map: genStage(1), pos: null, seen: {}, eventsSeen: [], node: null,
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0,
@@ -43,6 +43,7 @@ export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []
     runOk: 0, runBad: 0, stageOk: 0, stageBad: 0, floors: 0,
     pending: null, pendingCost: 0, pendingHeal: 0, busy: false,
   } satisfies Partial<GameState>);
+  clearLog();
   resetTurnState();
   clearRunOnce();
   clearStageOnce();
@@ -132,5 +133,5 @@ export function backToTitle() {
   G.enemy = null;
   G.map = [];
   G.pos = null;
-  G.log = [];
+  clearLog();
 }

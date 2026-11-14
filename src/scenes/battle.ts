@@ -4,6 +4,7 @@ import { C, font, FONT_NUM, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme'
 import { bar, drawCard, icon, panel, text } from '../gfx/ui';
 import type { IconName } from '../gfx/ui';
 import { onClick, hover } from '../input';
+import { drawFeed } from './feed';
 import { groundGlow, shieldDome, shieldSeal } from '../gfx/aura';
 import { clamp01, easeOut } from '../gfx/geom';
 import * as FX from '../gfx/fx';
@@ -90,6 +91,10 @@ export function drawBattle(t: number, dt: number) {
   drawHand(t, dt);
   drawDiscards(dt);
   endTurnButton();
+  // 手牌下沿 859 到屏幕底是这一屏唯一的横向空档（顶栏、立绘、状态牌、手牌
+  // 把中间排满了）。宽度给到 520：贴着底边时不用再躲手牌，太窄会把「细胞呼吸」
+  // 这种词拆成两行。
+  drawFeed(t, { x: 36, y: 886, w: 520 });
 }
 
 /* ── 顶部：只放本局元信息 ─────────────────────────────────── */
