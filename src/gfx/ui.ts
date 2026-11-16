@@ -33,26 +33,11 @@ export function squeeze(s: string, maxW: number): string {
   return s.slice(0, lo) + '…';
 }
 
-export function wrap(s: string, maxW: number, lineH: number, x: number, y: number, maxLines = 99) {
-  const lines = wrapText(s, maxW);
-  const shown = lines.slice(0, maxLines);
-  shown.forEach((ln, i) => {
-    const isLast = i === maxLines - 1 && lines.length > maxLines;
-    g.fillText(isLast ? ln.slice(0, Math.max(0, ln.length - 1)) + '…' : ln, x, y + i * lineH);
-  });
-  return shown.length;
-}
-
 export function panel(
   x: number, y: number, w: number, h: number,
-  opts: { r?: number; fill?: string; stroke?: string; glow?: string; alpha?: number } = {},
+  opts: { r?: number; fill?: string; stroke?: string } = {},
 ) {
   g.save();
-  if (opts.alpha !== undefined) g.globalAlpha = opts.alpha;
-  if (opts.glow) {
-    g.shadowColor = opts.glow;
-    g.shadowBlur = 30;
-  }
   roundRect(x, y, w, h, opts.r ?? 14);
   g.fillStyle = opts.fill ?? 'rgba(17,20,29,.94)';
   g.fill();
@@ -81,10 +66,9 @@ export type BtnKind = 'primary' | 'ghost' | 'danger';
 
 export function button(
   x: number, y: number, w: number, h: number, label: string,
-  kind: BtnKind = 'ghost', opts: { size?: number; disabled?: boolean; sub?: string } = {},
+  kind: BtnKind = 'ghost', opts: { size?: number; sub?: string } = {},
 ) {
-  const dis = !!opts.disabled;
-  const hv = !dis && hover(x, y, w, h);
+  const hv = hover(x, y, w, h);
 
   const base =
     kind === 'primary' ? withAlpha(C.gold, hv ? 0.22 : 0.1)
@@ -98,10 +82,10 @@ export function button(
   g.save();
   if (hv) { g.shadowColor = kind === 'primary' ? withAlpha(C.gold, 0.5) : withAlpha('#9ab', 0.28); g.shadowBlur = 18; }
   roundRect(x, y, w, h, 10);
-  g.fillStyle = dis ? 'rgba(255,255,255,.03)' : base;
+  g.fillStyle = base;
   g.fill();
   g.shadowBlur = 0;
-  g.strokeStyle = dis ? C.faint : edge;
+  g.strokeStyle = edge;
   g.lineWidth = 1.5;
   g.stroke();
   if (hv) {
@@ -115,7 +99,7 @@ export function button(
     size: opts.size ?? 20,
     weight: 600,
     align: 'center',
-    color: dis ? C.faint : kind === 'primary' ? C.ink : C.ink2,
+    color: kind === 'primary' ? C.ink : C.ink2,
   });
   if (opts.sub) {
     text(opts.sub, x + w / 2, y + h / 2 + 14, { size: 14, align: 'center', color: C.dim });
@@ -126,10 +110,10 @@ export function button(
 /** 可点击按钮，内部把 onClick 注册到回调。 */
 export function action(
   x: number, y: number, w: number, h: number, label: string, fn: () => void,
-  kind: BtnKind = 'ghost', opts: { size?: number; disabled?: boolean; sub?: string } = {},
+  kind: BtnKind = 'ghost', opts: { size?: number; sub?: string } = {},
 ) {
   button(x, y, w, h, label, kind, opts);
-  if (!opts.disabled) onClick(x, y, w, h, fn, label);
+  onClick(x, y, w, h, fn, label);
 }
 
 /**
@@ -140,7 +124,7 @@ export function action(
  */
 export function bar(
   x: number, y: number, w: number, h: number, pct: number,
-  color: string, opts: { bg?: string; ghost?: number; r?: number; label?: string; ticks?: number } = {},
+  color: string, opts: { bg?: string; r?: number; label?: string; ticks?: number } = {},
 ) {
   const r = opts.r ?? 3;
   const p = Math.max(0, Math.min(1, pct));
@@ -150,16 +134,6 @@ export function bar(
   roundRect(x, y, w, h, r);
   g.fillStyle = opts.bg ?? 'rgba(255,255,255,.035)';
   g.fill();
-
-  // 掉血前的虚影，只画差的那一段（预留给掉血演出）。
-  if (opts.ghost !== undefined && opts.ghost > p) {
-    g.save();
-    roundRect(x, y, w, h, r);
-    g.clip();
-    g.fillStyle = withAlpha(color, 0.18);
-    g.fillRect(x + w * p, y, w * (Math.min(1, opts.ghost) - p), h);
-    g.restore();
-  }
 
   if (p > 0.001) {
     const fw = Math.max(2, w * p);

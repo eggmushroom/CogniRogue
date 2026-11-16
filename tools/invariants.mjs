@@ -28,11 +28,47 @@ const ts = (rel) => rel.endsWith('.ts');
  *
  * 返回 null 表示抓不到 —— 那时守卫必须失败，否则等于静默关闭。
  */
+/**
+ * 从 `at` 处的 `{` 开始做花括号配对，返回函数体（含外层花括号）的结束下标。
+ *
+ * 为什么不用 `code.indexOf('\n}\n')`：那依赖文件的行尾符。CRLF 检出时
+ * 字符串是 `\r\n}\r\n`，`\n}\n` 永远匹配不到，`indexOf` 返回 -1，
+ * 于是 `slice(at, -1)` 一路吃到文件末尾 —— 守卫**多抓**了后面那些函数的
+ * `BAL.X`（实测 25 → 35 个字段），同一份代码在 LF 与 CRLF 检出上给出不同结论。
+ * 它当时没造成误报，只因为多抓的恰好是增益自己的参数；换个位置就会误伤。
+ *
+ * 配对时跳过字符串与模板串里的花括号，否则 `'}'` 这种字面量会提前收尾。
+ */
+function braceBodyEnd(code, at) {
+  let i = code.indexOf('{', at);
+  if (i < 0) return -1;
+  let depth = 0;
+  let quote = null;
+  for (let j = i; j < code.length; j++) {
+    const ch = code[j];
+    if (quote) {
+      if (ch === '\\') { j++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { quote = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return j + 1;
+    }
+  }
+  return -1;
+}
+
 function gainAffectedFields() {
   const code = stripComments(readFileSync(join(ROOT, 'src/core/cards/powers.ts'), 'utf8'));
   const at = code.indexOf('export function rulesStatic');
   if (at < 0) return null;
-  const body = code.slice(at, code.indexOf('\n}\n', code.indexOf('{', at)));
+  const end = braceBodyEnd(code, at);
+  // 配不上对就当作抓不到：宁可守卫失败，也不要它悄悄扫半份文件。
+  if (end < 0) return null;
+  const body = code.slice(at, end);
   const out = new Set();
   for (const m of body.matchAll(/\bBAL\.(\w+)/g)) out.add(m[1]);
   return out.size ? out : null;

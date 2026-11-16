@@ -34,20 +34,33 @@ const LAYERS = ['model', 'infra', 'cards', 'library', 'map', 'combat', 'journey'
 const EXEMPT = [];
 
 /** 表现层：不在 LAYERS 里，彼此可以自由引用，但不许被 core import。 */
-const PRESENTATION = new Set(['gfx', 'scenes', 'input', 'main']);
+const PRESENTATION = new Set(['gfx', 'scenes', 'input', 'main', 'dev']);
 
-/** core 顶层文件（barrel 与内置题库）：它天然要 import 所有包，顺序规则豁免。 */
-const CORE_ROOT_FILES = new Set(['src/core/index.ts', 'src/core/builtin.ts']);
-
+/**
+ * 文件 → 所属包。
+ *
+ * **不认识的路径一律抛错，不许返回 null。** 早先这里是「查不到就 `return null`」，
+ * 调用方 `if (!fromPkg) continue` —— 于是 `src/core/` 顶层新建一个文件，
+ * 它就能 import 表现层而守卫照样输出「✓ 通过」（扫描数会 +1，import 数不动）。
+ * 同样的洞还盖住了 `src/dev/`。守卫最容易的死法不是判错，是**静默少看一个文件**。
+ *
+ * 所以现在分两类：
+ *   - core 顶层（`src/core/*.ts`）：barrel 与内置题库，天然要 import 所有包，
+ *     顺序规则豁免，但**照样受「不许 import 表现层」约束**；
+ *   - 其余归不出来的一律 `throw`，让新目录必须先在这里登记。
+ */
 function packageOf(rel) {
   const m = rel.match(/^src\/core\/(model|infra|cards|library|map|combat|journey)\//);
   if (m) return m[1];
-  if (CORE_ROOT_FILES.has(rel)) return 'core-root';
+  // core 顶层的任何 .ts 都算 core-root：不再靠 CORE_ROOT_FILES 手抄清单，
+  // 新增一个顶层文件自动纳入，不用回来改守卫。
+  if (/^src\/core\/[^/]+\.ts$/.test(rel)) return 'core-root';
   if (/^src\/gfx\//.test(rel)) return 'gfx';
   if (/^src\/scenes\//.test(rel)) return 'scenes';
+  if (/^src\/dev\//.test(rel)) return 'dev';
   if (rel === 'src/input.ts') return 'input';
   if (rel === 'src/main.ts') return 'main';
-  return null;
+  throw new Error(`依赖守卫不认识 ${rel} —— 在 tools/deps.mjs 的 packageOf() 里登记它属于哪个包`);
 }
 
 function walkTs(dir, out = []) {
@@ -86,14 +99,13 @@ const files = walkTs(SRC);
 const edges = [];
 for (const file of files) {
   const fromRel = toRel(file);
+  // packageOf 认不出的路径会直接抛错，所以这里不再有 `if (!fromPkg) continue` 的静默跳过。
   const fromPkg = packageOf(fromRel);
-  if (!fromPkg) continue;
   const code = stripComments(readFileSync(file, 'utf8'));
   for (const m of code.matchAll(/\bfrom\s*'([^']+)'/g)) {
     const target = resolveSpec(file, m[1]);
     if (!target) continue;
     const toPkg = packageOf(toRel(target));
-    if (!toPkg) continue;
     edges.push({ fromPkg, toPkg, fromRel, toRel: toRel(target) });
   }
 }
