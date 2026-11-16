@@ -177,5 +177,55 @@ console.log('');
   console.log(`  · 答题要求（隐藏）：${dist}`);
 }
 
+// ── 8. 精炼：每张牌都要声明方向，且必须真的变强 ──────────────
+{
+  // 8a. 每张可精炼的牌都写了 `up`。漏写会走默认 +3/+3，
+  // 那正是"抽 1 张的牌精炼后还是抽 1 张"的来源 —— 不能靠默认值蒙混过去。
+  // 注意 `rows` 是包装过的 Row，卡牌定义在 `r.c` 上。
+  const uniqAll = [...new Map([...rows.map((r) => r.c), ...BASICS].map((c) => [c.id, c])).values()];
+  const missing = uniqAll.filter((c) => !c.up).map((c) => c.name);
+  ok(!missing.length, `每张牌都声明了精炼方向${missing.length ? `：${missing.join(' ')}` : ''}`);
+
+  /**
+   * 8b. 精炼必须让这张牌**真的变强**，判据是 `planStrike` 的产出而不是 `up` 字段。
+   *
+   * 按字段判会漏：`atk: 2` 加在 `atkFrom` 联动牌上会被 `liveStatOf` 整个覆盖，
+   * 字段写了、实际没变。所以这里拿 `id` 与 `id + '+'` 各跑一遍结算再比。
+   */
+  const value = (id: string) => {
+    const out = planStrike(id, { noBoost: true });
+    const dmgTotal = out.hits.reduce((n, v) => n + v, 0);
+    // 抽牌按 3 点算、回血按 2 点算：它们各自换一张牌 / 抵一次伤害。
+    return dmgTotal + out.blk + out.draw * 3 + out.healPer * out.hits.length * 2 - out.selfHp * 2;
+  };
+  const flat = uniqAll.filter((c) => value(c.id + '+') <= value(c.id)).map((c) => c.name);
+  ok(!flat.length,
+    `精炼让每一张牌都变强${flat.length ? `：${flat.join(' ')} 精炼后没有变化` : `（${uniqAll.length} 张逐张比过）`}`);
+
+  // 8c. 精炼要按牌的方向长，不能所有牌都只加攻挡。
+  // 判据：至少要有牌精炼后改的是攻挡以外的字段。
+  const shape = (id: string) => {
+    const o = planStrike(id, { noBoost: true });
+    return {
+      dmg: o.hits.reduce((n, v) => n + v, 0), blk: o.blk,
+      draw: o.draw, heal: o.healPer, self: o.selfHp, hits: o.hits.length,
+    };
+  };
+  const nonStat = uniqAll.filter((c) => {
+    const a = shape(c.id);
+    const b = shape(c.id + '+');
+    return b.draw !== a.draw || b.heal !== a.heal || b.self !== a.self
+      || b.hits !== a.hits || costOf(defOf(c.id + '+')) !== costOf(defOf(c.id));
+  });
+  ok(nonStat.length > 0,
+    `有牌精炼改的是攻挡以外的字段（抽牌 / 回血 / 自伤 / 段数 / 费用）：${nonStat.length} 张`);
+
+  // 8d. 降费是其中一种方向，得有牌真的降。
+  const cheaper = uniqAll.filter((c) => costOf(defOf(c.id + '+')) !== costOf(defOf(c.id)));
+  ok(cheaper.length > 0, `有牌精炼后降费：${cheaper.map((c) => c.name).join(' ')}`);
+
+  console.log(`  · 精炼方向：攻挡 ${uniqAll.length - nonStat.length} 张 / 改其他字段 ${nonStat.length} 张`);
+}
+
 console.log(fails ? `\n✗ 卡表检查 ${fails} 项失败` : '\n✓ 卡表检查通过');
 process.exitCode = fails ? 1 : 0;

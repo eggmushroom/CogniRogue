@@ -148,6 +148,37 @@ export interface CardLink {
   note: string;
 }
 
+/**
+ * 精炼（升级）一张卡时，**除了底数之外**还要改什么。
+ *
+ * 早先精炼只做一件事：攻、挡各 +3。结果是所有卡的相对收益由「原值多大」决定 ——
+ * 0 费牌 +200%，3 费牌 +15%，于是"挑哪张精炼"永远只有一个答案。
+ * 现在每张卡可以声明自己该长在哪：抽牌牌多抽、联动牌多长、自伤牌少流、
+ * 贵牌降费。没写的字段走默认（见 `registry.ts::applyUp`）。
+ *
+ * 只有加减，没有倍率 —— 与「数值只用整数」同一条规矩。
+ * 每一项都是**增量**，正数变强、负数变便宜，`npm run cards` 会断言净效果必须为正。
+ */
+export interface CardUp {
+  /** 底数额外加几点（默认 `UP_GAIN`）。纯防御牌可以只加格挡：`{ atk: 0 }`。 */
+  atk?: number;
+  blk?: number;
+  /** 每段命中多回几点血（内化牌） */
+  healPer?: number;
+  /** 多抽几张（专注牌） */
+  draw?: number;
+  /** 自伤少几点；写成负数就是变强 */
+  selfHp?: number;
+  /** 多打几段（串联牌）。段数翻倍是乘法级的收益，所以只有它按段数加 */
+  times?: number;
+  /** 费用降几点（最低 0）。降费本身就是这张牌的升级方向，不再额外加底数 */
+  cost?: number;
+  /** 联动牌的「每打出一次长多少」多加几点（`link.grow`） */
+  grow?: number;
+  /** 下一张的倍率加多少（`link.nextMul`） */
+  nextMul?: number;
+}
+
 /** 一张知识卡：只有卡面，没有题；题目在点开时从当前阶段的 BANK 抽。 */
 export interface CardDef {
   /**
@@ -178,6 +209,11 @@ export interface CardDef {
   mods?: EffMods;
   /** 会不会和别的手牌发生**机制**联动；不写就是一张数值恒定的牌 */
   link?: CardLink;
+  /**
+   * 精炼后额外改哪些字段。不写就走默认：攻、挡各 +`UP_GAIN`。
+   * 写了就以写下的为准 —— 只写 `{ draw: 1 }` 的牌精炼后只多抽一张，不加攻挡。
+   */
+  up?: CardUp;
   junk?: boolean;
   /** 身份。工厂与解析层写入；旧 JSON 包没写时由 cardKind() 回落推导。 */
   kind?: CardKind;
@@ -422,7 +458,7 @@ export type Panel =
   /** 精英 / Boss 掉落；只有一个 id，没有"要不要拿"。 */
   | { k: 'powerdrop'; id: PowerId }
   | { k: 'rest' }
-  | { k: 'cardpick'; mode: 'up' | 'rm'; from?: CardPickFrom }
+  | { k: 'cardpick'; mode: 'up' | 'rm'; from?: CardPickFrom; pick?: number }
   | { k: 'event'; ev: EventDef }
   | { k: 'deck' }
   | { k: 'pile'; kind: 'draw' | 'discard' }

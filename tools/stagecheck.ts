@@ -633,8 +633,12 @@ function missGain(eff: string) {
   const p = panelOf('cardpick')!;
   ok(p.k === 'cardpick' && p.mode === 'up', `基础牌可精炼：打开选牌（${p.k}/${p.mode}）`);
   upgradeCard(bi);
-  ok(isUpgraded(G.deck[bi]) && statOf(G.deck[bi]).atk === atkBefore + 3,
-    `基础斩击精炼后 ${atkBefore} → ${statOf(G.deck[bi]).atk} 伤`);
+  // 精炼量由这张牌自己的 `up` 决定，不在断言里写死 +3 ——
+  // 写死过一次，改精炼方向时这条断言就变成了"证明旧数值还对"。
+  const expectStrike = planStrike('base:strike+', { noBoost: true });
+  const expectAtk = expectStrike.hits.reduce((n, v) => n + v, 0);
+  ok(isUpgraded(G.deck[bi]) && statOf(G.deck[bi]).atk === defOf('base:strike+').atk,
+    `基础斩击精炼后 ${atkBefore} → ${statOf(G.deck[bi]).atk} 伤（预期 ${expectAtk}）`);
 
   startRun();
   const gi = G.deck.indexOf('base:guard');
@@ -782,7 +786,8 @@ function missGain(eff: string) {
   const idx = G.deck.indexOf('base:strike');
   upgradeCard(idx);
   ok(G.deck[idx] === 'base:strike+', `挑中的那一张换成精炼 id（${G.deck[idx]}）`);
-  ok(statOf('base:strike+').atk === 7, `精炼后 7 伤（${statOf('base:strike+').atk}）`);
+  ok(statOf('base:strike+').atk === defOf('base:strike+').atk,
+    `精炼后 ${statOf('base:strike+').atk} 伤（按这张牌的 up 算）`);
   ok(statOf('base:strike').atk === 4, `同名的另一张仍是 4 伤（${statOf('base:strike').atk}）`);
   const plain = G.deck.filter((id) => id === 'base:strike').length;
   ok(plain === 3, `另外三张基础斩击没被强化（${plain}/3 仍是白板）`);
@@ -2285,8 +2290,8 @@ function missGain(eff: string) {
   resumeRun();
   ok(G.deck[0] === 'base:strike+' && G.deck[1] === 'base:strike',
     `精炼状态随 id 存回来（${G.deck.join(' / ')}）`);
-  ok(statOf(G.deck[0]).atk === 7 && statOf(G.deck[1]).atk === 4,
-    `读档后只有精炼的那一张是 7 伤（${statOf(G.deck[0]).atk} / ${statOf(G.deck[1]).atk}）`);
+  ok(statOf(G.deck[0]).atk === defOf('base:strike+').atk && statOf(G.deck[1]).atk === 4,
+    `读档后只有精炼的那一张变强（${statOf(G.deck[0]).atk} / ${statOf(G.deck[1]).atk}）`);
 
   // 牌组里出现 pow: 是坏档。
   put({ ...base, deck: ['pow:hourglass+'] });

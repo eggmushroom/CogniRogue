@@ -6,7 +6,7 @@ import { healHp, raiseMaxHp, reviveHp } from '../infra/write';
 import { shuffle } from '../infra/util';
 import { PACK } from './pack';
 import { isBasicId } from './basics';
-import { baseIdOf, hasPower, isUpgraded, upGain, upgradedId } from './registry';
+import { baseIdOf, hasPower, isUpgraded, upgradedId } from './registry';
 
 /**
  * 增益的唯一读取入口：always 由 `rulesOf()` 折成数字，fight / stage / run
@@ -192,9 +192,10 @@ export function applyInstant(id: PowerId): string {
       return n ? `${n} 张基础牌全部精炼` : '牌组里的基础牌已经全是精炼版';
     }
     case 'polish': {
-      // 精炼加成写在 `G.upGrade` 上，`statOf` 读它。
+      // 抛光布抬高的是**默认**精炼量：只对没写 `up` 的牌生效，
+      // 写了 `up` 的牌按自己声明的字段长，不受它影响。
       G.upGrade = BAL.polishUp;
-      return `以后每次精炼额外 +${BAL.polishUp}（攻/挡底数 +${upGain()}）`;
+      return `以后每次精炼，攻 / 挡再多 +${BAL.polishUp}`;
     }
     default:
       return '';

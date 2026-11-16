@@ -5,7 +5,7 @@ import { healHp, loseHp, raiseMaxHp } from '../infra/write';
 import { emit } from '../infra/events';
 import { pick, roll } from '../infra/util';
 import { PACK } from '../cards/pack';
-import { baseIdOf, defOf, isUpgraded, upGain, upgradedId } from '../cards/registry';
+import { baseIdOf, defOf, isUpgraded, upgradedId } from '../cards/registry';
 import { canOnceStage, onceThisStage, rulesStatic } from '../cards/powers';
 import { finishNode } from './nodes';
 
@@ -151,6 +151,25 @@ export function openCardPick(mode: 'up' | 'rm', from?: CardPickFrom): boolean {
   return true;
 }
 
+/**
+ * 精炼面板先选牌、再看结果、最后确认，所以中间多一个 `pick` 态。
+ *
+ * 这一步只换面板状态，不碰牌组 —— 玩家看到的是「选了会变成什么样」，
+ * 还没决定。取消就退回列表，牌组一位没动。
+ */
+export function previewUpgrade(i: number) {
+  const id = G.deck[i];
+  if (!id || isUpgraded(id)) return;
+  G.panel = { ...G.panel, pick: i } as Panel;
+}
+
+/** 从预览退回列表。和取消整个面板不同：代价还没收，牌组也没动。 */
+export function cancelPreview() {
+  const p = G.panel;
+  if (p.k !== 'cardpick' || p.pick === undefined) return;
+  G.panel = { k: 'cardpick', mode: p.mode, from: p.from };
+}
+
 export function upgradeCard(i: number) {
   const id = G.deck[i];
   if (!id) return;
@@ -206,7 +225,7 @@ export const EVENTS: EventDef[] = [
     opts: [
       {
         t: '把错题重抄一遍',
-        sub: () => `精炼一张你选择的牌（攻/挡底数 +${upGain()}），失去 ${FX.notebookCost} 点生命`,
+        sub: () => `精炼一张你选择的牌，失去 ${FX.notebookCost} 点生命`,
         payHp: FX.notebookCost,
         run: () => {
           // 有牌可精炼才开面板，血在挑完之后扣
@@ -444,7 +463,7 @@ export const EVENTS: EventDef[] = [
     opts: [
       {
         t: '把自己的笔记重新装订一遍',
-        sub: () => `精炼一张你选择的牌（攻/挡底数 +${upGain()}），失去 ${FX.bindCost} 点生命`,
+        sub: () => `精炼一张你选择的牌，失去 ${FX.bindCost} 点生命`,
         payHp: FX.bindCost,
         run: () => {
           if (!openCardPick('up')) return null;

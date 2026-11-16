@@ -12,11 +12,15 @@ import type { CardDef, CardId } from '../model/types';
 const STRIKE: CardDef = {
   id: 'base:strike', name: '基础斩击',
   atk: 4, blk: 0, cost: 1, ask: 0, eff: 'strike', kind: 'basic', type: 'attack',
+  // 纯攻击牌：精炼只加伤害。基础牌是"保底"，精炼方向也该是直的。
+  up: { atk: 6 },
 };
 
 const GUARD: CardDef = {
   id: 'base:guard', name: '基础格挡',
   atk: 0, blk: 6, cost: 1, ask: 0, eff: 'guard', kind: 'basic', type: 'defense',
+  // 纯防御牌：只加格挡，不凭空长出攻击。
+  up: { blk: 6 },
 };
 
 export const BASICS: CardDef[] = [
