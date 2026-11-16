@@ -62,7 +62,7 @@ export const FONT_NUM = '"SF Mono",ui-monospace,"Cascadia Mono",Consolas,monospa
 export const font = (size: number, weight = 400, family = FONT_UI) =>
   `${weight} ${size}px ${family}`;
 
-/** 主题色：同一主题在牌、日志、结算里颜色一致，形成视觉记忆。 */
+/** 主题色：同一主题在牌、结算里颜色一致，形成视觉记忆。 */
 const TOPIC_COLORS = ['#5aa9f5', '#3ddc97', '#e8b64c', '#a78bfa', '#ef8bb0', '#4fd6cf', '#e08a4a'];
 
 export function topicColor(topic: string): string {

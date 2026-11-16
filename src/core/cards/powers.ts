@@ -1,7 +1,7 @@
 import { BAL } from '../model/data';
 import type { EffOut } from '../model/effects';
 import type { CardId, PowerId } from '../model/types';
-import { G, log, setDeathGuard } from '../infra/state';
+import { G, setDeathGuard } from '../infra/state';
 import { healHp, raiseMaxHp, reviveHp } from '../infra/write';
 import { shuffle } from '../infra/util';
 import { PACK } from './pack';
@@ -169,8 +169,7 @@ export function clearRunOnce() {
   G.onceRun = {};
 }
 
-/** 拾取即结算：拿到时把效果落到这一局，之后不挂时机。
- * 返回写进日志的一句话；拿不到效果时返回空串。 */
+/** 拾取即结算：拿到时把效果落到这一局，之后不挂时机。 */
 export function applyInstant(id: PowerId): string {
   if (!hasPower(id)) return '';
   switch (id) {
@@ -249,7 +248,6 @@ function wishGuard(): boolean {
   G.pending = null;
   // 是固定点数而不是比例：一个"以 30 点活下来"的承诺，玩家一眼能算清够挨几下。
   reviveHp(BAL.wishHp);
-  log(`许愿条燃尽了：你在最后一刻活了下来（${G.hp}/${G.maxHp}）`, 'hi');
   return true;
 }
 

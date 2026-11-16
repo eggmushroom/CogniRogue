@@ -1,6 +1,6 @@
 import { BAL, FOES } from '../model/data';
 import type { CardId, MapNode } from '../model/types';
-import { G, checkPending, log, resetBattleFields } from '../infra/state';
+import { G, checkPending, resetBattleFields } from '../infra/state';
 import { pick, shuffle } from '../infra/util';
 import { stagePool } from '../library/stage';
 import { floorOf } from '../map/gen';
@@ -15,7 +15,7 @@ import { makeFoe } from './foe';
 import { requestSettle } from './pending';
 import { drawBattleQuestions, takeQuestion } from './questions';
 import {
-  buildSettlement, emptySettlement, planThorns, settle, viewOf,
+  buildSettlement, emptySettlement, planThorns, settle,
 } from './settlement';
 import type { Settlement } from './settlement';
 
@@ -40,19 +40,13 @@ export function startBattle(nd: MapNode) {
   G.draw = shuffle(G.deck);
 
   drawBattleQuestions();
-  // fog：本场每回合少抽一张。记在场上，手牌上限 / 动画 / 日志读同一个数。
+  // fog：本场每回合少抽一张。记在场上，手牌上限 / 动画读同一个数。
   G.drawCut = e.mech === 'fog' ? (e.mechV ?? BAL.mech.fog) : 0;
 
   // 增益跨战斗保留，但「一场一次」的账必须清，否则那张牌从第二场起不再响。
   // 行动力上限由 `startTurn` 按 `rulesOf()` 重算。
   clearOnceUsed();
 
-  // 模式已经在顶栏标了一次，这一行不再复读。考场提示只在第一次战斗里说：
-  // 那是教学，不是战报：打到第八层还在播同一句，就是把日志的位置浪费掉了。
-  log(`── ${e.name} 出现了 ──`, 'turn');
-  if ((G.node?.r ?? 0) === 0) {
-    log(`这一场准备了 ${G.qLeft.length} 道新题；点开知识卡时才知道它要不要出题。新题用完会复用问得最少的题`, 'turn');
-  }
   // 开局格挡在 startTurn 里给（那里才知道是不是第一回合）：写在这里会被 startTurn 清零
   startTurn();
 }
@@ -97,19 +91,8 @@ export function playFree(idx: number) {
   const spent = xcost ? G.ap : costNow(card);
   const repeat = xcost ? Math.max(1, spent) : 1;
   const s = buildSettlement(id, { repeat });
-  const back = planThorns(s);
-  const v = viewOf(s);
-
-  const shape = v.hits.length > 1 ? `${v.hits.join('+')} 伤害` : `${v.dmg} 伤害`;
-  commitSimplePlay(id, idx, s, {
-    spent,
-    logKind: 'hi',
-    logMsg:
-      `「${card.name}」${v.dmg ? shape : ''}${v.blk ? `${v.dmg ? '，' : ''}${v.blk} 格挡` : ''}` +
-      `${v.selfHp ? `，失去 ${v.selfHp} 生命` : ''}` +
-      `（这一场已免答${back ? `；反伤 ${back}` : ''}）` +
-      `${v.nextNote ? `　·　${v.nextNote}` : ''}`,
-  });
+  planThorns(s);
+  commitSimplePlay(id, idx, s, { spent });
 }
 
 /** 点一张知识卡 = 从**本场预抽的题**里取一道。 */
@@ -127,7 +110,6 @@ export function askCard(idx: number) {
   const q = takeQuestion();
   if (!q) {
     // 空题库：给一个能查的失败原因，不静默吞掉点击。
-    log('这一章的题库是空的：检查题库文件，或者先用基础牌撑过去', 'bad');
     // 空计划也走执行器：反馈事件与状态写入只有一条出口。
     settle(emptySettlement(card.id));
     return;
@@ -144,7 +126,6 @@ export function askCard(idx: number) {
         options: view.options.filter((_, i) => i !== drop),
         answer: drop < view.answer ? view.answer - 1 : view.answer,
       };
-      log('放大镜：这一场的第一道题，一个干扰项被划掉了。', 'hi');
     }
   }
   G.panel = { k: 'question', idx, qid: q.qid, topic: q.topic, q, view };
@@ -181,10 +162,9 @@ export function cancelPanel() {
  */
 function commitSimplePlay(
   id: CardId, idx: number, s: Settlement,
-  opts: { spent: number; logMsg: string; logKind: '' | 'hi' | 'bad' },
+  opts: { spent: number },
 ) {
   s.budget.ap.spend += opts.spent;
-  s.instant.push(() => log(opts.logMsg, opts.logKind));
   G.discard.push(id);
   G.hand.splice(idx, 1);
   checkPending();
@@ -213,14 +193,5 @@ export function playBasic(idx: number) {
   // 课表只认基础牌，和题目池无关；它同样只报预算，由执行器统一写入。
   s.budget.blk += syllabusBasicBlock();
   planThorns(s);
-  const v = viewOf(s);
-
-  const shape = v.hits.length > 1 ? `${v.hits.join('+')} 伤害` : `${v.dmg} 伤害`;
-  commitSimplePlay(id, idx, s, {
-    spent,
-    logKind: '',
-    logMsg:
-      `「${card.name}」${v.dmg ? shape : ''}${v.blk ? `${v.dmg ? '，' : ''}${v.blk} 格挡` : ''}` +
-      `（基础牌，不答题）${v.nextNote ? `　·　${v.nextNote}` : ''}`,
-  });
+  commitSimplePlay(id, idx, s, { spent });
 }

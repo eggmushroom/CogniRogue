@@ -1,6 +1,6 @@
 import { BAL, POWERS } from '../model/data';
 import type { CardDef, PowerId } from '../model/types';
-import { G, log } from '../infra/state';
+import { G } from '../infra/state';
 import { emit } from '../infra/events';
 import { shuffle } from '../infra/util';
 import { PACK } from '../cards/pack';
@@ -50,7 +50,6 @@ export function takeCard(i: number) {
   // 其余奖励拿到的是**新的一张**，想要强化版，得另外花一次精炼在它身上。
   const id = G.panel.ledger ? c.id + UP_MARK : c.id;
   G.deck.push(id);
-  log(`「${c.name}」加入牌组${G.panel.ledger ? '（账本已精炼）' : ''}（${G.deck.length} 张）`, 'hi');
   afterReward();
 }
 
@@ -69,8 +68,7 @@ export function grantPower(): PowerId | null {
   if (!p) return null;
   G.powers.push(p.id);
   // 拾取即结算的那一类不等下一场，在这里就落到这一局上。
-  const instant = p.scope === 'instant' ? applyInstant(p.id) : '';
-  log(`精英掉落「${p.name}」：${instant || p.card}（整局生效）`, 'hi');
+  if (p.scope === 'instant') applyInstant(p.id);
   emit({ t: 'power', id: p.id });
   return p.id;
 }

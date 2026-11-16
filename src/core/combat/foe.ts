@@ -1,6 +1,6 @@
 import { BAL } from '../model/data';
 import type { Foe, FoeTpl, Move } from '../model/types';
-import { G, checkPending, log, topTopic } from '../infra/state';
+import { G, checkPending, topTopic } from '../infra/state';
 import { after } from '../infra/schedule';
 import { STAGE_ROWS } from '../model/data';
 import { JUNK_ID } from '../cards/registry';
@@ -66,7 +66,7 @@ function attackOf(e: Foe) {
     topic = topTopic();
     if (topic) {
       oblivionAdd = e.mechV ?? BAL.mech.oblivion;
-      // 本回合在该主题答对过，加的部分被削回去；日志要写清先加后减。
+      // 本回合在该主题答对过，加的部分被削回去。
       if (G.topOkTopic === topic) oblivionCut = BAL.mech.oblivionReduce;
     }
   }
@@ -103,20 +103,17 @@ export function onPlayerMiss(s: Settlement): string {
     if (n <= 0) return '';
     s.instant.push(() => { e.hp += n; });
     s.events.push({ t: 'foeHeal', n });
-    log(`${e.name}啃食你的失误，回复 ${n} 点`, 'bad');
     return `${e.name}啃食这次失误，回复 ${n} 点。`;
   }
   if (e.mech === 'lethe') {
     const n = e.mechV ?? BAL.mech.lethe;
     s.instant.push(() => { e.dmg += n; });
-    log(`${e.name}吞下这次遗忘，攻击 +${n}`, 'bad');
     return `${e.name}吞下这次遗忘：它的攻击永久 +${n}。`;
   }
   if (e.mech === 'bulwark') {
     // 答错让它多一层甲：惩罚落在节奏上，不落在血量上。
     const n = e.mechV ?? BAL.mech.bulwark;
     s.instant.push(() => { e.block += n; });
-    log(`${e.name} 加固了 ${n} 点格挡`, 'bad');
     return `它趁机加固：获得 ${n} 点格挡。`;
   }
   return '';
@@ -143,7 +140,6 @@ export function endTurn() {
   const feather = R.endBlock > 0 && G.block === 0 ? R.endBlock : 0;
   if (feather) {
     s.budget.blkEarly += feather;
-    log(`羽毛：空手结束回合，补 ${feather} 点格挡`, 'hi');
   }
   const m = moveOf(e);
 
@@ -157,68 +153,44 @@ export function endTurn() {
    */
   const whistled = m.k === 'atk' && G.turn === 1 && onceThisFight('whistle');
   if (m.k === 'atk' && G.turn === 1 && (whistled || BAL.calmFirstTurn)) {
-    log(whistled
-      ? `${e.name} 的这一击被你闪开了`
-      : `${e.name} 还在观察你，这一回合没有出手`, 'hi');
     s.events.push({ t: 'enemyAct', k: 'calm', n: 0 });
   } else if (m.k === 'atk') {
     const f = attackOf(e);
     let dmg = f.total;
     // 封蜡：这一场第一次挨打少受几点，落在格挡之前，否则减免会被格挡吃掉。
     if (onceThisFight('seal') && dmg > 0) {
-      const before = dmg;
       dmg = Math.max(0, dmg - BAL.sealCut);
-      log(`封蜡：这一击被削去 ${before - dmg} 点（${before} → ${dmg}）`, 'hi');
     }
     // 夜灯：每次挨打减固定值，同样在格挡之前，可以削到 0。
     const cut = rulesOf({ handLeft }).dmgCut;
     if (cut > 0 && dmg > 0) dmg = Math.max(0, dmg - cut);
-    if (f.reviewer) log(`${e.name}：你这回合没有认真答对任何一张卡，+${f.reviewer}`, 'bad');
-    if (f.oblivionCut) {
-      log(`遗忘：你在「${f.topic}」上答对了，它被削弱 -${f.oblivionCut}`, 'hi');
-    } else if (f.oblivionAdd) {
-      log(`遗忘：你错得最多的主题是「${f.topic}」，它抓住这点 +${f.oblivionAdd}`, 'bad');
-    }
-
     // guardCap 是「段真正落地时」的有效格挡：羽毛的补甲由执行器在第一段之前写入，
     // 所以预演就要把它算进去，否则玩家会平白多吃一段伤害。
     let guard = G.block + feather;
     if (e.mech === 'pierce') {
       const cut = e.mechV ?? BAL.mech.pierceBlock;
       guard = Math.max(0, guard - cut);
-      log(`${e.name}：无视 ${cut} 点格挡`, 'bad');
     }
     planHeroHits(s, splitDamage(dmg, f.times), guard);
-    const absorbed = s.hits.reduce((n, h) => n + h.absorbed, 0);
     const taken = s.hits.reduce((n, h) => n + h.dealt, 0);
 
     // 吸水：挡住不算命中，没挡住才抽走下回合的行动力。
     if (e.mech === 'siphon' && taken > 0) {
       const n = e.mechV ?? BAL.mech.siphon;
       s.instant.push(() => { G.apDown += n; });
-      log(`${e.name} 抽走了你 ${n} 点行动力（下回合）`, 'bad');
     }
-    log(
-      `${e.name} 攻击 ${dmg}${f.times > 1 ? `（${f.times} 段）` : ''} 点` +
-        (absorbed ? `，格挡吸收 ${absorbed}` : '') +
-        (taken ? `，你受到 ${taken} 点伤害` : '，全部挡下'),
-      taken ? 'bad' : 'hi',
-    );
   } else if (m.k === 'def') {
     const n = m.v ?? 0;
     s.instant.push(() => { e.block += n; });
     s.events.push({ t: 'enemyAct', k: 'def', n });
-    log(`${e.name} 举起格挡，获得 ${n} 点护甲`, 'bad');
   } else if (m.k === 'jam') {
     const n = m.n ?? 1;
     s.instant.push(() => { for (let i = 0; i < n; i++) G.discard.push(JUNK_ID); });
     s.events.push({ t: 'enemyAct', k: 'jam', n });
-    log(`${e.name} 往你的弃牌堆塞了 ${n} 张杂念`, 'bad');
   } else if (m.k === 'buff') {
     const n = m.v ?? 0;
     s.instant.push(() => { e.dmg += n; });
     s.events.push({ t: 'enemyAct', k: 'buff', n });
-    log(`${e.name} 变得更清晰了，攻击 +${n}`, 'bad');
   }
 
   e.mv = (e.mv || 0) + 1;
@@ -226,7 +198,6 @@ export function endTurn() {
   if (e.mech === 'haste') {
     const n = e.mechV ?? BAL.mech.haste;
     e.dmg += n;
-    log(`${e.name} 又紧了一分，攻击 +${n}`, 'bad');
   }
 
   G.busy = true;

@@ -1,5 +1,5 @@
 import { BAL } from '../model/data';
-import { G, log, resetTurnState } from '../infra/state';
+import { G, resetTurnState } from '../infra/state';
 import { grantBlock, resetAp, setApMax, setBlock, spendAp } from '../infra/write';
 import { shuffle } from '../infra/util';
 import { JUNK_ID } from '../cards/registry';
@@ -23,19 +23,15 @@ export function startTurn(handLeft = G.hand.length) {
     const n = Math.min(G.apDown, Math.max(0, G.apMax - 1));
     spendAp(n);
     G.apDown = 0;
-    if (n) log(`你被抽走了 ${n} 点行动力，这一回合只剩 ${G.ap} 点`, 'bad');
   }
   // 格挡每回合重设：保底、开局、索引贴三笔都由规则表给，直接覆盖 G.block。
   setBlock(R.turnBlock + R.startBlock + G.carryBlock);
-  if (G.carryBlock) log(`索引贴留下了 ${G.carryBlock} 点格挡`, 'hi');
   G.carryBlock = 0;
-  if (R.startBlock) log(`开局 ${R.startBlock} 点格挡`, 'hi');
   // 兜底：正常回合 endTurn 已经清过手牌，这里是空操作；直接调 startTurn 的
   // 调用方（战斗开局、规则测试）也走同一条路，不会出现「牌留在手里跨回合」。
   discardHand();
   // 索引卡/折角已折进 R.draw，drawCut 是蠹蛾砍的；一回合至少看见一张。
   drawTo(Math.max(1, R.draw - G.drawCut));
-  log(`回合 ${G.turn} 开始${G.drawCut ? `（视野 -${G.drawCut}）` : ''}`, 'turn');
 }
 
 /**
@@ -65,16 +61,13 @@ function reshuffle() {
       n += 1;
       return false;
     });
-    log(`毡垫：${n} 张杂念没被洗回来`, 'hi');
   }
   G.draw = shuffle(G.discard);
   G.discard = [];
-  log('弃牌堆重新洗入牌堆', 'turn');
   // 档案盒：洗牌后补一次格挡。
   const n = rulesOf().reshuffleBlock;
   if (n > 0) {
     grantBlock(n);
-    log(`档案盒：洗牌后补 ${n} 点格挡`, 'hi');
   }
 }
 

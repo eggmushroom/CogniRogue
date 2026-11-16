@@ -1,6 +1,6 @@
 import { BAL } from '../model/data';
 import type { CardDef, CardPickFrom, EventDef, Panel } from '../model/types';
-import { G, log } from '../infra/state';
+import { G } from '../infra/state';
 import { healHp, loseHp, raiseMaxHp } from '../infra/write';
 import { emit } from '../infra/events';
 import { pick, roll } from '../infra/util';
@@ -9,7 +9,7 @@ import { baseIdOf, defOf, isUpgraded, upGain, upgradedId } from '../cards/regist
 import { canOnceStage, onceThisStage, rulesStatic } from '../cards/powers';
 import { finishNode } from './nodes';
 
-/** 随机事件与复习点。选项的 run() 改 G 并返回一句日志。 */
+/** 随机事件与复习点。选项的 run() 改 G，返回 null 表示没被消费。 */
 /** 事件不发增益：增益只由精英和幕 Boss 掉。 */
 /** 付费事件的血挂在 `G.pendingCost` 上，选完牌才结算（见 `GameState.pendingCost`）。 */
 
@@ -122,20 +122,14 @@ export function restHeal() {
   // 面板渲染只调 restWanted()（查账），到这里才真正花掉地图册的名额。
   const extra = onceThisStage('atlas') ? BAL.atlasHeal : 0;
   const wanted = restBase() + extra;
-  const got = healBy(wanted);
-  log(got === wanted
-    ? `休息，回复 ${got} 点生命${extra ? `（地图册额外 +${extra}）` : ''}`
-    : `休息，回复 ${got} 点生命（已达到上限 ${G.maxHp}）`, 'hi');
+  healBy(wanted);
   finishNode();
 }
 
 /** 打开精炼 / 遗忘的选牌面板。删牌要求牌组 > 4，精炼按张。 */
 export function openCardPick(mode: 'up' | 'rm', from?: CardPickFrom): boolean {
-  if (mode === 'rm' && G.deck.length <= 4) { log('牌组太薄，不能再删了', ''); return false; }
-  if (mode === 'up' && !G.deck.some((id) => !isUpgraded(id))) {
-    log('没有能精炼的牌', '');
-    return false;
-  }
+  if (mode === 'rm' && G.deck.length <= 4) return false;
+  if (mode === 'up' && !G.deck.some((id) => !isUpgraded(id))) return false;
   G.panel = { k: 'cardpick', mode, from };
   return true;
 }
@@ -146,23 +140,18 @@ export function upgradeCard(i: number) {
   if (isUpgraded(id)) return;
   // 换 id 就是精炼：base:strike → base:strike+
   G.deck[i] = upgradedId(id);
-  log(`「${defOf(id).name}」被精炼：攻/挡底数 +${upGain()}（按效果折算）`, 'hi');
   // 代价在选完牌时才收
-  const paid = settlePendingCost();
-  if (paid) log(paid, 'bad');
+  settlePendingCost();
   finishNode();
 }
 
 export function forgetCard(i: number) {
   const id = G.deck[i];
   if (!id) return;
-  const d = defOf(id);
   // 少于 5 张时每回合重复抽同一批牌
-  if (G.deck.length <= 4) { log('牌组太薄，不能再删了', ''); finishNode(); return; }
+  if (G.deck.length <= 4) { finishNode(); return; }
   G.deck.splice(i, 1);
-  log(`你永久放下了「${d.name}」`, '');
-  const paid = settlePendingCost();
-  if (paid) log(paid, 'bad');
+  settlePendingCost();
   finishNode();
 }
 
@@ -547,7 +536,6 @@ export function chooseEventOption(i: number) {
   // `run()` 可能改写 G.panel，TS 仍按调用前的 narrowing 看它，所以这里重新按 Panel 读一次。
   const after = G.panel as Panel;
   if (after.k === 'cardpick') after.from = { k: 'event', ev };
-  if (msg) log(msg, 'hi');
   // null 表示选项没被消费，面板留在原地
   if (msg === null) return;
   // 选项可能把面板交给 cardpick，收尾由 picker 自己做

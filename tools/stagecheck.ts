@@ -6,7 +6,7 @@ import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS, effSummaryOf } from '../s
 import type { MapNode, PowerId } from '../src/core/model';
 import {
   EVENTS, G, answer, askCard, canAsk, canPay, cancelPanel, chooseEventOption, clearRun, defOf,
-  dismissFeedback, endTurn, forgetCard, intentText, playBasic, playerFacing,
+  dismissFeedback, endTurn, forgetCard, intentText, playBasic,
   runSaveInfo, skipReward, takeCard, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
   loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf, LEGACY_CARD_IDS,
   allQuestions, stageMemOf, resetStageMemory, cardKind, enterStage, BASICS, drawBattleQuestions,
@@ -561,28 +561,6 @@ function missGain(eff: string) {
   ok(G.floors === floors0 + 1, `旧笔记本：节点收尾推进一层（${G.floors}）`);
 }
 
-// 事件结果必须落到玩家看得见的地方（仍属 10 事件）。
-// 这条此前整条不通：`chooseEventOption` 把结果写成一条日志就 `finishNode()`，
-// 而 `G.log` 一个消费者都没有 —— 玩家点了「抄下这一页」，面板关掉、血掉了 8，
-// 屏幕上没有一个字告诉他刚才付了什么。`playerFacing()` 是绘制与断言共用的那一处判断。
-{
-  startRun();
-  G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'index-cards')! };
-  const hp0 = G.hp;
-  const n0 = G.log.length;
-  chooseEventOption(0);
-  const last = G.log[G.log.length - 1];
-  ok(G.hp < hp0 && G.log.length > n0, `索引卡：结果写成了一条记录（${n0} → ${G.log.length}）`);
-  ok(!!last && playerFacing(last) && last.msg.includes('生命'),
-    `索引卡：这条记录玩家看得见，且说了代价（${last?.msg ?? '无'}）`);
-
-  // 分节标题不进提示条：它讲"这一段是什么"，会把"刚才发生了什么"挤掉。
-  startRun();
-  const heads = G.log.filter((l) => !playerFacing(l));
-  ok(heads.length >= 2 && G.log.some((l) => playerFacing(l) === false && l.msg.includes('档案馆')),
-    `开局的分节标题被标成"不显示"（${heads.length} 条）`);
-}
-
 // ── 10a. 基础牌
 // 基础牌同样可以精炼与遗忘。
 {
@@ -1025,10 +1003,6 @@ function missGain(eff: string) {
   const want = Math.max(0, plainPer - BAL.binderAtkCut);
   ok(dealt === want,
     `装订线：答错也打出削减后的伤害（${plainPer} − ${BAL.binderAtkCut} = ${want}，实际 ${dealt}）`);
-  // 同一手里两个面板不能说两件相反的事：结算说明写「按一半结算（7 伤害）」，
-  // 日志却说「效果作废」。日志只能读这一手到底产出了什么，不能读对错。
-  const said = G.log[G.log.length - 1]?.msg ?? '';
-  ok(!/效果作废/.test(said), `装订线：日志不再自相矛盾（${said.slice(0, 40)}…）`);
 
   // 格挡也要减半。
   {

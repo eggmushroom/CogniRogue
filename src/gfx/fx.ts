@@ -436,7 +436,7 @@ export function enemyAct(o: EnemyActSpec): number {
   }
 
   // calm：第一回合的观察期。敌人没出手也得让玩家看见"它忍住了"，
-  // 否则会以为日志丢了，或者以为下次点结束回合会连挨两下。
+  // 否则会以为敌人卡住了，或者以为下次点结束回合会连挨两下。
   ring(from.x, from.y, withAlpha(C.cyan, 0.32), 165, 0.7);
   floatText(from.x, from.y - 70, '观察中…', C.cyan, 28, { vy: -34, weight: 600 });
   return 0.5;

@@ -1,6 +1,6 @@
 import { BAL } from '../model/data';
 import type { CardId, Eff, Foe } from '../model/types';
-import { G, checkPending, log } from '../infra/state';
+import { G, checkPending } from '../infra/state';
 import { after } from '../infra/schedule';
 import { emit } from '../infra/events';
 import type { GameEvent } from '../infra/events';
@@ -24,7 +24,7 @@ import { drawCards } from './deck';
  * 现在业务函数只**构造**计划：hits 是逐段的伤害，budget 是这一手要写的资源，
  * instant 是必须在本帧跑完的账本与答题流水。所有可见写入（敌人 hp/block、
  * 玩家 hp/block/ap、抽牌、事件）只在 settle 里发生，段与它的 dmg 事件落在
- * 同一个调度点 —— 血条因此跟着飘字逐段掉，而日志、反馈面板、免答记账读的
+ * 同一个调度点 —— 血条因此跟着飘字逐段掉，而反馈面板、免答记账读的
  * 都是同一份计划派生出来的 view。
  *
  * 账本类写入（cardsThisTurn / cardPlays / nextBoost / 记忆 / 统计）在构造期
@@ -55,7 +55,7 @@ export interface Budget {
   hurt: number;
   draw: number;
   ap: { spend: number; gain: number };
-  /** 卡面自伤，只用于日志与反馈文案；实际扣血走 hurt。 */
+  /** 卡面自伤，只用于反馈文案；实际扣血走 hurt。 */
   selfHp: number;
 }
 
@@ -83,7 +83,7 @@ export interface Settlement {
   wrong: boolean;
 }
 
-/** 反馈面板 / 日志 / 界面共用的只读视图；只有这一处把计划翻译成数字。 */
+/** 反馈面板 / 界面共用的只读视图；只有这一处把计划翻译成数字。 */
 export interface StrikeView {
   hits: number[];
   parts: { d: number; a: number }[];
@@ -216,12 +216,8 @@ export function buildSettlement(
   const healed = hits.reduce((n, h) => n + Math.min(out.healPer, h.dealt), 0);
   if (healed > 0) b.heal = Math.max(0, Math.min(G.maxHp - G.hp, healed));
 
-  if (out.selfHp > 0) {
-    log(`「${card.name}」反噬：你失去 ${out.selfHp} 点生命`, 'bad');
-  }
 
-  // 节奏型增益按「真正生效的牌」计数。抽牌与行动力都只记进预算，
-  // 由执行器一次写完，日志排在抽牌之后才能报实际张数。
+  // 节奏型增益按「真正生效的牌」计数。抽牌与行动力都只记进预算，由执行器一次写完。
   const R = rulesOf();
   // 墨水瓶：卡面写「一回合只数一次」，所以只认第 3 张，不认第 6 / 9 张。
   // 写成 `% 3 === 0` 会让一回合打六张牌的牌组白拿两次抽牌。
@@ -234,11 +230,9 @@ export function buildSettlement(
   // 玩家读的是类别，规则就该按类别。
   if (cardType(card) === 'attack' && onceThisFight('seed')) {
     b.blk += BAL.seedBlock;
-    s.instant.push(() => log(`种纸：这一场第一张攻击牌，补 ${BAL.seedBlock} 点格挡`, 'hi'));
   }
   if (pulse) {
     b.ap.gain += pulse;
-    s.instant.push(() => log(`节拍器：这一场第一次三连，退回 ${pulse} 点行动力`, 'hi'));
   }
   b.draw += ink + varnish;
 
@@ -246,11 +240,6 @@ export function buildSettlement(
   // 兑现条件由 `boostSpent` 判：0 伤害的牌不消耗上一张留的加成。
   s.nextNote = commitLink(id, boostSpent(out.hits));
 
-  // 抽牌 / 行动力由执行器统一落地（见 `settle()` 的第一件事），这里只补日志。
-  s.instant.unshift(() => {
-    if (ink) log(`墨水瓶：本回合第 ${G.cardsThisTurn} 张牌，抽 ${ink} 张`, 'hi');
-    if (varnish) log(`亮油：这一场第一张 0 费牌，抽 ${varnish} 张`, 'hi');
-  });
   return s;
 }
 
@@ -278,7 +267,6 @@ export function planThorns(s: Settlement): number {
   const n = e.mechV ?? BAL.mech.thorns;
   if (n <= 0) return 0;
   s.budget.hurt += n;
-  s.instant.push(() => log(`${e.name} 的反伤：你受到 ${n} 点伤害`, 'bad'));
   return n;
 }
 
@@ -327,7 +315,6 @@ export function settle(s: Settlement, opts: SettleOpts = {}) {
           if (r.killed) {
             const got = healHp(rulesOf().healOnKill);
             if (got) {
-              log(`藏书印：击杀回复 ${got} 点生命`, 'hi');
               emit({ t: 'heal', n: got });
             }
           }

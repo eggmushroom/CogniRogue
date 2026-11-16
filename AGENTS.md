@@ -88,8 +88,6 @@
 | **常驻规则数字** | `core/cards/powers.ts` 的 `rulesStatic()`：界面要显示「回复多少 / 抽几张 / 底数加几」，一律读它 |
 | 战斗中的瞬时规则 | `rulesOf()`（在 `rulesStatic()` 上叠加首回合、手牌数、敌人类型） |
 | 面板内部字段 | `core/infra/state.ts` 的 `panelOf(k)`（别写 `as unknown as { view: ... }`） |
-| **对玩家说话** | `core/infra/state.ts` 的 `log()`：core 里唯一的文字出口。加一条新规则要让玩家知道结果，写一条记录就够 —— 绘制在 `scenes/feed.ts`，**不许在场景里另写一套提示**，也不许为了"反正没人看"就地 `console.log` |
-| 哪些记录当场显示 | `core/infra/state.ts` 的 `playerFacing()`：`turn` 是分节标题，不进提示条。绘制和断言读同一处，别在屏幕里各判一次 |
 | 玩家可见文案的视角 | 无落点：由 `ui/no-design-voice` 的词表拦；文案本身在 `model/data.ts`、`journey/events.ts`、`scenes/*` |
 | 事件的代价与收益数字 | `core/journey/events.ts` 顶部的 `FX` 表，文案与 `run()` 都从这儿取 |
 | 事件的抽取顺序 | `core/journey/events.ts` 的 `drawEvent()`：先去没见过的里面抽，池子空了才重复 |
@@ -124,8 +122,8 @@
 （没有借书证时只退 1 点）。`stage` 有一条断言直接比 `card` 与 `desc` 的前缀。
 
 **为什么"答错"不能直接推出"效果作废"**：装订线让这一手答错也出一半伤害。
-日志按 `ctx.right` 分支，就会在结算说明写「按一半结算（7 伤害）」的同时，
-同一手写「效果作废」—— 两个面板说两件相反的事。判定只能读这一手**产出了什么**
+判定若按 `ctx.right` 分支写「效果作废」，同一手结算说明却写「按一半结算（7 伤害）」，
+玩家会在同一块面板上读到两件相反的事。判定只能读这一手**产出了什么**
 （`dead`），不能读对错。
 
 **为什么一个全局开关不能和一张增益共用 `||`**：`calmFirstTurn || onceThisFight('whistle')`

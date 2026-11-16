@@ -1,13 +1,13 @@
-import { MODE_BY_ID, STAGES, STAGE_ROWS, planFor, stageOf } from '../model/data';
+import { MODE_BY_ID, STAGES } from '../model/data';
 import type { ModeId, PowerId } from '../model/types';
-import { G, log, newRunState, resetBattleFields } from '../infra/state';
+import { G, newRunState, resetBattleFields } from '../infra/state';
 import { raiseMaxHp, refillHp } from '../infra/write';
 import { basicDeck } from '../cards/basics';
 import { startDeck } from '../cards/starter';
 import { applyInstant, clearStageOnce, rulesOf } from '../cards/powers';
 import { enterStage } from '../library/stage';
 import { saveStageMem } from '../library/stagemem';
-import { availableNodes, curFloor, FLOOR_MAX, genStage } from '../map/gen';
+import { availableNodes, genStage } from '../map/gen';
 import { setSettleHandler, startBattle } from '../combat';
 import { drawEvent } from './events';
 import { openReward, openPowerDrop } from './rewards';
@@ -38,10 +38,6 @@ export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []
   // 题库按幕从来源题库里切出来
   enterStage(1);
 
-  const st = stageOf(1);
-  log(`── 你走进记忆的档案馆${modeDef ? ` · ${modeDef.name}模式` : ''} ──`, 'turn');
-  log(`第一幕 · ${st.name}：本章「${G.stageTopic}」，题目从这一章的题库里抽`, 'turn');
-  log(`全塔 ${FLOOR_MAX} 层，每 ${STAGE_ROWS} 层一幕，幕末有 Boss`, 'turn');
 }
 
 export function enterNode(key: string) {
@@ -96,12 +92,6 @@ function nextStage() {
   G.screen = 'map';
   G.busy = false;
 
-  const st = stageOf(next);
-  const plan = planFor(next);
-  log(`── 第 ${next} 幕 · ${st.name}：${st.sub} ──`, 'turn');
-  log(`${plan.title}：题目从这一章的题库里抽，牌还是那副牌`, 'turn');
-  log(`你在幕间喘了口气：生命回满，上限 +${grown}（现在 ${G.maxHp}）`, 'hi');
-  log(`现在在第 ${curFloor()} / ${FLOOR_MAX} 层`, '');
   openPowerDrop();
 }
 

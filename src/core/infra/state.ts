@@ -1,5 +1,5 @@
 import { BAL } from '../model/data';
-import type { GameState, LogLine, Panel } from '../model/types';
+import type { GameState, Panel } from '../model/types';
 
 /**
  * 一局（或标题页）的完整默认状态。**全量**返回 `GameState`：以后给 `GameState`
@@ -10,7 +10,7 @@ import type { GameState, LogLine, Panel } from '../model/types';
  */
 export function newRunState(): GameState {
   return {
-    screen: 'title', mode: null, stage: 1, stageTopic: '', panel: { k: 'none' }, log: [], deck: [], powers: [],
+    screen: 'title', mode: null, stage: 1, stageTopic: '', panel: { k: 'none' }, deck: [], powers: [],
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0, ap: BAL.baseAp, apMax: BAL.baseAp,
     turn: 1, enemy: null, draw: [], discard: [], hand: [],
     map: [], pos: null, node: null, seen: {}, eventsSeen: [],
@@ -45,37 +45,6 @@ export const G: GameState = newRunState();
 export function panelOf<K extends Panel['k']>(k: K): Extract<Panel, { k: K }> | null {
   const p = G.panel;
   return p.k === k ? (p as Extract<Panel, { k: K }>) : null;
-}
-
-/** 只增不减：界面靠"比上次大了多少"判断有新消息。 */
-let logSeq = 0;
-
-/**
- * 一条玩家可见的即时反馈。**这是 core 里唯一允许"往外说话"的通道**：
- * 结算、敌人行动、事件选项都只把结果写成一条记录，界面负责显示（`scenes/feed.ts`）。
- *
- * `seq` 不是给人的：界面按它判断"这一帧有没有新的一条"。没有它就只能比较数组长度，
- * 而数组满了会 `shift()`，长度恒定在 60 —— 一场长战斗打到后面，新的记录会被判成
- * "没有变化"，提示条从此不再更新。
- *
- * 上限 60 条，避免整局无限累积。
- */
-export function log(msg: string, kind: LogLine['kind'] = '') {
-  logSeq += 1;
-  G.log.push({ msg, kind, seq: logSeq });
-  if (G.log.length > 60) G.log.shift();
-}
-
-/**
- * 这条记录该不该当场给玩家看。
- *
- * `turn` 是分节标题（「── 第 2 幕 · 契约 ──」「这一场准备了 6 道新题」），
- * 属于旧战斗记录面板的排版产物：它们讲的是"这一段是什么"，不是"刚才发生了什么"，
- * 做成一行一闪而过的提示只会把结果挤掉。判断放在这里而不是界面里，
- * 是为了让"哪些会显示"有一处可断言的真相 —— 测试读它，绘制也读它。
- */
-export function playerFacing(l: LogLine): boolean {
-  return l.kind !== 'turn';
 }
 
 /** 一回合内会重置的字段集中在这里；`charge` 按场清，`nextBoost` 跨回合保留。 */

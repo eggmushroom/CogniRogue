@@ -295,7 +295,7 @@ export interface EventOpt {
    * （`content/no-literal-hp`）会扫 `\d+ 点生命`。
    */
   sub: () => string;
-  /** 返回日志文案；返回 null 表示这个选项没有被消费，面板留在原地让玩家重选 */
+  /** 返回 null 表示这个选项没有被消费，面板留在原地让玩家重选 */
   run: () => string | null;
 }
 
@@ -415,12 +415,6 @@ export type Panel =
   | { k: 'pack'; msg: string; ok: boolean }
   | { k: 'report'; data: ReportData };
 
-/**
- * 一条玩家可见的即时反馈。`seq` 是自增序号，只给界面判断"有没有新的"用 ——
- * 数组满了会 shift 掉旧条，靠长度判断会漏掉后面的每一条。
- */
-export interface LogLine { msg: string; kind: '' | 'hi' | 'bad' | 'turn'; seq: number }
-
 export interface GameState {
   screen: 'title' | 'map' | 'battle' | 'report' | 'atlas';
   /** 开局模式，决定开局塞哪几个增益 */
@@ -430,7 +424,6 @@ export interface GameState {
   /** 这一幕对应哪一章，只决定 BANK 是哪一份，不影响卡面数值。 */
   stageTopic: string;
   panel: Panel;
-  log: LogLine[];
   /** 牌组：只有 id；精炼过的那一张带 `+` 后缀，所以精炼只作用于被挑中的那张。 */
   deck: CardId[];
   /** 这一局拿到的增益，跨战斗保留，新开一局才清。 */

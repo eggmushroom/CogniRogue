@@ -1,7 +1,6 @@
 import { BAL } from '../model/data';
-import { EFFS } from '../model/effects';
 import type { CardDef, CardId, Feedback, QView, Question } from '../model/types';
-import { G, checkPending, log, topTopic } from '../infra/state';
+import { G, checkPending, topTopic } from '../infra/state';
 import { onPlayerMiss } from './foe';
 import { defOf } from '../cards/registry';
 import { askOf } from '../cards/ask';
@@ -15,7 +14,7 @@ import type { Settlement, StrikeView } from './settlement';
 
 /**
  * 答题结算：答对 / 答错分支只改同一份 `Settlement`，最后由 `finishAnswer`
- * 交给唯一执行器。判定面板、日志、免答记账都从这份计划的 `viewOf()` 派生，
+ * 交给唯一执行器。判定面板与免答记账都从这份计划的 `viewOf()` 派生，
  * 不存在「预演值」和「真实值」两套读数，也不需要逐字段拷贝。
  *
  * 加新增益优先改这里，不要再往通用路径里插分支。
@@ -42,7 +41,7 @@ class AnswerCtx {
     this.s = emptySettlement(id);
   }
 
-  /** 反馈与日志只读这一份派生视图；预算再怎么改，都不会出现漏拷的字段。 */
+  /** 反馈只读这一份派生视图；预算再怎么改，都不会出现漏拷的字段。 */
   get v(): StrikeView {
     return viewOf(this.s);
   }
@@ -200,32 +199,7 @@ function finishAnswer(ctx: AnswerCtx) {
   // 环形缓冲，只留最近若干条
   if (G.answers.length > 120) G.answers.shift();
 
-  const effName = EFFS[ctx.card.eff].name;
   const v = ctx.v;
-  const shape = v.hits.length > 1 ? `${v.hits.join('+')} 伤害` : `${v.dmg} 伤害`;
-  /**
-   * 「效果作废」是**结论**，不是答错的规则：装订线这一手答错也照样出一半伤害，
-   * 按 `ctx.right` 分支就会在结算说明写「按一半结算（7 伤害）」的同时，
-   * 日志同一手写「效果作废」。所以这里只看这一手到底产出了什么。
-   */
-  const dead = v.dmg === 0 && v.blk === 0 && v.heal === 0 && v.drawn === 0 && v.selfHp === 0;
-  const outcome = ctx.right || !dead
-    ? `，${shape}` +
-      (v.absorbed ? `（${v.absorbed} 被挡）` : '') +
-      (v.blk ? `，${v.blk} 格挡` : '') +
-      (v.selfHp ? `，失去 ${v.selfHp} 生命` : '') +
-      (v.heal ? `，回 ${v.heal}` : '') +
-      (v.drawn ? `，抽 ${v.drawn}` : '')
-    : '，效果作废';
-  const missNote = ctx.right ? '' : ctx.backToHand ? '，牌留在手里' : '，进弃牌堆';
-  const leftNote = G.qLeft.length
-    ? `本场还剩 ${G.qLeft.length} 道新题`
-    : '本场新题已用完，开始复用';
-  log(
-    `「${effName}·${ctx.q.topic}」${ctx.right ? '答对' : '答错'}${outcome}${missNote}　·　${leftNote}`,
-    ctx.right ? 'hi' : 'bad',
-  );
-
   // 同步这一刻只判玩家侧的即时死亡；敌人是否被打死要等最后一段落地，
   // 由执行器再判一次。
   checkPending();
