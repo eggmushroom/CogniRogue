@@ -19,7 +19,7 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 const countOf = (v: unknown): number => (isNum(v) && v > 0 ? Math.floor(v) : 0);
 
 /** 读坏条目时保留能读的字段，不整份拒绝 —— 跨局积累的错题不该因一行 JSON 全丢。 */
-export function parseStageMem(raw: string): Record<string, StageMemEntry> {
+function parseStageMem(raw: string): Record<string, StageMemEntry> {
   try {
     const data: unknown = JSON.parse(raw);
     if (!data || typeof data !== 'object' || Array.isArray(data)) return {};

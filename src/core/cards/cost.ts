@@ -5,7 +5,7 @@ import { G } from '../infra/state';
  * 出牌价格。费用同时管打不打得出去和答对后净花几点；X 费吃掉剩余行动力。
  * 高费牌打错不扣行动力，但这一手没打出来，还消耗本场一道新题。
  */
-export const DEFAULT_COST = 1;
+const DEFAULT_COST = 1;
 
 /** 这张牌印在牌面上的价格。不写就是 1。 */
 export const costOf = (c: CardDef): CardCost => c.cost ?? DEFAULT_COST;

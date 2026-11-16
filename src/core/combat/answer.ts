@@ -4,7 +4,7 @@ import type { CardDef, CardId, Feedback, QView, Question } from '../model/types'
 import { G, checkPending, log, topTopic } from '../infra/state';
 import { onPlayerMiss } from './foe';
 import { defOf } from '../cards/registry';
-import { gradeNeed } from '../cards/grade';
+import { askOf } from '../cards/ask';
 import { onceThisFight, rulesOf } from '../cards/powers';
 import { costNow, isXCost, refundOf } from '../cards/cost';
 import { recordAnswer } from '../library/stagemem';
@@ -76,16 +76,16 @@ function resolveRight(ctx: AnswerCtx) {
     addNote(ctx.s, `书签：这一场第一道答对，获得 ${BAL.bookmarkBlock} 点格挡。`);
   }
 
-  // 答对攒等级，攒够 `gradeNeed` 这场就免答；按卡 id 记，同名牌副本共用。
-  // 批注在这一场第一次答对时多攒一级，和这次答对本来攒的那级一起加。
-  const need = gradeNeed(ctx.card);
+  // 答对攒答题次数，攒够 `askOf` 这场就免答；按卡 id 记，同名牌副本共用。
+  // 批注在这一场第一次答对时多攒一次，和这次答对本来攒的那次一起加。
+  const need = askOf(ctx.card);
   const bonus = need > 0 && onceThisFight('margin') ? BAL.marginCharge : 0;
   if (need > 0) {
     const before = G.charge[ctx.card.id] ?? 0;
     G.charge[ctx.card.id] = Math.min(need, before + 1 + bonus);
     if (bonus) {
-      addNote(ctx.s, `批注：这一场第一道答对，这张牌多攒 ${bonus} 次免答`
-        + `（${G.charge[ctx.card.id]}/${need}）。`);
+      // 不写（已攒/要求）：答题要求是隐藏属性，前端不显示这个分数。
+      addNote(ctx.s, `批注：这一场第一道答对，这张牌多攒 ${bonus} 次免答。`);
     }
     if (G.charge[ctx.card.id] >= need && before < need) {
       addNote(ctx.s, `这一场「${ctx.card.name}」已免答：再打它不用答题。`);

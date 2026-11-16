@@ -67,7 +67,7 @@ function grantCard(up: boolean): CardDef | null {
 /**
  * 复印一张**已有**的牌：随机挑一张，原样再放一份（精炼状态跟着走）。
  *
- * 和 `grantCard` 分开是因为它改变的是"这份笔记有几份"，不是"多认识一个主题"。
+ * 和 `grantCard` 分开是因为它改变的是"这份笔记有几份"，不是"多认识一种卡"。
  * 上限照样算：复印机不是绕过 `maxCopies` 的后门，否则"每张牌最多几份"
  * 会在事件里被悄悄破掉，牌组的成长曲线也就跟着失控。
  */
@@ -179,15 +179,15 @@ export const EVENTS: EventDef[] = [
           const c = grantCard(true);
           if (!c) return '每种卡你都收齐了上限：这一次你只是把它们理了一遍。';
           const lost = hurtBy(FX.indexCardCost);
-          return `你把「${c.topic}」那张卡收进了牌组（已精炼），代价是 ${lost} 点生命。`;
+          return `你把「${c.name}」那张卡收进了牌组（已精炼），代价是 ${lost} 点生命。`;
         },
       },
       {
-        t: '按主题重新排好',
+        t: '按顺序重新排好',
         sub: () => `回复 ${FX.indexSortHeal} 点生命`,
         run: () => {
           const got = healBy(FX.indexSortHeal);
-          return got ? `你按主题排好了它们，回了 ${got} 点生命。` : '你按主题排好了它们：你已经满血，不需要再回。';
+          return got ? `你按顺序排好了它们，回了 ${got} 点生命。` : '你按顺序排好了它们：你已经满血，不需要再回。';
         },
       },
       { t: '绕过去', sub: () => '什么也不发生', run: () => '你没有碰它。' },
@@ -260,7 +260,7 @@ export const EVENTS: EventDef[] = [
           const c = grantCard(false);
           if (!c) return '灯亮起来，照见的还是同一批卡：没有新的可抄。';
           const lost = hurtBy(FX.lampLightCost);
-          return `灯亮了，你借着光抄下「${c.topic}」那张卡，代价是 ${lost} 点生命。`;
+          return `灯亮了，你借着光抄下「${c.name}」那张卡，代价是 ${lost} 点生命。`;
         },
       },
       { t: '转身离开', sub: () => '什么也不发生', run: () => '你沿着廊道走过去了。' },
@@ -277,7 +277,7 @@ export const EVENTS: EventDef[] = [
           const c = grantCard(true);
           if (!c) return '接住了，但这一种你已经收得够多：这一趟只换来手上的一道木刺。';
           const lost = hurtBy(FX.liftCost);
-          return `你接住了「${c.topic}」那张卡（已精炼），代价是 ${lost} 点生命。`;
+          return `你接住了「${c.name}」那张卡（已精炼），代价是 ${lost} 点生命。`;
         },
       },
       {
@@ -327,7 +327,7 @@ export const EVENTS: EventDef[] = [
           if (roll() <= 50) {
             const c = grantCard(true);
             return c
-              ? `这一页正好接得上：你抄下了「${c.topic}」（已精炼）。`
+              ? `这一页正好接得上：你抄下了「${c.name}」（已精炼）。`
               : '这一页的内容你已经收得够多，抄了也没地方放。';
           }
           const lost = hurtBy(FX.wrongPageCost);
@@ -347,7 +347,7 @@ export const EVENTS: EventDef[] = [
   },
   {
     id: 'drawer', title: '卡片抽屉',
-    text: '一整屉的知识卡，只按年份排过，没按主题。每张边角都被人翻得起了毛。',
+    text: '一整屉的知识卡，只按年份排过，没有别的顺序。每张边角都被人翻得起了毛。',
     opts: [
       {
         t: '抓一把塞进牌组',
@@ -356,15 +356,15 @@ export const EVENTS: EventDef[] = [
           const c = grantCard(false);
           if (!c) return '抽屉里全是你已经收满的那些：抓起来又放下了。';
           const lost = hurtBy(FX.drawerCost);
-          return `你抓到了「${c.topic}」那张卡，代价是 ${lost} 点生命。`;
+          return `你抓到了「${c.name}」那张卡，代价是 ${lost} 点生命。`;
         },
       },
       {
-        t: '按主题重新排一遍',
+        t: '按顺序重新排一遍',
         sub: () => `回复 ${FX.drawerSort} 点生命`,
         run: () => {
           const got = healBy(FX.drawerSort);
-          return got ? `你把一整屉按主题排好了，回了 ${got} 点生命。` : '你排好了整屉卡片：已经满血了。';
+          return got ? `你把一整屉按顺序排好了，回了 ${got} 点生命。` : '你排好了整屉卡片：已经满血了。';
         },
       },
       { t: '关上抽屉', sub: () => '什么也不发生', run: () => '抽屉滑回去，发出一声很闷的响。' },
@@ -414,7 +414,7 @@ export const EVENTS: EventDef[] = [
           const c = grantCard(false);
           if (!c) return '车上全是你已经收满的那些：你把手收了回来。';
           const lost = hurtBy(FX.cartCost);
-          return `你从车上抽走了「${c.topic}」那张卡，代价是 ${lost} 点生命。`;
+          return `你从车上抽走了「${c.name}」那张卡，代价是 ${lost} 点生命。`;
         },
       },
       { t: '绕过去', sub: () => '什么也不发生', run: () => '你侧身从推车旁边挤了过去。' },
@@ -456,7 +456,7 @@ export const EVENTS: EventDef[] = [
           const c = grantCard(true);
           if (!c) return '摸出来的是空的：缝里那点东西早被翻走了。';
           const lost = hurtBy(FX.shelfCost);
-          return `你从缝里抽出「${c.topic}」那张卡（已精炼），代价是 ${lost} 点生命。`;
+          return `你从缝里抽出「${c.name}」那张卡（已精炼），代价是 ${lost} 点生命。`;
         },
       },
       {
@@ -481,7 +481,7 @@ export const EVENTS: EventDef[] = [
           if (roll() <= 50) {
             const c = grantCard(false);
             return c
-              ? `最底下那张还是干的：你收下了「${c.topic}」。`
+              ? `最底下那张还是干的：你收下了「${c.name}」。`
               : '最底下那张你也已经有了，而且它一碰就散。';
           }
           return '你揭了十几张，没有一张能读的。手上全是水。';
@@ -509,7 +509,7 @@ export const EVENTS: EventDef[] = [
           const c = grantCard(false);
           if (!c) return '你翻了翻那摞卡：每一张你都认得出。';
           const lost = hurtBy(FX.lostCost);
-          return `你认领了「${c.topic}」那张卡，代价是 ${lost} 点生命。`;
+          return `你认领了「${c.name}」那张卡，代价是 ${lost} 点生命。`;
         },
       },
       {

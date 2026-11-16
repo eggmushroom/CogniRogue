@@ -5,7 +5,7 @@ import { allQuestions, bankGeneration, flattenBank, setActiveBank, sourceBank } 
 
 /**
  * 阶段题库：每一幕对应课程的一章，对应一份 BANK。
- * 卡只决定打多少，点开牌时才从当前阶段题库抽题，`card.topic` 不参与。
+ * 卡只决定打多少，点开牌时才从当前阶段题库抽题。
  * 三层是：来源题库 → 阶段题库（派生，不落盘）→ 题目快照（`G.panel.q`）。
  */
 
@@ -33,7 +33,7 @@ export function enterStage(stage: number): void {
 }
 
 /** 阶段号或来源题库变了，就重新切一次。调用点可以每帧问，不贵。 */
-export function ensureStageBank() {
+function ensureStageBank() {
   if (ACTIVE_STAGE !== G.stage || ACTIVE_GEN !== bankGeneration()) enterStage(G.stage);
 }
 

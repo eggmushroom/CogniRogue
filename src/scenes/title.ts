@@ -71,8 +71,7 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
   // "进度自动存在本地"撤了：这句话是承诺不是数据，帮助页里讲得比这里清楚。
   const py = save ? 744 : 760;
   // 首页展示的是**来源题库**（载入的那份），不是某一幕切出来的切片。
-  // 数的是**题池**而不是卡面主题：卡题解耦之后 `card.topic` 只是牌组排序用的旧标签，
-  // 玩家真正会遇到的分组是题库里的 `## 主题`。
+  // 数的是**题池**：卡和题解耦之后，玩家真正会遇到的分组是题库里的 `## 主题`。
   const src = sourceBank();
   text(src.name, cx, py, { size: 16, align: 'center', color: C.gold, weight: 700 });
   text(

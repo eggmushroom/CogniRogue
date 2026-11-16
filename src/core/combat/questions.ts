@@ -1,7 +1,7 @@
 import type { Question } from '../model/types';
 import { G } from '../infra/state';
 import { shuffle } from '../infra/util';
-import { battleQuestionCount } from '../cards/grade';
+import { battleQuestionCount } from '../cards/ask';
 import { stagePool } from '../library/stage';
 
 /**

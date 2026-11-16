@@ -816,7 +816,7 @@ function bindHandCard(args: {
       if (i < 0 || !payUp()) return;
       cardPulse(EFFS[card.eff]?.color ?? C.gold);
       eject = { id, at: i };
-      // 攒满等级直接打，否则抽题；新题用完 askCard 会复用，不用单独分支。
+      // 攒满答题要求直接打，否则抽题；新题用完 askCard 会复用，不用单独分支。
       if (askState === 'free') playFree(i); else askCard(i);
     }, 'card', slot);
   } else {

@@ -212,7 +212,7 @@ function grantKnowledge(n: number): string[] {
   for (const c of pool) {
     if (got.length >= n) break;
     G.deck.push(c.id);
-    got.push(c.topic);
+    got.push(c.name);
   }
   return got;
 }
@@ -244,7 +244,7 @@ function upgradeBasics(): number {
 
 /** 致死的那一下把它接住，返回 true 表示这一下没死。
  * 由 `checkPending` 通过 `setDeathGuard` 调用；判定点只有一个。 */
-export function wishGuard(): boolean {
+function wishGuard(): boolean {
   if (!onceThisRun('wish')) return false;
   G.pending = null;
   // 是固定点数而不是比例：一个"以 30 点活下来"的承诺，玩家一眼能算清够挨几下。

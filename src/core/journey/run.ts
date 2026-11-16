@@ -1,14 +1,14 @@
-import { BAL, MODE_BY_ID, STAGES, STAGE_ROWS, planFor, stageOf } from '../model/data';
-import type { GameState, ModeId, PowerId } from '../model/types';
-import { G, clearLog, log, resetTurnState } from '../infra/state';
+import { MODE_BY_ID, STAGES, STAGE_ROWS, planFor, stageOf } from '../model/data';
+import type { ModeId, PowerId } from '../model/types';
+import { G, log, newRunState, resetBattleFields } from '../infra/state';
 import { raiseMaxHp, refillHp } from '../infra/write';
 import { basicDeck } from '../cards/basics';
 import { startDeck } from '../cards/starter';
-import { applyInstant, clearRunOnce, clearStageOnce, rulesOf } from '../cards/powers';
+import { applyInstant, clearStageOnce, rulesOf } from '../cards/powers';
 import { enterStage } from '../library/stage';
 import { saveStageMem } from '../library/stagemem';
 import { availableNodes, curFloor, FLOOR_MAX, genStage } from '../map/gen';
-import { setSettleHandler, startBattle, resetBattleFields } from '../combat';
+import { setSettleHandler, startBattle } from '../combat';
 import { drawEvent } from './events';
 import { openReward, openPowerDrop } from './rewards';
 import { endRun } from './report';
@@ -29,24 +29,10 @@ export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []
   // extraPowers 只给模拟 / 调试用
   const startPowers = [...new Set([...(modeDef?.powers ?? []), ...extraPowers])];
 
-  Object.assign(G, {
-    screen: 'map', mode, stage: 1, stageTopic: '', panel: { k: 'none' }, deck,
-    draw: [], discard: [], hand: [],
-    map: genStage(1), pos: null, seen: {}, eventsSeen: [], node: null,
-    hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0,
-    ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
-    powers: startPowers, qPicked: {}, qLeft: [], charge: {}, answers: [],
-    topicWrong: {},
-    answerDraws: 0, syllabusTurn: 0,
-    onceUsed: {},
-    apDown: 0, drawCut: 0, carryBlock: 0, upGrade: 0,
-    runOk: 0, runBad: 0, stageOk: 0, stageBad: 0, floors: 0,
-    pending: null, pendingCost: 0, pendingHeal: 0, busy: false,
-  } satisfies Partial<GameState>);
-  clearLog();
-  resetTurnState();
-  clearRunOnce();
-  clearStageOnce();
+  // 整局状态换一份新的；这里只覆盖“这一局特有的选择”，不手抄字段清单。
+  Object.assign(G, newRunState(), {
+    screen: 'map', mode, deck, map: genStage(1), powers: startPowers,
+  });
   // 模式能力若是「拾取即结算」类，和精英掉落走同一条通道
   for (const id of startPowers) applyInstant(id);
   // 题库按幕从来源题库里切出来
@@ -126,12 +112,5 @@ export function restart() {
 }
 
 export function backToTitle() {
-  G.screen = 'title';
-  G.panel = { k: 'none' };
-  G.deck = [];
-  G.powers = [];
-  G.enemy = null;
-  G.map = [];
-  G.pos = null;
-  clearLog();
+  Object.assign(G, newRunState());
 }

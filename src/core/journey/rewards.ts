@@ -19,14 +19,16 @@ function rewardPool(n: number): CardDef[] {
   const cap = rulesStatic().maxCopies;
   const fresh = PACK.cards.filter((c) => !copies[c.id]);
   const room = PACK.cards.filter((c) => (copies[c.id] || 0) < cap);
-  // 三张来自不同主题
+  // 只去重“同一张卡”（同 id）；强弱、取舍、同名换皮都摆在玩家面前自己选。
   const pool = shuffle(fresh).concat(shuffle(room));
   const out: CardDef[] = [];
-  const used: Record<string, number> = {};
-  pool.forEach((c) => {
-    if (out.length < n && !used[c.topic]) { used[c.topic] = 1; out.push(c); }
-  });
-  pool.forEach((c) => { if (out.length < n && !out.includes(c)) out.push(c); });
+  const seen = new Set<string>();
+  for (const c of pool) {
+    if (out.length >= n) break;
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push(c);
+  }
   return out;
 }
 
@@ -48,7 +50,7 @@ export function takeCard(i: number) {
   // 其余奖励拿到的是**新的一张**，想要强化版，得另外花一次精炼在它身上。
   const id = G.panel.ledger ? c.id + UP_MARK : c.id;
   G.deck.push(id);
-  log(`「${c.topic}」加入牌组${G.panel.ledger ? '（账本已精炼）' : ''}（${G.deck.length} 张）`, 'hi');
+  log(`「${c.name}」加入牌组${G.panel.ledger ? '（账本已精炼）' : ''}（${G.deck.length} 张）`, 'hi');
   afterReward();
 }
 

@@ -1,6 +1,6 @@
 import { BAL, FOES } from '../model/data';
 import type { CardId, MapNode } from '../model/types';
-import { G, checkPending, log } from '../infra/state';
+import { G, checkPending, log, resetBattleFields } from '../infra/state';
 import { pick, shuffle } from '../infra/util';
 import { stagePool } from '../library/stage';
 import { floorOf } from '../map/gen';
@@ -8,7 +8,7 @@ import { shuffleOptions } from '../library/question';
 import { defOf } from '../cards/registry';
 import { clearOnceUsed, onceThisFight, syllabusBasicBlock } from '../cards/powers';
 import { canPay, costNow, isXCost } from '../cards/cost';
-import { cardGrade, needsAsk } from '../cards/grade';
+import { needsAsk } from '../cards/ask';
 import { cardKind } from '../cards/kinds';
 import { startTurn } from './deck';
 import { makeFoe } from './foe';
@@ -24,34 +24,6 @@ import type { Settlement } from './settlement';
  * 出牌只有两条：答题（`answer`）和基础牌（`playBasic`），都构造一份 Settlement
  * 交给 `settle` 执行；答对奖励只有退 1 点行动力、抽一张牌，没有倍率层。
  */
-
-/**
- * 进入下一场 / 过幕前要清的场次字段。`deck`、血量和这一局牌组不在这里。
- * 所有“开新场”的路径都应该先过它，避免下一场还带着上一场的免答计数或题池。
- */
-export function resetBattleFields() {
-  G.enemy = null;
-  G.panel = { k: 'none' };
-  G.pending = null;
-  G.busy = false;
-  G.turn = 1;
-  G.draw = [];
-  G.discard = [];
-  G.hand = [];
-  G.charge = {};
-  G.syllabusTurn = 0;
-  G.cardPlays = {};
-  G.nextBoost = null;
-  G.drawnThisTurn = 0;
-  G.cardsThisTurn = 0;
-  G.apDown = 0;
-  G.drawCut = 0;
-  // 索引贴/事件留下的跨回合或跨节点残账不能带进下一场。
-  G.carryBlock = 0;
-  G.pendingCost = 0;
-  G.pendingHeal = 0;
-  G.qLeft = [];
-}
 
 export function startBattle(nd: MapNode) {
   // 一幕一套物种；找不到时回退到全表，别让一场战斗开不起来。
@@ -79,7 +51,7 @@ export function startBattle(nd: MapNode) {
   // 那是教学，不是战报：打到第八层还在播同一句，就是把日志的位置浪费掉了。
   log(`── ${e.name} 出现了 ──`, 'turn');
   if ((G.node?.r ?? 0) === 0) {
-    log(`这一场准备了 ${G.qLeft.length} 道新题；C 牌直接打，B/A/S 各要答对 1/2/3 次。新题用完会复用问得最少的题`, 'turn');
+    log(`这一场准备了 ${G.qLeft.length} 道新题；点开知识卡时才知道它要不要出题。新题用完会复用问得最少的题`, 'turn');
   }
   // 开局格挡在 startTurn 里给（那里才知道是不是第一回合）：写在这里会被 startTurn 清零
   startTurn();
@@ -88,7 +60,7 @@ export function startBattle(nd: MapNode) {
 /**
  * 这张知识卡此刻的状态，给卡面和点击路由用（也是"能不能问"的唯一判断）：
  *
- *   'free'   等级已攒满，这一场直接打，不出题
+ *   'free'   答题要求已攒满，这一场直接打，不出题
  *   'ask'    还要答题
  *   'empty'  要答题，但这一章一道题都没有（题库载入失败时的兜底）
  *   'other'  不是知识卡
@@ -108,7 +80,7 @@ export function cardAskState(id: CardId | null | undefined): 'free' | 'ask' | 'e
 export const canAsk = (id: CardId | null | undefined): boolean => cardAskState(id) === 'ask';
 
 /**
- * 等级攒满后直接打：构造同一份 Settlement，不抽题、不判对错、不进答题流水。
+ * 答题要求攒满后直接打：构造同一份 Settlement，不抽题、不判对错、不进答题流水。
  * 不弹反馈面板，结果只留一条内部文字记录。
  */
 export function playFree(idx: number) {
@@ -135,7 +107,7 @@ export function playFree(idx: number) {
     logMsg:
       `「${card.name}」${v.dmg ? shape : ''}${v.blk ? `${v.dmg ? '，' : ''}${v.blk} 格挡` : ''}` +
       `${v.selfHp ? `，失去 ${v.selfHp} 生命` : ''}` +
-      `（${cardGrade(card)} 级，这一场已免答${back ? `；反伤 ${back}` : ''}）` +
+      `（这一场已免答${back ? `；反伤 ${back}` : ''}）` +
       `${v.nextNote ? `　·　${v.nextNote}` : ''}`,
   });
 }
@@ -149,7 +121,7 @@ export function askCard(idx: number) {
   // 付不起就不弹题：让人答完才发现打不出去是最难受的白费。
   if (!canPay(card)) return;
   if (cardKind(card) !== 'knowledge') return;
-  // 攒满等级：直接打，不抽题
+  // 攒满答题要求：直接打，不抽题
   if (!needsAsk(id, G.charge)) { playFree(idx); return; }
 
   const q = takeQuestion();

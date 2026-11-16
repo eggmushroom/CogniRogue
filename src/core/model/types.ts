@@ -3,7 +3,7 @@
 export interface Question {
   /** 稳定题号：按「主题 + 规范化题干」生成，不能退回数组下标。 */
   qid: string;
-  /** 这道题属于哪一章。题和卡解耦之后，统计只认它，不认卡上的 topic。 */
+  /** 这道题属于哪一章。题和卡解耦之后，统计只认它。 */
   topic: string;
   q: string;
   options: string[];
@@ -43,7 +43,7 @@ export interface StagePlan {
   title: string;
 }
 
-/** 某一章当前的题库。运行时只认它，不认卡牌上的 topic。 */
+/** 某一章当前的题库。运行时只认它。 */
 /** 一章的摘要，给结算页和下一章生成用；不放完整题面。 */
 export interface StageDigest {
   stage: number;
@@ -57,16 +57,13 @@ export interface StageDigest {
 }
 
 /**
- * 卡牌身份，管规则不管数值：要不要答题、能不能被获取。
- * 与 `CardType`（类别）、`topic`（知识归属）是三条独立的轴。
+ * 卡牌身份，管规则不管数值：能不能答题、能不能被获取。
+ * 与 `CardType`（类别）是两条独立的轴。
  */
 export type CardKind = 'knowledge' | 'junk' | 'basic';
 
 /** 卡牌类别：攻击 / 防御 / 技能。按效果自动归类，见 `cardType()`。 */
 export type CardType = 'attack' | 'defense' | 'skill';
-
-/** 等级 = 这张牌要答对几次才免答：C 0 / B 1 / A 2 / S 3（跟费用走），每场清零。 */
-export type CardGrade = 'C' | 'B' | 'A' | 'S';
 
 /** 效果原型：`strike` 是基准，洞察破防、巩固堆挡、内化回血、串联分段、专注抽牌。 */
 export type Eff = 'strike' | 'pierce' | 'guard' | 'drain' | 'chain' | 'focus';
@@ -153,10 +150,12 @@ export interface CardLink {
 
 /** 一张知识卡：只有卡面，没有题；题目在点开时从当前阶段的 BANK 抽。 */
 export interface CardDef {
-  /** 稳定短键（`c00`…），与当前题库内容无关；存档/记忆只认它 */
+  /**
+   * 稳定短键（`c00`…），与当前题库内容无关；存档/记忆只认它。
+   * **这是定义 id，不是副本身份**：同名的多份副本共用它，副本由所在数组的
+   * 下标区分；精炼过的那一份额外带 `+`（`c05+` 仍查回这张 `c05`）。
+   */
   id: string;
-  /** 卡牌的分类标签，**不参与抽题**，只用于牌组排序和展示。 */
-  topic: string;
   /** 牌名：游戏化的名字，刻意不等于知识点名，不泄露答案。 */
   name: string;
   /** 效果底数：伤害与格挡的基数，实际值由 effect 折算 */
@@ -167,6 +166,12 @@ export interface CardDef {
    * 答错不扣行动力，但这一手作废并消耗本场一道新题。
    */
   cost?: CardCost;
+  /**
+   * 本场要答对几次才免答；0 表示不问。
+   * 隐藏属性：只写在卡牌数据里，不上卡面，也不在奖励 / 牌组 / 帮助页显示。
+   * 它不从费用推导 —— 费用管这一回合的形状，答题要求管这一场的学习量。
+   */
+  ask: number;
   /** 这张卡怎么把上面的数字花出去 */
   eff: Eff;
   /** 这张卡相对效果原型的签名改动；不写就是原型默认 */
@@ -186,8 +191,10 @@ export interface Pack {
 }
 
 /**
- * 一张牌的身份：牌组、手牌、抽牌堆、弃牌堆里存的都只有 id。
- * 精炼过的那一张换成带 `+` 后缀的 id，所以同名副本可以各自不同。
+ * 卡牌**定义** id（`c05` / `base:strike`），不是副本 id。
+ * 牌组、手牌、抽牌堆、弃牌堆都是 id 数组；同名的另一份就是数组里的另一项，
+ * 这一项的下标才是副本身份。精炼过的那一份用 `+` 后缀区分；未精炼的同名副本
+ * 共用同一个 id，也共用同一个 `G.charge` 免答计数（学的是同一个知识）。
  */
 export type CardId = string;
 
@@ -449,7 +456,7 @@ export interface GameState {
    * 池子抽空之前不重复，事件才回到"这次会遇到什么"。
    */
   eventsSeen: string[];
-  /** 本场每张知识卡已答对几次；攒够等级要求后直接打。**每场清零**。 */
+  /** 本场每张知识卡已答对几次；攒够答题要求后直接打。**每场清零**。 */
   charge: Record<string, number>;
   /** 本场还没点开过的新题；用完不锁牌，`takeQuestion` 会改问被问得最少的题。 */
   qLeft: Question[];

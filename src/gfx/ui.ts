@@ -2,7 +2,7 @@ import { g, roundRect, wrapText } from './canvas';
 import { onClick, hover } from '../input';
 import { C, font, FONT_TITLE, FONT_UI, FONT_NUM, withAlpha } from './theme';
 import { EFFS, effFace } from '../core/model';
-import { cardGrade, cardKind, cardType, costGlyph, GRADE_META, isXCost, CARD_TYPE_META } from '../core/cards';
+import { cardKind, cardType, costGlyph, isXCost, CARD_TYPE_META } from '../core/cards';
 import type { CardDef, EffOut, PowerDef } from '../core/model';
 import { drawArtIcon } from './art/icons';
 
@@ -396,25 +396,6 @@ function drawCardHeader(
     });
   }
 
-  // 等级：这一场要答对几次才免答，紧跟费用数字。
-  if (kind === 'knowledge') {
-    const gr = cardGrade(card);
-    const gm = GRADE_META[gr];
-    g.font = font(Math.round(11 * s), 800, FONT_UI);
-    const gw = g.measureText(gr).width + 12 * s;
-    const gh = 15 * s;
-    const gx = x + pad + 16 * s;
-    const gy = y + 23 * s;
-    roundRect(gx, gy, gw, gh, 4 * s);
-    g.fillStyle = withAlpha(gm.color, 0.18);
-    g.fill();
-    g.strokeStyle = withAlpha(gm.color, 0.7);
-    g.lineWidth = 1;
-    g.stroke();
-    text(gr, gx + gw / 2, gy + gh / 2 + 0.5, {
-      size: Math.round(11 * s), align: 'center', color: gm.color, weight: 800,
-    });
-  }
 }
 
 function drawCardFooter(x: number, y: number, w: number, h: number, pad: number, s: number, tc: string) {
@@ -548,7 +529,7 @@ function drawCardEffects(c: CardEffectsView) {
   }
 }
 
-/** 手牌、奖励、牌组共用一种卡面；颜色按三类，不泄露主题。 */
+/** 手牌、奖励、牌组共用一种卡面；颜色按三类，不泄露知识归属。 */
 export function drawCard(
   x: number, y: number, w: number, h: number,
   card: CardDef, out: EffOut, opts: CardOpts = {},

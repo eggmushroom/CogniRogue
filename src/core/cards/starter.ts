@@ -1,17 +1,21 @@
 import { CATALOG } from './catalog';
 import { shuffle } from '../infra/util';
-import type { CardId, CardGrade } from '../model/types';
-import { cardGrade } from './grade';
+import type { CardId } from '../model/types';
+import { costOf } from './cost';
+import { cardKind } from './kinds';
 
 /**
- * 起手 8 基础 + 2 张 C/B 知识卡。两张不重复，保底一张联动卡。
- * 高阶牌只从战后奖励和精英掉落里来。
+ * 起手 8 基础 + 2 张 0–1 费知识卡。两张不重复，保底一张联动卡。
+ * 2 费以上的知识卡只从战后奖励和精英掉落里来。
  */
 const STARTER_KNOWLEDGE = 2;
-/** 起手只允许这两档：C（0 费）和 B（1 费）。 */
-const STARTER_GRADES: CardGrade[] = ['C', 'B'];
 
-export const starterPool = () => CATALOG.filter((c) => STARTER_GRADES.includes(cardGrade(c)));
+/** 起手只允许 0–1 费；X 费不进入起手池。 */
+const starterPool = () => CATALOG.filter((c) => {
+  if (cardKind(c) !== 'knowledge') return false;
+  const cost = costOf(c);
+  return typeof cost === 'number' && cost <= 1;
+});
 
 export function startDeck(): CardId[] {
   // 起手不塞自伤牌，自伤牌仍在奖励池。

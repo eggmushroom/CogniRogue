@@ -203,7 +203,7 @@ async function waitHand(ms = 15000) {
  */
 /**
  * 确保手牌里有一张**需要答题**的知识卡，返回它的下标。
- * 起手 10 张里只有 2 张随机知识卡，抽 5 张可能一张都没有；C 级牌又不答题。
+ * 起手 10 张里只有 2 张随机知识卡，抽 5 张可能一张都没有；答题要求 0 的牌又不答题。
  */
 async function ensureKnowledge() {
   await ensureQuestions();
@@ -212,12 +212,12 @@ async function ensureKnowledge() {
     return h.findIndex((id) => {
       if (id.startsWith('base:')) return false;
       const d = cog.pack.cards.find((x) => x.id === id);
-      return !!d && cog.costOf(id) > 0;
+      return !!d && (d.ask ?? 0) > 0;
     });
   })()`);
   if (idx >= 0) return idx;
   await evalJs(`(() => {
-    const id = cog.pack.cards.find((c) => c.kind === 'knowledge' && c.cost === 1).id;
+    const id = cog.pack.cards.find((c) => c.kind === 'knowledge' && c.cost === 1 && c.ask === 1).id;
     cog.state.hand[0] = id;
   })()`);
   return 0;
@@ -613,7 +613,7 @@ await step('2 费牌答对 → 只退回 1 点，净花 1 点', async () => {
   if (!await waitHand()) throw new Error('手牌一直没落位');
   await ensureQuestions();
   const id = await evalJs('cog.pack.cards.find((c) => c.cost === 2).id');
-  // A 级牌要答对 2 次才免答，所以这一手一定会出题；顺手把计数清掉更稳。
+  // 这张 2 费牌的答题要求是 2 次，所以这一手一定会出题；顺手把计数清掉更稳。
   await evalJs(`(() => { const G = cog.state; G.powers = ['librarycard']; G.hand[0] = ${JSON.stringify(id)}; G.ap = 3; G.charge = {}; })()`);
   await clickCard(0);
   if (!await waitFor('opt')) throw new Error('付得起的 2 费牌没有弹题');
@@ -1135,7 +1135,7 @@ await step('开新的一局 → 断点清掉，再刷新首页不再提「继续
 
 /**
  * 真实打出一张联动牌并返回敌人掉了多少血。
- * 同名卡第一次答对就攒满 B 级、这一场剩下的免答（既有规则），
+ * 同名卡第一次答对就攒满 1 次答题要求、这一场剩下的免答（既有规则），
  * 所以第二次点它走的是 playFree：不 panel、不判对错，但照样结算、照样记账。
  * 两条路都要能走，grow 才验得到"第二次"。
  */
@@ -1176,7 +1176,8 @@ await step('联动：四张牌的数值由战场状态现算，不是印死的',
 
 await step('联动：真的抽一张牌，「博览强记」的伤害当场 +1', async () => {
   globalThis.__linkBefore = await S('cog.links()');
-  // c04「扩容远见」：0 费免答的专注牌，点它真的抽 1 张。
+  // c04「扩容远见」：0 费专注牌，先把它本场的答题要求攒满，点它才会直接抽 1 张。
+  await evalJs(`cog.state.charge.c04 = 1`);
   await clickCard(await evalJs(`cog.state.hand.indexOf('c04')`));
 }, async () => {
   const L = await S('cog.links()');

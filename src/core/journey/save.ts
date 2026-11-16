@@ -1,6 +1,6 @@
-import { G, resetTurnState } from '../infra/state';
+import { G, newRunState } from '../infra/state';
 import { readStore, writeStore } from '../infra/storage';
-import { BAL, MODE_BY_ID, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS } from '../model/data';
+import { MODE_BY_ID, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS } from '../model/data';
 import { MAP_COLS, floorOf } from '../map';
 import { baseIdOf, isKnownCardId } from '../cards/registry';
 import { LEGACY_CARD_IDS } from '../cards/legacy';
@@ -49,7 +49,8 @@ function usedTable(ids: string[]): Partial<Record<PowerId, boolean>> {
 }
 
 /** 每走完一个节点存一次 */
-export function saveRun() {  if (G.screen !== 'map' || !G.map.length || G.panel.k !== 'none' || G.pending) return;
+export function saveRun() {
+  if (G.screen !== 'map' || !G.map.length || G.panel.k !== 'none' || G.pending) return;
   const snap: Snapshot = {
     v: SNAP_V,
     stage: G.stage,
@@ -111,24 +112,19 @@ function computeInfo(): SaveInfo | null {
 export function resumeRun(): boolean {
   const s = readSnapshot();
   if (!s) return false;
-  Object.assign(G, {
-    screen: 'map', mode: s.mode, stage: s.stage, stageTopic: '', panel: { k: 'none' }, log: [],
-    deck: s.deck, map: s.map, pos: s.pos, seen: s.seen, node: null,
+  Object.assign(G, newRunState(), {
+    screen: 'map', mode: s.mode, stage: s.stage,
+    deck: s.deck, map: s.map, pos: s.pos, seen: s.seen,
     eventsSeen: s.eventsSeen,
-    hp: s.hp, maxHp: s.maxHp, block: 0,
-    ap: BAL.baseAp, apMax: BAL.baseAp, turn: 1, enemy: null,
-    draw: [], discard: [], hand: [], powers: s.powers,
-    topicWrong: s.topicWrong, qPicked: s.qPicked, qLeft: [], charge: {}, answers: [],
-    answerDraws: s.answerDraws, syllabusTurn: 0, onceUsed: {},
+    hp: s.hp, maxHp: s.maxHp,
+    powers: s.powers,
+    topicWrong: s.topicWrong, qPicked: s.qPicked, answerDraws: s.answerDraws,
     onceStage: usedTable(s.onceStage),
     onceRun: usedTable(s.onceRun),
-    carryBlock: 0, upGrade: s.upGrade,
-    apDown: 0, drawCut: 0,
+    upGrade: s.upGrade,
     runOk: s.runOk, runBad: s.runBad, stageOk: s.stageOk, stageBad: s.stageBad, floors: s.floors,
-    pending: null, pendingCost: 0, pendingHeal: 0, busy: false,
   });
   enterStage(s.stage);
-  resetTurnState();
   return true;
 }
 
