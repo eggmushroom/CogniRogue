@@ -8,14 +8,15 @@ import { clamp, G } from '../core/infra';
 import { curFloor } from '../core/map';
 import { countQuestions, sourceBank } from '../core/library';
 import {
-  BASICS, baseIdOf, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded,
-  isXCost, PACK, rulesStatic, statOf, upGain, UP_MARK,
+  BASICS, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded, upgradedId,
+  isXCost, PACK, rulesStatic, UP_MARK,
 } from '../core/cards';
 import { answer, cancelPanel } from '../core/combat';
 import { liveStatOf } from '../core/combat/link';
 import { basicsSummary, planStrike } from '../core/combat/strike';
 import {
-  ackPower, canPayHp, chooseEventOption, dismissFeedback, forgetCard, openCardPick,
+  ackPower, canPayHp, cancelPreview, chooseEventOption, dismissFeedback, forgetCard,
+  openCardPick, previewUpgrade,
   restHeal, restWanted, startRun, skipReward, takeCard, upgradeCard,
 } from '../core/journey';
 import type { Feedback, PowerDef, Question, QView } from '../core/model';
@@ -679,8 +680,8 @@ function drawRest(t: number) {
     { t: '休息', s: `回复 ${restWanted()} 点生命`, col: C.green, fn: restHeal },
     // 下面两条说明都压在两行内：wrapText 按 240px 折，长句会把最后一个
     // 括号挤成孤零零一行（以前「遗忘」末尾只剩「删）」两个字）。
-    // 精炼加成同样不是常数：抛光布会抬高 upGain()。
-    { t: '精炼一张卡', s: `攻 / 挡底数 +${upGain()}，同名的其余几张不变`, col: C.gold, fn: () => openCardPick('up', { k: 'rest' }) },
+    // 精炼的方向由每张牌自己的 `up` 决定，界面不承诺具体加多少。
+    { t: '精炼一张卡', s: '按这张牌自己的方向变强，同名的其余几张不变', col: C.gold, fn: () => openCardPick('up', { k: 'rest' }) },
     { t: '遗忘', s: '永久移除一张卡；只剩 4 张时不可删', col: C.purple, fn: () => openCardPick('rm', { k: 'rest' }) },
   ];
 
@@ -717,10 +718,19 @@ function drawRest(t: number) {
 /* ── 选一张牌 ─────────────────────────────────────────────── */
 
 /**
- * 精炼 / 遗忘面板：每份副本各占一格，只改挑中的那张；卡面直接画选后的数值。
+ * 精炼 / 遗忘面板。
+ *
+ * 精炼分两态：先在**未精炼的牌**里挑一张（列表里画的都是原样），
+ * 点中之后切到预览态 —— 这时才画「精炼后会变成什么样」，再由玩家确认或返回。
+ * 取消了从不精炼的牌里挑，所以列表本身不需要 `+` 号、也不需要任何"第几张"的标注。
+ *
+ * 遗忘只有一态：点哪张删哪张，本来就没有"之后"。
  * 取消不付 `G.pendingCost`，选了才付。
  */
 function drawCardPick(mode: 'up' | 'rm') {
+  const p = G.panel;
+  const pick = p.k === 'cardpick' ? p.pick : undefined;
+  if (mode === 'up' && pick !== undefined) { drawUpPreview(pick); return; }
   dim();
   const w = 1280;
   const h = 740;
@@ -731,7 +741,7 @@ function drawCardPick(mode: 'up' | 'rm') {
   const pending = G.pendingCost;
   heading(mode === 'up' ? '精炼哪一张' : '遗忘哪一张', x + 44, y + 66,
     mode === 'up'
-      ? '卡面数值会永久改变，只强化挑中的那一张；基础牌也能精炼。'
+      ? '挑一张，下一页会显示它精炼后的样子。基础牌也能精炼。'
       : '移除后这张卡本局不会再出现。牌组会更薄，也更好抽；基础牌也能丢。');
   if (pending > 0) {
     // heading 的副标题基线在 y+100，代价提示要和它同一行、靠右对齐。
@@ -766,48 +776,22 @@ function drawCardPick(mode: 'up' | 'rm') {
   const areaH = h - 180;
   const area = scrollArea(x + 30, y + 130, w - 60, areaH, gridH, `pick:${mode}`);
 
-  const seen: Record<string, number> = {};
   items.forEach((o, k) => {
     const col = k % cols;
     const row = Math.floor(k / cols);
     const px = gx0 - x - 30 + area.x + col * (cw + gapx);
     const py = area.y + row * (ch + gapy);
     const hv = hover(px, py, cw, ch);
-    const st = statOf(o.id);
-    const up = mode === 'up';
-    // 卡面画选后的数值，前后两次预览都走 planStrike，选完不会和真结算对不上。
-    const gain = upGain();
-    const after = { atk: st.atk + (up ? gain : 0), blk: st.blk + (up ? gain : 0) };
-    const faceOf = (atk: number, blk: number) => {
-      const out = planStrike(o.id, { atk, blk, noBoost: true });
-      return { dmg: out.hits.reduce((n, v) => n + v, 0), blk: out.blk };
-    };
-    const b = faceOf(st.atk, st.blk);
-    const a = faceOf(after.atk, after.blk);
-    // note 只写变了哪一格，判据是前后不相等；基础斩击 +3 底数会折算成格挡。
-    const note = up
-      ? [
-        b.dmg !== a.dmg ? `伤 ${b.dmg}→${a.dmg}` : '',
-        b.blk !== a.blk ? `挡 ${b.blk}→${a.blk}` : '',
-      ].filter(Boolean).join('  ')
-      : undefined;
-    drawCard(px, py, cw, ch, o.d, planStrike(o.id, { atk: after.atk, blk: after.blk, noBoost: true }), {
-      // 只给真的已精炼的牌画金边和 + 号；全部画上会读成四张都强化过。
-      up: isUpgraded(o.id), glow: hv, note, rule: o.d.link?.note,
+    // 列表里一律画原样：这里是"还没精炼的牌"，画强化后的样子会先把答案说掉。
+    drawCard(px, py, cw, ch, o.d, planStrike(o.id, { noBoost: true }), {
+      glow: hv, rule: o.d.link?.note,
     });
-    const base = baseIdOf(o.id);
-    seen[base] = (seen[base] ?? 0) + 1;
-    const total = G.deck.filter((v) => baseIdOf(v) === base).length;
-    if (total > 1) {
-      text(`第 ${seen[base]}/${total} 张`, px + cw - 12, py + ch - 10, {
-        size: 12, align: 'right', color: C.dim, weight: 600,
-      });
-    }
     // 热区只登记当前露在列表里的那一段；按整卡登记会点到被裁掉的牌。
     const top = Math.max(py, area.y0);
     const bot = Math.min(py + ch, area.y0 + area.h);
     if (bot > top) {
-      onClick(px, top, cw, bot - top, () => (up ? upgradeCard(o.i) : forgetCard(o.i)), 'pick', o.i);
+      onClick(px, top, cw, bot - top,
+        () => (mode === 'up' ? previewUpgrade(o.i) : forgetCard(o.i)), 'pick', o.i);
     }
   });
   area.restore();
@@ -819,6 +803,47 @@ function drawCardPick(mode: 'up' | 'rm') {
   } else if (area.max > 0) {
     text('滚轮查看更多', x + w / 2, y + h - 26, { size: 12, align: 'center', color: C.faint });
   }
+}
+
+/**
+ * 精炼预览：左边原样、右边精炼后，两张卡并排比。
+ *
+ * **不再单独列一行「伤害 4 → 10」**：卡面本身已经写着两边的数，
+ * 再排一行等于把同一件事说两遍。玩家读两张卡就知道变了什么。
+ */
+function drawUpPreview(i: number) {
+  const id = G.deck[i];
+  if (!id) { cancelPreview(); return; }
+  const before = defOf(id);
+  const after = defOf(upgradedId(id));
+
+  dim();
+  const w = 900;
+  const h = 640;
+  const x = (VW - w) / 2;
+  const y = (VH - h) / 2;
+  box(x, y, w, h, withAlpha(C.gold, 0.45));
+  heading('精炼这张？', x + 40, y + 62, '左边是现在，右边是精炼后；确认了才会改牌组。');
+
+  const cw = 300;
+  const chh = 372;
+  const cy = y + 132;
+  const lx = x + w / 2 - cw - 44;
+  const rx = x + w / 2 + 44;
+
+  drawCard(lx, cy, cw, chh, before, planStrike(id, { noBoost: true }), { rule: before.link?.note });
+  drawCard(rx, cy, cw, chh, after, planStrike(upgradedId(id), { noBoost: true }),
+    { up: true, glow: true, rule: after.link?.note });
+
+  // 中间的箭头：两列之间的空隙就是它。
+  text('→', x + w / 2, cy + chh / 2, { size: 40, align: 'center', color: C.gold, weight: 700 });
+
+  // 确认 / 返回。返回不动牌组，代价也还没收。
+  const bw = 200;
+  const bh = 52;
+  const by = y + h - 68;
+  action(x + w / 2 - bw - 16, by, bw, bh, '确认精炼', () => upgradeCard(i), 'primary');
+  action(x + w / 2 + 16, by, bw, bh, '返回', () => cancelPreview(), 'ghost');
 }
 
 /* ── 事件 ─────────────────────────────────────────────────── */
@@ -1030,7 +1055,7 @@ function drawHelp() {
       '层号越高，怪越厚、打得越疼。',
       '地图一屏显示 8 层；滚轮或按住拖动可以看到整张 20 层，先看清上面是不是精英。',
       '节点类型全部可见：战斗、精英、复习、事件、Boss。',
-      `复习点三选一：回复 ${Math.max(1, rulesStatic().restHp)} 点生命、精炼一张卡（攻 / 挡底数 +${upGain()}）、或永久移除一张。`,
+      `复习点三选一：回复 ${Math.max(1, rulesStatic().restHp)} 点生命、精炼一张卡、或永久移除一张。`,
       '精炼按张算：牌组里每份副本各占一格，只强化挑中的那一张，同名的另一张不动；精炼过的那张带一个 + 号。',
       '牌组会变厚。',
     ]],

@@ -877,7 +877,27 @@ await step('复习点 → 精炼面板：每份副本各一格，且只改挑中
     const d = cog.state.deck;
     return { len: d.length, up: d.filter((id) => id.endsWith('+')).length };
   })()`);
+  // 点第一个格子 → 进入预览态（不直接精炼）。面板仍是 cardpick，
+  // 但多了一个 pick 下标；牌组这时必须一张没变。
   await clickLabel('pick', 0);
+  await (async () => {
+    const t = Date.now();
+    while (Date.now() - t < 10000) {
+      const s = await evalJs(`({ k: cog.state.panel.k, pick: cog.state.panel.pick })`);
+      if (s.k === 'cardpick' && s.pick !== undefined) return;
+      await sleep(60);
+    }
+    throw new Error('点了牌没有进入精炼预览');
+  })();
+  const mid = await evalJs(`({
+    deck: cog.state.deck,
+    up: cog.state.deck.filter((id) => id.endsWith('+')).length,
+  })`);
+  if (mid.up !== globalThis.__upBefore.up) {
+    throw new Error('预览态就把牌改了：' + JSON.stringify(mid));
+  }
+  // 确认精炼。
+  await clickLabel('确认精炼');
 }, async () => {
   const st = await evalJs(`({
     deck: cog.state.deck,
@@ -895,6 +915,69 @@ await step('复习点 → 精炼面板：每份副本各一格，且只改挑中
     }));
   }
   return true;
+});
+
+/*
+ * 精炼的第二态：待选列表只画**原样**，点中之后才画精炼后的样子。
+ * 这条断言看的是两件事：列表里没有一张卡带 `+`、以及预览里的数值确实变了。
+ */
+await boot(URL_ + '?dev=rest');
+await step('精炼面板：待选列表画原样，点开才显示精炼后', async () => {
+  await clickLabel('精炼一张卡');
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000) {
+    if ((await S('cog.state.panel.k')) === 'cardpick') break;
+    await sleep(60);
+  }
+  if ((await S('cog.state.panel.k')) !== 'cardpick') throw new Error('没有打开精炼选牌面板');
+
+  // 列表态：面板上没有"确认精炼"按钮，也没有 pick 下标。
+  const listState = await evalJs(`({
+    pick: cog.state.panel.pick,
+    hasConfirm: cog.hots().some((x) => x.label === '确认精炼'),
+    slots: cog.hots().filter((x) => x.label === 'pick').length,
+  })`);
+  if (listState.pick !== undefined) throw new Error('列表态不该有 pick 下标');
+  if (listState.hasConfirm) throw new Error('列表态不该有确认按钮');
+  if (!listState.slots) throw new Error('列表里没有可点的牌');
+
+  // 点进去：出现确认按钮，牌组还没改。
+  await clickLabel('pick', 0);
+  const t1 = Date.now();
+  while (Date.now() - t1 < 10000) {
+    if (await evalJs(`cog.hots().some((x) => x.label === '确认精炼')`)) break;
+    await sleep(60);
+  }
+  const hasConfirm = await evalJs(`cog.hots().some((x) => x.label === '确认精炼')`);
+  if (!hasConfirm) throw new Error('预览态没有确认按钮');
+  const upNow = await evalJs(`cog.state.deck.filter((id) => id.endsWith('+')).length`);
+  if (upNow !== 0) throw new Error('预览态不该改牌组');
+
+  // 返回：回到列表，牌组仍是一张没变。
+  await clickLabel('返回');
+  const t2 = Date.now();
+  while (Date.now() - t2 < 10000) {
+    if (!(await evalJs(`cog.hots().some((x) => x.label === '确认精炼')`))) break;
+    await sleep(60);
+  }
+  const back = await evalJs(`({
+    pick: cog.state.panel.pick,
+    k: cog.state.panel.k,
+    up: cog.state.deck.filter((id) => id.endsWith('+')).length,
+  })`);
+  if (back.k !== 'cardpick' || back.pick !== undefined) {
+    throw new Error('返回后应回到列表态：' + JSON.stringify(back));
+  }
+  if (back.up !== 0) throw new Error('返回后牌组不该被改：' + JSON.stringify(back));
+}, async () => {
+  // 断言都在上面走完了：列表无确认按钮、点开有、返回不改牌组。
+  // 这里再确认一次终端状态，防止上面的 if 被删掉而这条测试仍然"通过"。
+  const fin = await evalJs(`({
+    k: cog.state.panel.k,
+    pick: cog.state.panel.pick,
+    up: cog.state.deck.filter((id) => id.endsWith('+')).length,
+  })`);
+  return fin.k === 'cardpick' && fin.pick === undefined && fin.up === 0;
 });
 
 await boot(URL_ + '?dev=refine');

@@ -10,7 +10,7 @@ import { G, onFx } from './core/infra';
 import { after } from './core/infra/schedule';
 import { loadQuestionBank } from './core/library';
 import { answer, cancelPanel, endTurn } from './core/combat';
-import { ackPower, dismissFeedback } from './core/journey';
+import { ackPower, cancelPreview, dismissFeedback } from './core/journey';
 import {
   DISCARD_TO, ENEMY, ENEMY_GROUND, HERO, heroHand,
   resetBattleView, syncBattle,
@@ -173,6 +173,9 @@ keyHandler((k) => {
   if (panelHold > 0 || enemyHold > 0) return;
   if (k === 'escape') {
     if (G.screen === 'atlas') { G.screen = 'title'; return; }
+    // 精炼预览是面板里的第二层：Esc 先退回列表，再按一次才连代价一起取消。
+    // 一次 Esc 就从"看结果"跳到"关掉整个面板"会白丢一次精炼机会。
+    if (p.k === 'cardpick' && p.pick !== undefined) { cancelPreview(); return; }
     // cardpick 也要能按 Esc 退出：取消后回到事件 / 复习面板，账一起清掉。
     if (p.k === 'question' || p.k === 'deck' || p.k === 'pile' || p.k === 'cardpick'
         || p.k === 'help' || p.k === 'pack' || p.k === 'boon') cancelPanel();

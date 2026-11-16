@@ -161,9 +161,17 @@ const SHOTS = [
   })()`, 700],
   ['screenshot', '?dev=battle', null, 500],
   ['deck', '?dev=deck', null, 500],
-  // 精炼面板：牌组里 4 张基础斩击要显示成 4 格，每格都写"选完是多少伤"。
-  // 玩家报过"精炼看不到效果"，这一屏就是那条反馈的证据。
+  // 精炼面板：牌组里 4 张基础斩击要显示成 4 格，每格都画**原样**。
+  // 精炼分两态 —— 这一屏是挑牌那一态，卡面不该出现任何 + 号或强化后的数字。
   ['refine', '?dev=refine', null, 500],
+  // 精炼预览：点中一张之后才画"变成什么样"。两张卡并排，左边现在、右边之后。
+  // 截图不模拟鼠标：直接调 core 的 previewUpgrade() 进同一个态，
+  // 反正面板读的是 `G.panel.pick`，点进去和调进来对绘制没有区别。
+  ['refine2', '?dev=refine', `(async () => {
+    const i = cog.state.deck.findIndex((id) => !id.endsWith('+'));
+    if (i >= 0) cog.state.panel = { ...cog.state.panel, pick: i };
+    await new Promise((r) => setTimeout(r, 200));
+  })()`, 600],
   ['reward', '?dev=reward', null, 500],
   ['rest', '?dev=rest', null, 400],
   ['event', '?dev=event', null, 400],
