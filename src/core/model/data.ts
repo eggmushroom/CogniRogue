@@ -1,5 +1,5 @@
 import type {
-  FoeTpl, ModeId, NodeType, PowerDef, PowerId, StageDef, StagePlan,
+  Foe, FoeTpl, Mech, ModeId, NodeType, PowerDef, PowerId, StageDef, StagePlan,
 } from './types';
 
 /** 每一幕 20 层，五幕共 100 层。 */
@@ -621,12 +621,62 @@ export const BAL = {
   restHp: 45,
   /** 装订线：答错时每段伤害减「费用 × 这个数」，格挡减「费用 × `binderBlkCut`」。 */
   binderAtkCut: 2, binderBlkCut: 5,
-  /** 各机制的量；怪身上写了 `mechV` 就用它自己的，没写读这里。 */
+  /**
+   * 各机制的量；怪身上写了 `mechV` 就用它自己的，没写读这里。
+   *
+   * `mechAmt()` 直接拿 `e.mech` 查这张表，所以**键名由 `Mech` 联合类型强制**：
+   * `Record<Mech, number>` 少一个键、多一个键、拼错一个键，`tsc` 立刻报错。
+   * 之前这里是裸对象字面量，穿透被写成 `pierceBlock`（控件 id 是 `pierce`），
+   * 查表静默返回 0 —— 状态牌上写「你的格挡少 0 点」，结算也真的不剪格挡。
+   */
   mech: {
     thorns: 1, bulwark: 8, siphon: 1, haste: 1, leech: 4,
-    reviewer: 3, fog: 1, lethe: 1, oblivion: 4, oblivionReduce: 3, pierceBlock: 6,
-  },
+    reviewer: 3, fog: 1, lethe: 1, oblivion: 4, oblivionReduce: 3, pierce: 6,
+  } satisfies Record<Mech, number> & { oblivionReduce: number },
 };
+
+/**
+ * 这条机制在这一只怪身上是多少。**数值的唯一入口**：结算（`foe.ts` / `play.ts` /
+ * `settlement.ts`）和界面说明（`scenes/battle.ts`）都读它，谁都不许再写
+ * `e.mechV ?? BAL.mech[x]`。
+ *
+ * 分开之前界面只有两条路：要么照抄一遍默认值，于是改了 `BAL.mech` 界面就开始
+ * 骗人；要么自己写一句「无视一半格挡」这种听着对、和系数无关的说法 ——
+ * 而实际实现是固定点数。两件事都发生过。
+ */
+export function mechAmt(e: Foe): number {
+  if (!e.mech) return 0;
+  if (e.mechV !== undefined) return e.mechV;
+  return (BAL.mech as Partial<Record<Mech, number>>)[e.mech] ?? 0;
+}
+/**
+ * 敌人状态牌上那一行机制说明。**玩家看到的那句话和结算读同一个数**：
+ * 这里的 `mechAmt(e)` 就是 `foe.ts` 真正扣的那几点，`BAL.mech.oblivionReduce`
+ * 就是 `attackOf()` 真正削回去的几点。
+ *
+ * 文案只许写「什么条件换什么数」：不写比例（「无视一半格挡」），也不写
+ * 「已计入意图」这种替玩家解释的句子 —— 意图气泡上本来就写着总数。
+ */
+export function mechNote(e: Foe): string | null {
+  if (!e.mech) return null;
+  const v = mechAmt(e);
+  switch (e.mech) {
+    case 'leech': return `你答错，它回 ${v} 点血`;
+    case 'thorns': return `你每打出一次攻击，自己挨 ${v} 点（击杀不反伤；你的格挡挡不住）`;
+    case 'bulwark': return `你答错，它 +${v} 格挡`;
+    case 'fog': return `每回合少抽 ${v} 张`;
+    case 'siphon': return `被它打中，下回合 −${v} 行动力`;
+    case 'haste': return `每回合攻击 +${v}`;
+    case 'reviewer': return `一回合没答对，额外 ${v} 点`;
+    // 穿透是固定点数，不是比例：格挡先减 v，剩下的才吸收。写「一半」会让
+    // 玩家按血条残量去估，而实际扣的是常数。
+    case 'pierce': return `你的格挡少 ${v} 点`;
+    case 'oblivion':
+      return `错题主题：它 +${v}；该主题答对则 −${BAL.mech.oblivionReduce}`;
+    case 'lethe': return `你错一次，它永久 +${v} 攻`;
+    default: return null;
+  }
+}
 
 /**
  * 节点类型的名字与身份色。**图标不在这里**：节点图标是 `gfx/art/icons` 的

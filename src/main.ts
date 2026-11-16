@@ -149,9 +149,6 @@ onFx((e) => {
       // 敌人回血落在它自己身上，不压在血条文字上。
       if (!panelShown()) FX.heal(ENEMY.x, ENEMY.y + 180, e.n);
       break;
-    case 'shake':
-      FX.shake(e.power);
-      break;
     case 'power': {
       // 捡到增益：画面上方飘一行字，否则玩家只能靠数值倒推。
       const pw = POWER_BY_ID[e.id];
@@ -159,6 +156,11 @@ onFx((e) => {
       if (pw) FX.floatText(760, 150, `${pw.name} 生效`, pw.color, 30, { vy: -42 });
       break;
     }
+    case 'note':
+      // 一句已经算完的结算话术（事件选项的结果、选完牌才收的代价）。
+      // 这时人在事件面板或地图上，没有敌人也没有血条动画能解释刚才发生了什么。
+      FX.floatText(760, 210, e.text, C.ink, 26, { vy: -26 });
+      break;
     default:
       break;
   }

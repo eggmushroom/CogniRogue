@@ -1,4 +1,4 @@
-import { BAL } from '../model/data';
+import { BAL, mechAmt } from '../model/data';
 import type { CardId, Eff, Foe } from '../model/types';
 import { G, checkPending } from '../infra/state';
 import { after } from '../infra/schedule';
@@ -67,7 +67,7 @@ export interface Settlement {
   target: 'enemy' | 'hero';
   hits: Hit[];
   pierce: boolean;
-  /** hero 段整手最多能吸收多少格挡；敌人「穿透」机制在构造时把它减半。 */
+  /** hero 段整手最多能吸收多少格挡；敌人「穿透」机制在构造时把它减去一个固定点数。 */
   guardCap?: number;
   budget: Budget;
   /** 本帧必须完成的写入，按加入顺序由执行器同步跑完。 */
@@ -264,7 +264,7 @@ export function planHeroHits(s: Settlement, raws: number[], guardCap: number): v
 export function planThorns(s: Settlement): number {
   const e = G.enemy;
   if (!s.foeAlive || !e || e.mech !== 'thorns' || e.hp <= 0 || !s.hits.some((h) => h.raw > 0)) return 0;
-  const n = e.mechV ?? BAL.mech.thorns;
+  const n = mechAmt(e);
   if (n <= 0) return 0;
   s.budget.hurt += n;
   return n;

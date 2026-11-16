@@ -3,8 +3,9 @@ import { C, font, FONT_TITLE, FONT_UI, SCRIM, topicColor, withAlpha } from '../g
 import { action, button, choiceCard, drawCard, drawPowerEmblem, squeeze, text } from '../gfx/ui';
 import { consumeWheel, hover, onClick } from '../input';
 import { easeOut } from '../gfx/geom';
-import { EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
+import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
 import { clamp, G } from '../core/infra';
+import { curFloor } from '../core/map';
 import { countQuestions, sourceBank } from '../core/library';
 import {
   BASICS, baseIdOf, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded,
@@ -14,8 +15,8 @@ import { answer, cancelPanel } from '../core/combat';
 import { liveStatOf } from '../core/combat/link';
 import { basicsSummary, planStrike } from '../core/combat/strike';
 import {
-  ackPower, chooseEventOption, dismissFeedback, forgetCard, openCardPick, restHeal, restWanted,
-  startRun, skipReward, takeCard, upgradeCard,
+  ackPower, canPayHp, chooseEventOption, dismissFeedback, forgetCard, openCardPick,
+  restHeal, restWanted, startRun, skipReward, takeCard, upgradeCard,
 } from '../core/journey';
 import type { Feedback, PowerDef, Question, QView } from '../core/model';
 import { drawReport } from './report';
@@ -334,7 +335,7 @@ function drawQuestion(idx: number, q: Question, view: QView) {
     onClick(x + 34, by, w - 68, gm.rowH, () => answer(i), 'opt');
   });
 
-  text('答对：按卡面结算，带借书证再退 1 点 · 答错：这一手作废，不扣行动力，牌进弃牌堆',
+  text(`答对：按卡面结算，带借书证再退 ${rulesStatic().refund} 点 · 答错：这一手作废，不扣行动力，牌进弃牌堆`,
     x + 34, y + gm.h - 37, { size: 13, color: C.dim, maxW: w - 68 });
 }
 
@@ -838,7 +839,9 @@ function drawEvent() {
   dim();
   box(x, y, w, h, withAlpha(C.purple, 0.45), null);
 
-  heading(p.ev.title, x + 44, y + 66, `事件 · 第 ${(G.node?.r ?? 0) + 1} 层`);
+  // 层号只从 curFloor() 出：这里原来读 G.node.r + 1，在第三幕事件面板上会
+  // 显示「第 3 层」，而同一屏地图抬头写着「第 43 / 100 层」。
+  heading(p.ev.title, x + 44, y + 66, `事件 · 第 ${curFloor()} 层`);
 
   const textY = y + 130;
   roundRect(x + 44, textY, w - 88, bodyH, 12);
@@ -851,16 +854,22 @@ function drawEvent() {
   const oy = textY + bodyH + 26;
   p.ev.opts.forEach((o, i) => {
     const by = oy + i * 88;
-    const hv = hover(x + 44, by, w - 88, 74);
+    // 付不起的选项压暗且不注册热区：`chooseEventOption()` 里也会拦，
+    // 但那一下不解释原因，玩家会以为点了没反应。这里把原因写在副标题。
+    const affordable = canPayHp(o.payHp ?? 0);
+    const hv = affordable && hover(x + 44, by, w - 88, 74);
     roundRect(x + 44, by, w - 88, 74, 10);
     g.fillStyle = hv ? withAlpha(C.purple, 0.16) : 'rgba(255,255,255,.03)';
     g.fill();
     g.strokeStyle = hv ? C.purple : C.line;
     g.lineWidth = hv ? 1.8 : 1.2;
     g.stroke();
-    text(o.t, x + 70, by + 26, { size: 19, weight: 600, color: hv ? C.ink : C.ink2 });
-    text(o.sub(), x + 70, by + 52, { size: 13, color: C.dim });
-    onClick(x + 44, by, w - 88, 74, () => chooseEventOption(i), 'eventopt');
+    text(o.t, x + 70, by + 26, {
+      size: 19, weight: 600, color: affordable ? (hv ? C.ink : C.ink2) : C.faint,
+    });
+    text(affordable ? o.sub() : `付不起：还差 ${(o.payHp ?? 0) - (G.hp - 1)} 点生命`,
+      x + 70, by + 52, { size: 13, color: affordable ? C.dim : C.red });
+    if (affordable) onClick(x + 44, by, w - 88, 74, () => chooseEventOption(i), 'eventopt');
   });
 }
 
@@ -986,8 +995,7 @@ function drawHelp() {
       '卡面没有题目：点开才从当前这一章抽题，和这张牌无关。',
     ]],
     ['答对算数，答错这一手作废', [
-      '答对：卡面效果按原值结算，这张牌攒一次免答；带借书证时退回 1 点行动力。',
-      '答错：这一手不结算，也不扣行动力；牌进弃牌堆。题目在点开牌那一刻就消耗了，答对答错都一样。',
+      `答对：卡面效果按原值结算，这张牌攒一次免答；带借书证时退回 ${rulesStatic().refund} 点行动力。`,      '答错：这一手不结算，也不扣行动力；牌进弃牌堆。题目在点开牌那一刻就消耗了，答对答错都一样。',
       '答对足够次数之后，这一场剩下的时间它直接打、不再出题。计数每场清零。',
       '答错不补格挡、不补抽。橡皮、草稿纸、装订线各改其中一条。',
     ]],
@@ -1006,9 +1014,9 @@ function drawHelp() {
       // 读 rulesStatic()：BAL 是不带增益的声明值，写死在帮助页会和实际抽牌数差开。
       // 首回合的沙漏 / 折角是「此刻」才成立的修正，由下面两条增益说明负责，不在这里算。
       `每回合 ${rulesStatic().apMax} 点行动力、抽 ${rulesStatic().draw} 张牌；每张牌标 0–3 点，X 费吃光剩下的全部。`,
-      '带借书证时答对退 1 点：1 费牌等于免费，2 费净花 1 点、3 费净花 2 点。',
+      `带借书证时答对退 ${rulesStatic().refund} 点：1 费牌等于免费，2 费净花 1 点、3 费净花 2 点。`,
       '答错不扣行动力。基础牌不答题，也不退行动力。',
-      '双面镜让每回合第一次答对抽 1 张，荧光笔让每场第一次答对多退 1 点。',
+      `双面镜让每回合第一次答对抽 ${rulesStatic().answerDraw} 张，荧光笔让每场第一次答对多退 ${BAL.markerPlus} 点。`,
       '键盘：1–4 选选项，空格 / 回车推进面板，空场时空格结束回合。',
     ]],
     ['增益不进牌组', [

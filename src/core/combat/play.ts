@@ -1,4 +1,4 @@
-import { BAL, FOES } from '../model/data';
+import { FOES, mechAmt } from '../model/data';
 import type { CardId, MapNode } from '../model/types';
 import { G, checkPending, resetBattleFields } from '../infra/state';
 import { pick, shuffle } from '../infra/util';
@@ -41,7 +41,7 @@ export function startBattle(nd: MapNode) {
 
   drawBattleQuestions();
   // fog：本场每回合少抽一张。记在场上，手牌上限 / 动画读同一个数。
-  G.drawCut = e.mech === 'fog' ? (e.mechV ?? BAL.mech.fog) : 0;
+  G.drawCut = e.mech === 'fog' ? mechAmt(e) : 0;
 
   // 增益跨战斗保留，但「一场一次」的账必须清，否则那张牌从第二场起不再响。
   // 行动力上限由 `startTurn` 按 `rulesOf()` 重算。

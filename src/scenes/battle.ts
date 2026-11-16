@@ -7,7 +7,7 @@ import { onClick, hover } from '../input';
 import { groundGlow, shieldDome, shieldSeal } from '../gfx/aura';
 import { clamp01, easeOut } from '../gfx/geom';
 import * as FX from '../gfx/fx';
-import { BAL, EFFS, MODE_BY_ID, POWER_BY_ID, stageOf } from '../core/model';
+import { EFFS, MODE_BY_ID, POWER_BY_ID, mechNote, stageOf } from '../core/model';
 import type { EffOut } from '../core/model';
 import { G } from '../core/infra';
 import { linkStatus } from '../core/combat/link';
@@ -17,7 +17,7 @@ import { canPay, cardKind, costOf, defOf, isUpgraded, isXCost } from '../core/ca
 import {
   askCard, cardAskState, endTurn, intentText, playBasic, playFree,
 } from '../core/combat';
-import type { CardDef, Foe, Mech } from '../core/model';
+import type { CardDef, Foe } from '../core/model';
 
 /**
  * 两个立绘共用一条视觉带（上沿 ~150、下沿 ~535），下方同高状态牌，
@@ -425,26 +425,6 @@ function drawEnemy(e: Foe, t: number) {
     noteColor: C.gold,
     t,
   });
-}
-
-/** 机制一句话。mechV 优先，和结算同源；写死默认值会让玩家按小怪的量打 Boss。 */
-function mechNote(e: Foe): string | null {
-  if (!e.mech) return null;
-  const v = e.mechV ?? (BAL.mech as Partial<Record<Mech, number>>)[e.mech] ?? 0;
-  switch (e.mech) {
-    case 'leech': return `你答错，它回 ${v} 点血`;
-    case 'thorns': return `你每打出一次攻击，自己挨 ${v} 点（击杀不反伤；你的格挡挡不住）`;
-    case 'bulwark': return `你答错，它 +${v} 格挡`;
-    case 'fog': return `每回合少抽 ${v} 张`;
-    case 'siphon': return `被它打中，下回合 −${v} 行动力`;
-    case 'haste': return `每回合攻击 +${v}`;
-    case 'reviewer': return `一回合没答对，额外 ${v} 点（意图已计入）`;
-    case 'pierce': return '攻击无视一半格挡';
-    case 'oblivion':
-      return `错题主题：它 +${v}；该主题答对则 −${BAL.mech.oblivionReduce}（意图已计入）`;
-    case 'lethe': return `你错一次，它永久 +${v} 攻`;
-    default: return null;
-  }
 }
 
 /* ── 玩家 ─────────────────────────────────────────────────── */

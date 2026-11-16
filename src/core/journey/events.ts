@@ -90,11 +90,28 @@ function healBy(n: number) {
   return got;
 }
 
-/** 扣血，下限 1：随机事件不该成为一局的终点 */
+/**
+ * 扣血，下限 1：随机事件不该成为一局的终点。
+ *
+ * 下限 1 的代价是「付 8 点」在 1 血时只扣 0 点 —— 这件事由
+ * `chooseEventOption()` 在**选择之前**拦掉（见 `EventOpt.payHp`），
+ * 而不是靠这里少扣一点来假装发生了。
+ */
 function hurtBy(n: number) {
   const lost = loseHp(n, 1);
   if (lost > 0) emit({ t: 'hurt', n: lost });
   return lost;
+}
+
+/**
+ * 这一手付不付得起。**唯一判断点**：`chooseEventOption()` 和事件面板的可用态
+ * 都读它，别处不许自己比 `G.hp`。
+ *
+ * 判据是「扣完之后还剩 >= 1」：和 `hurtBy` 的下限同一个数。分开写的话，
+ * 面板说能点、真点下去扣 0 点，又回到文案骗人的老路。
+ */
+export function canPayHp(n: number): boolean {
+  return n <= 0 || G.hp - n >= 1;
 }
 
 /**
@@ -140,8 +157,8 @@ export function upgradeCard(i: number) {
   if (isUpgraded(id)) return;
   // 换 id 就是精炼：base:strike → base:strike+
   G.deck[i] = upgradedId(id);
-  // 代价在选完牌时才收
-  settlePendingCost();
+  // 代价在选完牌时才收；收完那一句提示要发给玩家，不能算了就扔。
+  notePending(settlePendingCost());
   finishNode();
 }
 
@@ -151,7 +168,7 @@ export function forgetCard(i: number) {
   // 少于 5 张时每回合重复抽同一批牌
   if (G.deck.length <= 4) { finishNode(); return; }
   G.deck.splice(i, 1);
-  settlePendingCost();
+  notePending(settlePendingCost());
   finishNode();
 }
 
@@ -163,6 +180,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '拾起来，收进自己的牌组',
         sub: () => `获得一张随机知识卡（已精炼），失去 ${FX.indexCardCost} 点生命`,
+        payHp: FX.indexCardCost,
         run: () => {
           // 先确认有卡可给，再扣血
           const c = grantCard(true);
@@ -189,6 +207,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '把错题重抄一遍',
         sub: () => `精炼一张你选择的牌（攻/挡底数 +${upGain()}），失去 ${FX.notebookCost} 点生命`,
+        payHp: FX.notebookCost,
         run: () => {
           // 有牌可精炼才开面板，血在挑完之后扣
           if (!openCardPick('up')) return null;
@@ -222,6 +241,7 @@ export const EVENTS: EventDef[] = [
       },
       {
         t: `给他 ${FX.keeperCost} 点生命`, sub: () => '他替你精炼一张你选择的牌',
+        payHp: FX.keeperCost,
         run: () => {
           if (!openCardPick('up')) return null;
           G.pendingCost = FX.keeperCost;
@@ -245,6 +265,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '去点那盏灭的灯',
         sub: () => `获得一张随机知识卡，但会掉 ${FX.lampLightCost} 点生命`,
+        payHp: FX.lampLightCost,
         run: () => {
           const c = grantCard(false);
           if (!c) return '灯亮起来，照见的还是同一批卡：没有新的可抄。';
@@ -262,6 +283,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '爬上去接住它',
         sub: () => `获得一张随机知识卡（已精炼），失去 ${FX.liftCost} 点生命`,
+        payHp: FX.liftCost,
         run: () => {
           const c = grantCard(true);
           if (!c) return '接住了，但这一种你已经收得够多：这一趟只换来手上的一道木刺。';
@@ -287,6 +309,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '把手里的一张放上玻璃板',
         sub: () => `随机复制一张你的牌，失去 ${FX.copyCost} 点生命`,
+        payHp: FX.copyCost,
         run: () => {
           const c = copyCard();
           if (!c) return '机器吐出一张白纸：你带的每一种都已经够多了。';
@@ -312,6 +335,9 @@ export const EVENTS: EventDef[] = [
       {
         t: '顺着读下去',
         sub: () => `一半概率得到一张（已精炼）知识卡，一半概率失去 ${FX.wrongPageCost} 点生命`,
+        // 赌输的那一半是要付血的：付不起就不让赌，否则「一半概率失去 10 点」
+        // 在低血时会静默变成「一半概率失去 0 点」。
+        payHp: FX.wrongPageCost,
         run: () => {
           if (roll() <= 50) {
             const c = grantCard(true);
@@ -341,6 +367,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '抓一把塞进牌组',
         sub: () => `获得一张随机知识卡，失去 ${FX.drawerCost} 点生命`,
+        payHp: FX.drawerCost,
         run: () => {
           const c = grantCard(false);
           if (!c) return '抽屉里全是你已经收满的那些：抓起来又放下了。';
@@ -366,6 +393,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '添满自己的灯芯',
         sub: () => `生命上限 +${FX.maxHpGain}（当前生命不变），失去 ${FX.maxHpCost} 点生命`,
+        payHp: FX.maxHpCost,
         run: () => {
           const lost = hurtBy(FX.maxHpCost);
           const grown = raiseMaxHp(FX.maxHpGain);
@@ -399,6 +427,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '从车上拿一本',
         sub: () => `获得一张随机知识卡，失去 ${FX.cartCost} 点生命`,
+        payHp: FX.cartCost,
         run: () => {
           const c = grantCard(false);
           if (!c) return '车上全是你已经收满的那些：你把手收了回来。';
@@ -416,6 +445,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '把自己的笔记重新装订一遍',
         sub: () => `精炼一张你选择的牌（攻/挡底数 +${upGain()}），失去 ${FX.bindCost} 点生命`,
+        payHp: FX.bindCost,
         run: () => {
           if (!openCardPick('up')) return null;
           G.pendingCost = FX.bindCost;
@@ -441,6 +471,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '伸手去摸',
         sub: () => `获得一张随机知识卡（已精炼），失去 ${FX.shelfCost} 点生命`,
+        payHp: FX.shelfCost,
         run: () => {
           const c = grantCard(true);
           if (!c) return '摸出来的是空的：缝里那点东西早被翻走了。';
@@ -494,6 +525,7 @@ export const EVENTS: EventDef[] = [
       {
         t: '认领那摞没有名字的卡',
         sub: () => `获得一张随机知识卡，失去 ${FX.lostCost} 点生命`,
+        payHp: FX.lostCost,
         run: () => {
           const c = grantCard(false);
           if (!c) return '你翻了翻那摞卡：每一张你都认得出。';
@@ -531,13 +563,22 @@ export function drawEvent(): EventDef {
 export function chooseEventOption(i: number) {
   if (G.panel.k !== 'event') return;
   const ev = G.panel.ev;
-  const msg = ev.opts[i]?.run();
+  const opt = ev.opts[i];
+  if (!opt) return;
+  // 付不起就不许选：`run()` 里那些 `hurtBy()` 有下限 1，硬走会把「失去 8 点」
+  // 变成「失去 0 点」而卡照给。判断放在唯一的入口，不在 9 个事件里各写一遍。
+  if (!canPayHp(opt.payHp ?? 0)) return;
+  const msg = opt.run();
   // 选项可能把面板交给 cardpick；记住来源，取消时才能回到事件本身而不是直接关掉。
   // `run()` 可能改写 G.panel，TS 仍按调用前的 narrowing 看它，所以这里重新按 Panel 读一次。
   const after = G.panel as Panel;
   if (after.k === 'cardpick') after.from = { k: 'event', ev };
   // null 表示选项没被消费，面板留在原地
   if (msg === null) return;
+  // 选完就把这一句送到玩家眼前。早先 `run()` 的返回值只被拿去判 `null`，
+  // 42 个选项写的「你付出了 8 点生命」「你抄下了某某」全部没人读 ——
+  // 界面只剩血条自己在动，玩家不知道刚才发生了什么。
+  if (msg) emit({ t: 'note', text: msg });
   // 选项可能把面板交给 cardpick，收尾由 picker 自己做
   if (G.panel.k === 'event') finishNode();
 }
@@ -558,4 +599,16 @@ export function settlePendingCost(): string {
     note += `你撕掉一页，回了 ${got} 点生命。`;
   }
   return note;
+}
+
+/**
+ * 把一句结算提示送到玩家眼前。
+ *
+ * `chooseEventOption()` 里发的是选项自己那句；这里发的是**选完牌才收的代价**——
+ * 它发生在 `upgradeCard()` / `forgetCard()` 里，走的不是同一条路径。
+ * 两条都从 `note` 事件出去，表现层只有一处要维护。
+ */
+function notePending(note: string) {
+  if (!note) return;
+  emit({ t: 'note', text: note });
 }

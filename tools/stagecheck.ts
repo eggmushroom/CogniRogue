@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS, effSummaryOf } from '../src/core/model';
 import type { MapNode, PowerId } from '../src/core/model';
 import {
-  EVENTS, G, answer, askCard, canAsk, canPay, cancelPanel, chooseEventOption, clearRun, defOf,
+  EVENTS, G, answer, askCard, canAsk, canPay, canPayHp, cancelPanel, chooseEventOption, clearRun, defOf,
   dismissFeedback, endTurn, forgetCard, intentText, playBasic,
   runSaveInfo, skipReward, takeCard, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
   loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf, LEGACY_CARD_IDS,
@@ -16,7 +16,7 @@ import {
   grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
   lastFeedback, onFx, effFace, planStrike, setScheduler, panelOf, buildSettlement,
   parseQuestionBank, shuffleOptions, SNAP_V, SAVE_KEY, drawEvent, MAP_COLS,
-  isBasicId, baseIdOf,
+  isBasicId, baseIdOf, mechAmt, mechNote,
 } from '../src/core';
 
 // 结构检查用同步调度，core 的演出延时不会真的挂住测试。
@@ -212,7 +212,7 @@ function battle(stage: number, key: string) {
   Object.assign(G.enemy!, { ...tpl, maxHp: 999, hp: 999, block: 0, mv: 0, mechV: tpl.mechV });
   // drawCut 要按换过的敌人重算，否则 fog 断言靠抽卡运气。
   const e = G.enemy!;
-  G.drawCut = e.mech === 'fog' ? (e.mechV ?? BAL.mech.fog) : 0;
+  G.drawCut = e.mech === 'fog' ? mechAmt(e) : 0;
   // 保证手里至少有一张能答的牌。
   if (!G.hand.some((c) => canAsk(c) && canPay(defOf(c)))) {
     const k = PACK.cards.find((c) => c.kind === 'knowledge' && askOf(c) === 1)!;
@@ -288,7 +288,7 @@ function battle(stage: number, key: string) {
 // leech：只吃答错，回血读 mechV，且不越血线上限。
 {
   const e = battle(2, 'grubqueen');
-  const cap = e.mechV ?? BAL.mech.leech;
+  const cap = mechAmt(e);
   const card = PACK.cards.find((c) => c.kind === 'knowledge')!;
 
   const missOnce = () => {
@@ -502,6 +502,66 @@ function missGain(eff: string) {
   ok(G.hp === 42, `索引卡：拿卡付 8 点生命（${G.hp}）`);
   ok(G.deck.length === before + 1 && isUpgraded(G.deck[G.deck.length - 1]),
     '索引卡：多一张已精炼的知识卡');
+}
+
+// ── 6z. 付不起的代价不许变成免费 ──
+//
+// 事件扣血有下限 1（随机事件不该终结一局）。于是「失去 8 点生命」在 1 血时
+// 只扣 0 点，而卡照给 —— 承诺的代价消失了，选项却仍然兑现。
+// 判据不是「血扣得对不对」，而是**付不起的时候那张卡到底有没有进牌组**：
+// 早先它是进了的。
+{
+  const payFoes = EVENTS.filter((e) => e.opts.some((o) => o.payHp));
+
+  // 每一处 hurtBy 都必须有对应的 payHp 声明，否则拦截就漏掉那一条。
+  const undeclared = EVENTS.filter((e) => e.opts.some(
+    (o) => !o.payHp && /\d+ 点生命/.test(o.sub()) && /失去|掉|付出/.test(o.sub()),
+  ));
+  ok(undeclared.length === 0,
+    `写了「失去 N 点生命」的选项都声明了 payHp（漏：${undeclared.map((e) => e.id).join('、') || '无'}）`);
+
+  // 1 血：每一个付血选项都必须点不动，牌组与血量都不许变。
+  for (const ev of payFoes) {
+    ev.opts.forEach((o, i) => {
+      if (!o.payHp) return;
+      startRun();
+      G.hp = 1;
+      const deck0 = G.deck.length;
+      const maxHp0 = G.maxHp;
+      G.panel = { k: 'event', ev };
+      chooseEventOption(i);
+      ok(G.hp === 1 && G.deck.length === deck0 && G.maxHp === maxHp0,
+        `${ev.id} 选项 ${i}：1 血时付不起 ${o.payHp} 点 → 卡没给、血没掉（${G.hp} 血 / ${G.deck.length} 张）`);
+      ok(G.panel.k === 'event',
+        `${ev.id} 选项 ${i}：付不起时面板留在原地，不是静默关闭（${G.panel.k}）`);
+    });
+  }
+
+  // 刚好够：血比代价多 1 时能付，且付完还剩 1 点（和 hurtBy 的下限对齐）。
+  {
+    const ev = EVENTS.find((e) => e.id === 'index-cards')!;
+    const cost = ev.opts[0].payHp!;
+    startRun();
+    G.hp = cost + 1;
+    const deck0 = G.deck.length;
+    G.panel = { k: 'event', ev };
+    chooseEventOption(0);
+    ok(G.hp === 1, `刚好付得起：${cost + 1} 血付 ${cost} 点后剩 ${G.hp}（应 1）`);
+    ok(G.deck.length === deck0 + 1, `刚好付得起：卡照给（${deck0} → ${G.deck.length}）`);
+
+    // 少 1 点就付不起：边界必须紧贴，不能"差不多"。
+    startRun();
+    G.hp = cost;
+    G.panel = { k: 'event', ev };
+    chooseEventOption(0);
+    ok(G.hp === cost && G.deck.length === deck0, `差 1 点：付不起就不给卡（${G.hp} 血 / ${G.deck.length} 张）`);
+  }
+
+  // canPayHp 是唯一判断点：面板和 chooseEventOption 读它，别处不许自己比 G.hp。
+  startRun();
+  G.hp = 5;
+  ok(canPayHp(0) && canPayHp(4) && !canPayHp(5) && !canPayHp(6),
+    `canPayHp：5 血下 0/4 付得起，5/6 付不起（扣完要剩 >= 1）`);
 }
 
 {
@@ -873,6 +933,26 @@ function missGain(eff: string) {
   const seal = POWERS.find((p) => p.id === 'seal')!;
   ok(seal.card.includes(`-${BAL.sealCut}`),
     `封蜡是减 ${BAL.sealCut} 点，卡面与代码一致`);
+
+  /**
+   * 帮助页 / 答题面板也读同一批数字。
+   *
+   * 卡面那一段只查 `POWERS`，管不到 `scenes/` 里手写的说明句 ——
+   * 借书证退款在帮助页出现过三次，全是手抄的 `1`；`BAL.refund` 改了，
+   * 这三句会继续骗人，而所有卡面断言照样全绿。
+   * `ui/no-rule-literal` 只拦「代码直读 BAL 字段」，拦不住「数字被抄进句子」。
+   */
+  {
+    const uiSrc = ['src/scenes/overlay.ts', 'src/scenes/battle.ts']
+      .map((f) => readFileSync(join(here, '..', f), 'utf8')).join('\n');
+    // 「退 N 点」这种句子里的数字必须来自插值，不能是字面量。
+    const hardcoded = [...uiSrc.matchAll(/['`][^'`\n]*退\s*(\d+)\s*点[^'`\n]*['`]/g)]
+      .map((m) => m[0].trim());
+    ok(hardcoded.length === 0,
+      `界面里「退 N 点」的数字一律从 rulesStatic() 派生（手抄：${hardcoded.join(' / ') || '无'}）`);
+    ok(uiSrc.includes('rulesStatic().refund'),
+      '界面确实从 rulesStatic().refund 取退款数');
+  }
 
   // 阈值也是规则的一部分：卡面写「第 N 张」，代码就得在第 N 张触发。
   const ink = POWERS.find((p) => p.id === 'ink')!;
@@ -1878,6 +1958,135 @@ function missGain(eff: string) {
   ok(70 - G.hp === 14, `遗忘：实际结算 ${70 - G.hp}（10+4）`);
 }
 
+// ── 11c. 机制的数字：玩家读到的那句话必须就是结算真正扣的那个数 ──
+//
+// 这一段的判据不是「文案写对了」，而是「文案里的数和结算落地的是同一个」。
+// 穿透曾经写着「无视一半格挡」而实现是固定点数 —— 文案区全绿、结算也全绿，
+// 只有玩家对不上账。所以每条机制都要走两步：先算出结算真实发生的量，
+// 再要求状态牌那句话里出现同一个数。
+{
+  /** 从一句话里取出所有整数，用来和结算读数对齐。 */
+  const numsIn = (s: string) => (s.match(/-?\d+/g) ?? []).map(Number);
+
+  // 穿透：格挡先减 mechAmt，剩下的才吸收。文案里的数必须等于剪掉的那段。
+  {
+    const e = battle(3, 'compositor');
+    const n = mechAmt(e);
+    e.moves = [{ k: 'atk' }];
+    e.mv = 0;
+    e.dmg = 20;
+    G.block = 20;
+    G.hp = 70;
+    G.turn = 2;
+    const note = mechNote(e)!;
+    const blockBefore = G.block;
+    endTurn();
+    // 这一下打完之后，实际吸收的格挡 = 原始格挡 − 被穿透剪掉的 n（伤害没打穿时）。
+    const absorbed = Math.min(20 - n, 20);
+    ok(70 - G.hp === 20 - absorbed,
+      `穿透：格挡 ${blockBefore} 先减 ${n}，这一下实际掉 ${70 - G.hp} 点（应 ${20 - absorbed}）`);
+    ok(numsIn(note).includes(n),
+      `穿透：状态牌写的是「${note}」，里面有结算用的那个 ${n}`);
+    ok(!/一半|减半/.test(note), `穿透：说的是固定点数，不是「一半」（${note}）`);
+  }
+
+  // 复习官：答错（本回合没答对）时多挨 mechAmt，文案里的数就是它。
+  {
+    const e = battle(1, 'examiner');
+    const n = mechAmt(e);
+    e.moves = [{ k: 'atk' }];
+    e.mv = 0;
+    e.dmg = 10;
+    G.okThisTurn = 0;
+    G.block = 0;
+    G.hp = 70;
+    G.turn = 2;
+    const note = mechNote(e)!;
+    endTurn();
+    ok(70 - G.hp === 10 + n, `复习官：实际掉 ${70 - G.hp} 点（10 + ${n}）`);
+    ok(numsIn(note).includes(n), `复习官：状态牌里的 ${n} 就是结算加的那个数（${note}）`);
+  }
+
+  // 遗忘：加的部分和削回去的部分都必须能在结算里对上。
+  {
+    const e = battle(5, 'oblivion');
+    const n = mechAmt(e);
+    e.moves = [{ k: 'atk' }];
+    e.mv = 0;
+    e.dmg = 10;
+    G.topicWrong = { '基础动词': 1 };
+    G.topOkTopic = null;
+    G.okThisTurn = 0;
+    G.block = 0;
+    G.hp = 70;
+    G.turn = 2;
+    const note = mechNote(e)!;
+    endTurn();
+    ok(70 - G.hp === 10 + n, `遗忘：实际掉 ${70 - G.hp} 点（10 + ${n}）`);
+    ok(numsIn(note).includes(n), `遗忘：状态牌里的 ${n} 是加上的那个数（${note}）`);
+    ok(numsIn(note).includes(BAL.mech.oblivionReduce),
+      `遗忘：状态牌里的 ${BAL.mech.oblivionReduce} 是答对削回去的那个数（${note}）`);
+
+    // 同一主题答对过：削回去的那段也要真的发生。
+    G.topicWrong = { '基础动词': 1 };
+    G.topOkTopic = '基础动词';
+    G.okThisTurn = 1;
+    G.block = 0;
+    G.hp = 70;
+    G.turn = 2;
+    e.mv = 0;
+    endTurn();
+    ok(70 - G.hp === 10 + n - BAL.mech.oblivionReduce,
+      `遗忘：答对该主题后削回 ${BAL.mech.oblivionReduce}，掉 ${70 - G.hp} 点（10+${n}−${BAL.mech.oblivionReduce}）`);
+  }
+
+  // 反伤、吸水、加速、叠甲、少抽、啃食：文案里的数就是结算的那个数。
+  const sameNumCases: [number, string][] = [
+    [3, 'ghostprint'], [5, 'whisperer'], [4, 'stitchdoll'], [4, 'leathercover'], [2, 'bookmoth'],
+  ];
+  for (const [stage, key] of sameNumCases) {
+    const e = battle(stage, key);
+    const note = mechNote(e);
+    ok(!!note && numsIn(note).includes(mechAmt(e)),
+      `${e.name}：状态牌里的数就是 mechAmt(${e.name}) = ${mechAmt(e)}（${note}）`);
+    // 玩家看得到的每一句都不许出现「比例」式说法：机制的量和格挡残量无关。
+    ok(!/一半|减半|%/.test(note ?? ''), `${e.name}：机制说明不含比例（${note}）`);
+  }
+
+  // fog：文案里的数就是这一场实际少抽的张数。
+  {
+    const e = battle(2, 'bookmoth');
+    const n = mechAmt(e);
+    ok(G.drawCut === n, `蠹蛾：drawCut ${G.drawCut} = 状态牌上的 ${n}`);
+    ok(numsIn(mechNote(e)!).includes(G.drawCut), `蠹蛾：状态牌里的数就是实际少抽的张数（${G.drawCut}）`);
+  }
+
+  /**
+   * 全表兜底：**每一只带机制的怪**，`mechAmt()` 都必须给出一个正数，而且
+   * 状态牌那句话里必须写着这个数。
+   *
+   * 这一条替代了逐只怪硬编码的清单：新增一种怪 / 一种机制，只要 `BAL.mech`
+   * 漏了键、或者 `mechNote()` 漏了分支，这里就红 —— 而不是等玩家在状态牌上
+   * 读到「你的格挡少 0 点」。穿透当初就是这个死法。
+   */
+  {
+    const mechFoes = FOES.filter((f) => f.mech);
+    const bad = mechFoes.filter((f) => {
+      const e = makeFoe(f, floorOf(f.stage, 3));
+      const amt = mechAmt(e);
+      const note = mechNote(e);
+      return !(amt > 0) || !note || !numsIn(note).includes(amt);
+    });
+    ok(bad.length === 0,
+      `每只带机制的怪都能查到正数、状态牌也写着它（${mechFoes.length} 只，${bad.map((f) => f.name).join('、') || '无问题'}）`);
+    // 机制清单本身也要对得上：`BAL.mech` 的每个键都得有至少一只怪会用。
+    const used = new Set(mechFoes.map((f) => f.mech));
+    const unused = Object.keys(BAL.mech)
+      .filter((k) => k !== 'oblivionReduce' && !used.has(k as never));
+    ok(unused.length === 0, `BAL.mech 里没有没人用的键（${unused.join('、') || '无'}）`);
+  }
+}
+
 // ── 12. 内化
 // 内化按实际伤害回血，0 伤害不回。
 {
@@ -1933,7 +2142,7 @@ function missGain(eff: string) {
   if (!p1) throw new Error('反伤测试：没弹题');
   answer(p1.view.answer);
   if (panelKind() === 'feedback') dismissFeedback();
-  const th = e.mechV ?? BAL.mech.thorns;
+  const th = mechAmt(e);
   ok(G.hp === before - th, `影印：攻击被全挡也反伤 ${th} 点（${before} → ${G.hp}）`);
 
   // 反伤可以致死；要挑一张不带回血的牌。

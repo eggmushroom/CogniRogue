@@ -1,8 +1,7 @@
-import { BAL } from '../model/data';
+import { BAL, STAGE_ROWS, mechAmt } from '../model/data';
 import type { Foe, FoeTpl, Move } from '../model/types';
 import { G, checkPending, topTopic } from '../infra/state';
 import { after } from '../infra/schedule';
-import { STAGE_ROWS } from '../model/data';
 import { JUNK_ID } from '../cards/registry';
 import { onceThisFight, rulesOf } from '../cards/powers';
 import { requestSettle } from './pending';
@@ -60,12 +59,12 @@ function attackOf(e: Foe) {
   let topic: string | null = null;
 
   if (e.mech === 'reviewer' && G.okThisTurn === 0) {
-    reviewer = e.mechV ?? BAL.mech.reviewer;
+    reviewer = mechAmt(e);
   }
   if (e.mech === 'oblivion') {
     topic = topTopic();
     if (topic) {
-      oblivionAdd = e.mechV ?? BAL.mech.oblivion;
+      oblivionAdd = mechAmt(e);
       // 本回合在该主题答对过，加的部分被削回去。
       if (G.topOkTopic === topic) oblivionCut = BAL.mech.oblivionReduce;
     }
@@ -98,21 +97,20 @@ export function onPlayerMiss(s: Settlement): string {
   if (!e) return '';
 
   if (e.mech === 'leech') {
-    const cap = e.mechV ?? BAL.mech.leech;
-    const n = Math.min(cap, e.maxHp - e.hp);
+    const n = Math.min(mechAmt(e), e.maxHp - e.hp);
     if (n <= 0) return '';
     s.instant.push(() => { e.hp += n; });
     s.events.push({ t: 'foeHeal', n });
     return `${e.name}啃食这次失误，回复 ${n} 点。`;
   }
   if (e.mech === 'lethe') {
-    const n = e.mechV ?? BAL.mech.lethe;
+    const n = mechAmt(e);
     s.instant.push(() => { e.dmg += n; });
     return `${e.name}吞下这次遗忘：它的攻击永久 +${n}。`;
   }
   if (e.mech === 'bulwark') {
     // 答错让它多一层甲：惩罚落在节奏上，不落在血量上。
-    const n = e.mechV ?? BAL.mech.bulwark;
+    const n = mechAmt(e);
     s.instant.push(() => { e.block += n; });
     return `它趁机加固：获得 ${n} 点格挡。`;
   }
@@ -168,15 +166,14 @@ export function endTurn() {
     // 所以预演就要把它算进去，否则玩家会平白多吃一段伤害。
     let guard = G.block + feather;
     if (e.mech === 'pierce') {
-      const cut = e.mechV ?? BAL.mech.pierceBlock;
-      guard = Math.max(0, guard - cut);
+      guard = Math.max(0, guard - mechAmt(e));
     }
     planHeroHits(s, splitDamage(dmg, f.times), guard);
     const taken = s.hits.reduce((n, h) => n + h.dealt, 0);
 
     // 吸水：挡住不算命中，没挡住才抽走下回合的行动力。
     if (e.mech === 'siphon' && taken > 0) {
-      const n = e.mechV ?? BAL.mech.siphon;
+      const n = mechAmt(e);
       s.instant.push(() => { G.apDown += n; });
     }
   } else if (m.k === 'def') {
@@ -196,8 +193,7 @@ export function endTurn() {
   e.mv = (e.mv || 0) + 1;
   // 加速：每回合自己变强，拖一回合更贵。
   if (e.mech === 'haste') {
-    const n = e.mechV ?? BAL.mech.haste;
-    e.dmg += n;
+    e.dmg += mechAmt(e);
   }
 
   G.busy = true;

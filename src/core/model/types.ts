@@ -218,10 +218,13 @@ export interface Move {
 
 /**
  * 敌人机制，每条只改一件玩家已经会做的决定：
- *   reviewer 一回合没答对就多挨 3 点 · pierce 无视一半格挡 · leech 你答错它回血
+ *   reviewer 一回合没答对就多挨 3 点 · pierce 你的格挡先少 6 点 · leech 你答错它回血
  *   oblivion 抓你错得最多的主题 · lethe 你每错一次它 +1 攻 · thorns 打它被反伤
  *   bulwark 你答错它叠格挡 · fog 每回合少抽 1 张 · siphon 打中你扣下回合行动力
  *   haste 每回合 +1 攻
+ *
+ * 注释里的数字只是默认值；真正生效的量和玩家读到的那句话都由
+ * `model/data.ts` 的 `mechAmt()` / `mechNote()` 给出，怪身上写了 `mechV` 就用它自己的。
  */
 export type Mech =
   | 'reviewer' | 'pierce' | 'oblivion' | 'leech' | 'lethe'
@@ -295,6 +298,18 @@ export interface EventOpt {
    * （`content/no-literal-hp`）会扫 `\d+ 点生命`。
    */
   sub: () => string;
+  /**
+   * 这个选项要付多少点生命。**付不起就不可选**，不是"能付多少付多少"。
+   *
+   * 事件扣血有下限 1（随机事件不该终结一局），于是它曾经造成一个洞：
+   * 文案承诺「失去 8 点生命」，1 血时照样给卡、只扣 0 点 —— 付不起的代价
+   * 变成了免费。声明在这里之后，`chooseEventOption()` 统一拦截，
+   * 文案写多少就必须真的扣多少。
+   *
+   * 选牌后才付的那几个（`G.pendingCost`）也要声明，因为玩家是在**选之前**
+   * 就该知道这一下付不付得起。
+   */
+  payHp?: number;
   /** 返回 null 表示这个选项没有被消费，面板留在原地让玩家重选 */
   run: () => string | null;
 }

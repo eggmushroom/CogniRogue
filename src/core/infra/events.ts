@@ -24,9 +24,11 @@ export type GameEvent =
   | { t: 'enemyAct'; k: 'def' | 'jam' | 'buff' | 'calm'; n: number }
   | { t: 'power'; id: PowerId }
   | { t: 'fizzle'; eff?: Eff }
-  | { t: 'kill' }
-  | { t: 'clear' }
-  | { t: 'shake'; power: number };
+  /**
+   * 一句已经算完的结算话术。给「选完牌才收的代价」这类**没有对应状态条**的写入用：
+   * 生命条会变，但玩家不知道自己为什么掉了 10 点。文案由 core 给，表现层只负责显示。
+   */
+  | { t: 'note'; text: string };
 
 type FxListener = (e: GameEvent) => void;
 const fxListeners: FxListener[] = [];
