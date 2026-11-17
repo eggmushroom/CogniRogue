@@ -81,9 +81,13 @@ function userPrompt(job: TopicJob, extra: string[]): string {
 function normalize(raw: unknown): { q?: GenQuestion; why?: string; stem?: string } {
   const r = raw as Partial<GenQuestion> | null;
   if (!r || typeof r !== 'object') return { why: '不是对象' };
-  const concept = String(r.concept ?? '').trim();
-  const stem = String(r.stem ?? '').trim();
-  const options = Array.isArray(r.options) ? r.options.map((o) => String(o).trim()) : [];
+  // 一处换行就能毁掉整份产物：DSL 是一行题干 + 若干行选项，
+  // 模型把题干写成两行，第 2 行就不再是选项，整份被解析器拒掉（一次 4 道这么挂过）。
+  // 空白在这里压平，代价是丢掉作者刻意的排版 —— 题干本来也不该有排版。
+  const flat = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim();
+  const concept = flat(r.concept);
+  const stem = flat(r.stem);
+  const options = Array.isArray(r.options) ? r.options.map(flat) : [];
   const answer = Number(r.answer);
 
   if (!concept) return { why: '缺少概念名', stem };
@@ -97,7 +101,7 @@ function normalize(raw: unknown): { q?: GenQuestion; why?: string; stem?: string
 
   const noShuffle = r.noShuffle === true || options.some((o) => POSITIONAL.test(o));
   return {
-    q: { concept, stem, options, answer, explain: String(r.explain ?? '').trim(), noShuffle },
+    q: { concept, stem, options, answer, explain: flat(r.explain), noShuffle },
   };
 }
 

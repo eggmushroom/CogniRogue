@@ -1,0 +1,23 @@
+{
+  "note": "题库的源文档。每一条都是公开、可再分发、且允许做衍生作品的文档；改了任何一条都要重跑 `npm run sources`。",
+  "sources": [
+    {
+      "id": "nist-sp800-53r5",
+      "title": "NIST SP 800-53 Rev. 5 — Security and Privacy Controls for Information Systems and Organizations",
+      "url": "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf",
+      "sha256": "FC63BCD61715D0181DD8E85998B1E6201AE3515FC6626102101CAB1841E11EC6",
+      "bytes": 6073678,
+      "license": "public-domain",
+      "attribution": "National Institute of Standards and Technology (US Government work)"
+    },
+    {
+      "id": "nist-sp800-63b-4",
+      "title": "NIST SP 800-63B-4 — Digital Identity Guidelines: Authentication and Lifecycle Management",
+      "url": "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-63b-4.pdf",
+      "sha256": "D9AB89576B5AE2CFB3BA37781110788DEA27A85A5079496DBFC1A79834670AFD",
+      "bytes": 993734,
+      "license": "public-domain",
+      "attribution": "National Institute of Standards and Technology (US Government work)"
+    }
+  ]
+}

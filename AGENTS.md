@@ -214,6 +214,10 @@
   `md` / `ht` 两个键根本没有分支，写上去既不报错也不生效）。
 - 动过点击热区或布局跑 `npm run smoke`；怀疑是时序问题，加 `SMOKE_CPU=6`
   把渲染线程调慢再跑一遍 —— 固定 sleep 在这档下必崩，所以测试一律等状态。
+- 换语料跑 `npm run sources`：下载 → 校验 sha256 → 用 `tools/pdf2md.py` 抽成 markdown。
+  抽文字要 Python 的 `pymupdf`，**故意不进口 package.json**（运行时零依赖，
+  devDependencies 只有 vite + typescript），它只在换语料时跑一次；缺了会直接告诉你装什么。
+  清单在 `data/sources/sources.json`，PDF 与抽出来的 md 都是中间物，不进仓库。
 - 要更新 `docs/` 的实机图，跑 `npm run shots`（会覆盖全部 27 张，
   只想验一处就写临时脚本拍 `.cache/`）。
 
@@ -231,3 +235,6 @@
   两件事互不牵连。
 - `packs/words.md` 是生成物，别手改：源表（单词 → 释义）在 `tools/words.mjs`，
   跑 `npm run words` 整体重写。手改的题会在下一次生成时被覆盖。
+- 语料只收**公有领域、或明确允许做衍生作品**的文档（现在是两份 NIST 公开文件）。
+  CC BY-SA 的 ShareAlike 会传染到题库上（整个项目得跟着换许可），CC BY-NC 又和 MIT 冲突 ——
+  换语料先看许可，别只看"能免费下载"。理由与不选清单写在 `data/sources/SOURCES.md`。
