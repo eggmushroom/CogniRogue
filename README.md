@@ -43,6 +43,7 @@ npm run build        # 产出 dist/index.html，约 1.8 MB，双击就玩
 | `npm run shots` | 重拍 `docs/` 里这 27 张配图（同样需先跑 `dev`） |
 | `npm run words` | 从词表重生成 `packs/words.md` |
 | `npm run gen` | 从源文档生成题库（构建期，调模型，见「生成题库」） |
+| `npm run sources` | 把 `data/sources/sources.json` 里的语料取成 markdown（换语料时才跑） |
 
 ## 文档导航
 
@@ -342,7 +343,7 @@ src/scenes/  每个画面一屏：title / map / battle / overlay / report / pack
 src/input.ts 命中区域与点击（含跨帧判定、演出期间的输入锁）
 src/main.ts  组合根：主循环、core 事件 → 演出；调试入口在 src/dev/ 下按需加载
 tools/       sim / stagecheck / smoke / shots / words / deps
-packs/       words.md 是当前内置单词表；algorithms / advanced / systems 保留可导入
+packs/       words.md 是当前内置单词表；rust-cn / algorithms / advanced / systems 可导入
 ```
 
 这条顺序不是口号：combat 不 import journey。战斗只负责标 `G.pending`，journey 在加载时把
@@ -575,8 +576,15 @@ npm run gen -- --src=book.md --out=packs/algorithms.md
 并进记忆，然后优先重出那些概念。这正是题库要写 `~ 概念主键` 的原因：
 没有它，改写题干就等于把学习历史清零。
 
-**PDF 先自己转。** 读 PDF 需要一个依赖，而 `dependencies` 永远为空。
-用 pandoc / marker 之类转成 `.md`（转的时候尽量保留标题层级），再喂给 `--src=`。
+**语料从哪来。** `data/sources/sources.json` 是清单，`npm run sources` 把它变成 markdown：
+PDF 走 `tools/pdf2md.py`（按 PDF **自带的目录**切，不靠字号猜；跨页重复的页眉页脚丢掉），
+mdbook 仓库走 `SUMMARY.md` 里的清单、钉住 commit。抽 PDF 要 `python -m pip install pymupdf`，
+**故意不进口 `package.json`** —— 它只在换语料时跑一次，缺了会直接告诉你要装什么。
+
+PDF 与抽出来的 md 都是中间物（在 `.gitignore` 里），仓库里只留清单、工具和题库。
+许可只收公有领域 / MIT / CC BY：CC BY-SA 的 ShareAlike 会传染到题库上，
+CC BY-NC 又和 MIT 冲突。换语料前先看许可，理由和"试过但不选"的清单写在
+`data/sources/SOURCES.md`。
 
 生成器只**写文件**：不提交、不覆盖已有题库、不改课程表。生成物进 git，diff 由人 review ——
 「题目好不好」没有断言能验，这一步不能自动化。
