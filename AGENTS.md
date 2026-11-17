@@ -16,7 +16,10 @@
   （`data/service/gen.json` 或环境变量），永远不下发到浏览器。
 - **`dist/index.html` 仍然要能单独玩**。服务不在是**正常状态**：前端只用随程序的五份题库，
   请求失败一律静默回落，不弹错、也不让首屏等网络。
-- **浏览器不直连第三方**。模型调用只发生在服务里；前端只跟 `127.0.0.1:7777` 说话。
+- **浏览器不直连第三方**。模型调用只发生在服务里；前端只调同源的 `/api`。
+  一个 `npm run serve` 同时给页面和接口（`dist/index.html` + `/api`），
+  开发服务器把 `/api` 转过去 —— 两种起法在浏览器里都只有一个来源，
+  地址由 `main.ts` 按 `location` 算好交给 `core/library/remote.ts` 的 `setServiceBase`。
 - **不加账号 / 云存档 / 排行榜 / 多端同步**。这个服务是本机的一个进程，不是一台服务器：
   只监听 `127.0.0.1`，没有认证，也没有别人的数据。
 - 玩家自己身上的东西仍然优先存 localStorage，走 `core/infra/storage.ts`：无头模拟
@@ -122,7 +125,7 @@
 | 题号 / 学习历史挂在谁身上 | `core/library/parse.ts` 的 `questionId(topic, concept)`：概念缺省回落到题干，所以老题库的号不变；改题干不改概念 = 同一个概念 |
 | 玩家侧数据离开浏览器 | `scenes/report.ts` 的「导出错题」→ `scenes/studyio.ts` → `library/stagemem.ts` 的 `studySnapshot()`。游戏不外发任何请求，这条闭环只能手动 |
 | 题库生成 | `tools/gen/`：切分在 `chunk.ts`、提示词在 `generate.ts`、DSL 输出在 `emit.ts`。**只在构建期跑**，模型写内容、代码保证格式，产物必须过 `parse.ts` |
-| **题库服务** | `server/index.mjs`：清单 / 原文 / 上传 / 生成任务 / 答题记账只在这儿；前端只经 `core/library/remote.ts` 与它往来，别处不许自己写 `fetch` 或直连模型 |
+| **题库服务** | `server/index.mjs`：页面（`dist/`）、清单、原文、上传、生成任务、答题记账只在这儿；前端只经 `core/library/remote.ts` 与它往来，别处不许自己写 `fetch` 或直连模型 |
 
 **为什么加成的顺序要写死**：`planStrike()` 里只有一条链 ——
 **底数 → 效果形状 → 常驻加成 → 临时加成（续火 ×2）→ 整手削减（装订线）**。
@@ -247,6 +250,10 @@
 - 固定 1600×900 逻辑分辨率：13 寸笔记本上（1366 宽）缩放约 0.85，
   牌面 11px 的小字只剩 9px 出头。要真解决得做第二套紧凑布局，
   在那之前不要用调字号的方式局部打补丁 —— 会把版式调乱，还治不好。
+- Windows 上如果 `TEMP` 指向一个删不掉的目录（这台机器上是 `C:\Windows\temp`），
+  esbuild 收尾清临时文件会 `Access is denied`：92 个模块全转好，构建在最后一步挂掉。
+  `vite.config.ts` 因此把临时目录钉在 `.cache/tmp`（配置顶层先建目录再设 `TMP`/`TEMP`）。
+  这段不是洁癖，别为了"配置干净"删掉。
 - 随程序带**五份**题库（`core/builtin.ts` 的 `SHIPPED_PACKS`，`?raw` 内联）：单词表 400 题 /
   Rust 中文版 400 题 / 算法与复杂度 90 / 进阶算法 78 / 计算机系统基础 78，默认第一份。
   一局开局时从选中的 2–5 个主题里各取 `min(可抽, BAL.runTopicQuota)` 道，拼成**本局临时题库**

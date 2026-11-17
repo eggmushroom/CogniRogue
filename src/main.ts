@@ -8,7 +8,7 @@ import { bindInput, beginInput, clearWheel, endInput, hover, keyHandler, setInpu
 import { C } from './gfx/theme';
 import { G, onFx } from './core/infra';
 import { after } from './core/infra/schedule';
-import { initBanks, refreshRemoteBanks } from './core/library';
+import { initBanks, refreshRemoteBanks, setServiceBase } from './core/library';
 import { answer, cancelPanel, endTurn } from './core/combat';
 import { ackCardGet, ackPower, cancelPreview, dismissFeedback } from './core/journey';
 import {
@@ -296,6 +296,10 @@ function frame(now: number) {
 }
 
 async function boot() {
+  // 页面从服务器来（开发服务器 / npm run serve）就同源调 /api；双击打开的单文件
+  // 没有同源可谈，保持默认的本机端口。
+  if (location.protocol !== 'file:') setServiceBase('');
+
   // 卡面在 cards/catalog.ts 里，启动时只把题库灌进 BANK（随程序的几份 + 玩家导入的）
   initBanks(SHIPPED_PACKS);
   // 本机服务在就再问一次它还有哪些题库。不等它：没服务也要能立刻开局。

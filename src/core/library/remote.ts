@@ -7,13 +7,23 @@
  */
 
 /**
- * 服务的地址。**写死一个**：端口是可配的，但"浏览器配一个、服务配另一个"只会多一处
- * 对不上的地方，而它的全部价值就是找得到对方。服务那侧改端口（`PORT=`）时，
- * 这里也要改。
+ * 服务的地址。默认本机 7777，`main.ts` 启动时按页面来源改一次：
+ *
+ *   · `file://`（双击 dist/index.html）没有同源可谈 → 直连 `127.0.0.1:7777`；
+ *   · 开发服务器（5178）和 `npm run serve`（7777）都把 `/api` 转给服务 → 用页面自己的源。
+ *
+ * 这样浏览器里始终只有一个来源，既没有跨域，也不用记两个地址。
+ * core 不碰 DOM，所以这件事由组合根算好再交进来。
  */
 export const DEFAULT_SERVICE = 'http://127.0.0.1:7777';
+let base = DEFAULT_SERVICE;
 
-export const serviceBase = (): string => DEFAULT_SERVICE;
+export const serviceBase = (): string => base;
+
+/** 传空串表示"用当前页面的源"。 */
+export function setServiceBase(url: string) {
+  base = url.replace(/\/+$/, '');
+}
 
 export interface RemoteBank {
   id: string;

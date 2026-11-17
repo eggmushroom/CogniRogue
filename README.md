@@ -30,7 +30,7 @@ npm run build        # 产出 dist/index.html，约 1.8 MB，双击就玩
 | 命令 | 作用 |
 | --- | --- |
 | `npm run dev` | 开发服务器，改代码热更新 |
-| `npm run serve` | 本机题库服务（`127.0.0.1:7777`）：文档上传、生成题库、答题记账 |
+| `npm run serve` | 本机服务（`127.0.0.1:7777`）：游戏页面 + 题库接口，一个进程 |
 | `npm run build` | 六道确定性门槛全过才打包成单文件 |
 | `npm run check` | 类型检查 + 依赖方向检查（`tools/deps.mjs`） |
 | `npm run stage` | 过幕、事件、存档、精英保底的结构检查，不到一秒 |
@@ -523,11 +523,26 @@ D) 聚集
 
 ### 本机服务（可选）
 
-`npm run serve` 起一个只监听 `127.0.0.1:7777` 的进程。**前端只查询显示**，判断和生成都在它那侧。
-不起它也没关系：`dist/index.html` 照样是完整游戏，五份题库都在浏览器里，请求失败一律静默回落。
+`npm run serve` 起一个只监听 `127.0.0.1:7777` 的进程，**整个项目就这一个服务**：
+它把 `dist/index.html` 当页面发出去，把题库接口挂在同一个来源的 `/api` 下面。
+
+```powershell
+npm run build     # 出 dist/index.html
+npm run serve     # 打开 http://127.0.0.1:7777 就是游戏本身
+```
+
+改代码时用 `npm run dev`（5178，热更新），它把 `/api` 转给 7777 —— 浏览器里同样只有一个来源，
+前端也只有一个地址要算（`core/library/remote.ts` 的 `setServiceBase`）。
+
+**存档跟着地址走。** `file://`、`127.0.0.1:7777`、`[::1]:5178` 是三份不同的 localStorage，
+换一种打开方式就是另一份进度。要一直用同一种方式开。
+
+**前端只查询显示**，判断、解析、生成都在服务那侧。不起服务也没关系：
+`dist/index.html` 双击就是完整游戏，五份题库都在浏览器里，请求失败一律静默回落。
 
 | 端点 | 作用 |
 | --- | --- |
+| `GET /` | 游戏页面（`dist/index.html`）；没构建时给一页"先 npm run build" |
 | `GET /api/health` | 在不在、能不能出题（那侧有没有配模型 key） |
 | `GET /api/banks` | 题库清单：`packs/` 与 `data/service/banks/`，只报名字和字节数 |
 | `GET /api/banks/:id` | 题库原文；解析在浏览器那侧，服务不实现第二套 DSL |

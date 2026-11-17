@@ -15,10 +15,12 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { extname, join, resolve } from 'node:path';
+import { extname, join, resolve, sep } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const PACKS = join(ROOT, 'packs');
+/** 构建产物。`npm run build` 只留一个 index.html —— 服务把它当页面发出去。 */
+const DIST = join(ROOT, 'dist');
 /** 生成物、上传的文档、答题记录都在这儿：属于玩家侧数据，不进仓库。 */
 const STORE = join(ROOT, 'data', 'service');
 const GEN_BANKS = join(STORE, 'banks');
@@ -117,6 +119,39 @@ const run = (cmd, args, opts = {}) => new Promise((done) => {
   p.on('close', (code) => done({ code, out, err }));
   p.on('error', (e) => done({ code: -1, out, err: err + String(e.message) }));
 });
+
+/* ── 静态页面 ─────────────────────────────────────────────────── */
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.jpg': 'image/jpeg',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+};
+
+/** `dist/` 里有什么发什么。当前构建只有一个 index.html，其余是留给以后的分支。 */
+function staticFile(path) {
+  const rel = path === '/' ? 'index.html' : decodeURIComponent(path).replace(/^\/+/, '');
+  const file = resolve(DIST, rel);
+  // 别让 `../` 跳出 dist
+  if (!file.startsWith(DIST + sep)) return null;
+  return existsSync(file) ? file : null;
+}
+
+const NO_BUILD = `<!doctype html><meta charset="utf-8"><title>CogniRogue</title>
+<body style="margin:0;background:#12100e;color:#e8e2d6;font:16px/1.8 system-ui;padding:14vh 8vw">
+<h1 style="font-size:26px;margin:0 0 18px">还没构建</h1>
+<p>这个地址同时提供游戏页面和题库接口。页面来自 <code>dist/index.html</code>：</p>
+<pre style="background:#1c1917;padding:14px 18px;border-radius:8px">npm run build</pre>
+<p>改代码时用 <code>npm run dev</code>（5178），它会把 <code>/api</code> 转给这个服务，
+两个地址都能玩，各有各的存档。</p>
+</body>`;
 
 /* ── 生成任务 ─────────────────────────────────────────────────── */
 
@@ -332,6 +367,27 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, bytes: line.length });
     }
 
+    /*
+     * 剩下的 GET 都当静态页面：起一个服务，打开 127.0.0.1:7777 就是游戏本身。
+     * 没有这个分支就得同时开两个进程、记两个端口，而它们唯一的区别只是谁在算题目。
+     */
+    if (req.method === 'GET') {
+      const file = staticFile(path);
+      if (file) {
+        cors(res);
+        res.writeHead(200, {
+          'Content-Type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
+          'Cache-Control': 'no-store',
+        });
+        res.end(await readFile(file));
+        return;
+      }
+      if (path === '/' || path === '/index.html') {
+        return text(res, 200, NO_BUILD, 'text/html; charset=utf-8');
+      }
+      return plain(res, 404, `没有这个文件：${path}`);
+    }
+
     plain(res, 404, `不认识这条路由：${req.method} ${path}`);
   } catch (err) {
     json(res, 500, { ok: false, error: String(err && err.message ? err.message : err) });
@@ -341,7 +397,9 @@ const server = createServer(async (req, res) => {
 await mkdir(GEN_BANKS, { recursive: true });
 await mkdir(DOCS, { recursive: true });
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`题库服务 http://127.0.0.1:${PORT}`);
-  console.log(`  packs/          ${PACKS}`);
-  console.log(`  data/service/   ${STORE}`);
+  const built = existsSync(join(DIST, 'index.html'));
+  console.log(`CogniRogue   http://127.0.0.1:${PORT}`);
+  console.log(`  页面  ${built ? 'dist/index.html' : '还没构建（npm run build）'}`);
+  console.log(`  题库  ${PACKS}`);
+  console.log(`  数据  ${STORE}`);
 });
