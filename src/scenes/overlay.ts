@@ -6,7 +6,7 @@ import { easeOut } from '../gfx/geom';
 import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
 import { clamp, G, shuffle } from '../core/infra';
 import { curFloor } from '../core/map';
-import { countQuestions, DEFAULT_SERVICE, isRetired, listBanks, serviceModelName, serviceOnline, serviceReady, sourceBank } from '../core/library';
+import { countQuestions, isRetired, listBanks, serviceModelName, serviceOnline, serviceReady, sourceBank } from '../core/library';
 import {
   BASICS, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded, upgradedId,
   isXCost, rulesStatic, UP_MARK,
@@ -1476,9 +1476,11 @@ function drawSettings() {
     },
     {
       name: '本机服务',
+      // 连上时不报地址：页面从哪个来源来，它就在哪个来源后面（5178 会转发到 7777）。
+      // 地址只在连不上时有用 —— 那才是需要你去核对的时刻。
       desc: online
-        ? `已连接 · ${DEFAULT_SERVICE} · 另有 ${remote} 份题库`
-        : `未连接 · 只用随程序的 5 份题库`,
+        ? (remote ? `已连接 · 另有 ${remote} 份服务端题库` : '已连接 · 服务端还没有自己的题库')
+        : '未连接 · 起 npm run serve（127.0.0.1:7777）',
       btn: online ? '重新连接' : '试着连接',
       color: online ? C.green : C.dim,
       run: () => { void reconnectService(); },

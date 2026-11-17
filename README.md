@@ -29,8 +29,8 @@ npm run build        # 产出 dist/index.html，约 1.8 MB，双击就玩
 
 | 命令 | 作用 |
 | --- | --- |
-| `npm run dev` | 开发服务器，改代码热更新 |
-| `npm run serve` | 本机服务（`127.0.0.1:7777`）：游戏页面 + 题库接口，一个进程 |
+| `npm run dev` | 开发模式：题库服务 + 开发服务器（5178）一起起，改代码热更新 |
+| `npm run serve` | 只要题库服务（`127.0.0.1:7777`）；它也发 `dist/index.html` |
 | `npm run build` | 六道确定性门槛全过才打包成单文件 |
 | `npm run check` | 类型检查 + 依赖方向检查（`tools/deps.mjs`） |
 | `npm run stage` | 过幕、事件、存档、精英保底的结构检查，不到一秒 |
@@ -526,13 +526,17 @@ D) 聚集
 `npm run serve` 起一个只监听 `127.0.0.1:7777` 的进程，**整个项目就这一个服务**：
 它把 `dist/index.html` 当页面发出去，把题库接口挂在同一个来源的 `/api` 下面。
 
+两种起法，玩法一样，区别只是页面从哪儿来：
+
 ```powershell
-npm run build     # 出 dist/index.html
-npm run serve     # 打开 http://127.0.0.1:7777 就是游戏本身
+npm run dev       # 开发：题库服务 + vite（5178）一起起，改代码热更新
+npm run build     # 建：出 dist/index.html
+npm run serve     # 发布：只要服务，打开 http://127.0.0.1:7777 就是游戏本身
 ```
 
-改代码时用 `npm run dev`（5178，热更新），它把 `/api` 转给 7777 —— 浏览器里同样只有一个来源，
+两个都起来之后，浏览器里同样只有一个来源：vite 把 `/api` 转给 7777，
 前端也只有一个地址要算（`core/library/remote.ts` 的 `setServiceBase`）。
+两个端口有一个已经在跑时，`npm run dev` 会跳过它并在终端里说明。
 
 **存档跟着地址走。** `file://`、`127.0.0.1:7777`、`[::1]:5178` 是三份不同的 localStorage，
 换一种打开方式就是另一份进度。要一直用同一种方式开。
