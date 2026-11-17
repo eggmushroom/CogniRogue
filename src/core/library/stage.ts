@@ -3,7 +3,7 @@ import { shuffle } from '../infra/util';
 import { BAL } from '../model/data';
 import type { Question } from '../model/types';
 import { allQuestions } from './bank';
-import { rightCount } from './stagemem';
+import { STAGE_MEM, rightCount } from './stagemem';
 
 /**
  * 本局的**临时题库**。
@@ -35,6 +35,34 @@ export function isRetired(q: Question): boolean {
 /** 一个主题里还没退役的题。 */
 export function liveQuestionsOf(topic: string): Question[] {
   return allQuestions().filter((q) => q.topic === topic && !isRetired(q));
+}
+
+/**
+ * 首页要显示的那几个数：当前题库有多少题、其中多少道已经答对满 `BAL.retireAt` 次、
+ * 累计答过多少次、对了多少次。
+ *
+ * 只数**当前题库里出现的主题**：章节记忆按主题名存，切到另一份题库之后，
+ * 上一份的历史不该被算进这一份的进度 —— 否则换题库会让进度条看起来凭空涨了一截。
+ * 只读记忆，不 `stageMemOf()`（那是写路径，会顺手建空条目）。
+ */
+export function bankProgress(): { total: number; mastered: number; answers: number; ok: number } {
+  const all = allQuestions();
+  const topics = new Set<string>();
+  let mastered = 0;
+  for (const q of all) {
+    topics.add(q.topic);
+    if (isRetired(q)) mastered += 1;
+  }
+
+  let answers = 0;
+  let ok = 0;
+  for (const topic of topics) {
+    const e = STAGE_MEM[topic];
+    if (!e) continue;
+    answers += e.ok + e.bad;
+    ok += e.ok;
+  }
+  return { total: all.length, mastered, answers, ok };
 }
 
 /**
