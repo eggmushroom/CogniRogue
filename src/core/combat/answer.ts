@@ -191,7 +191,9 @@ function finishAnswer(ctx: AnswerCtx) {
   }
 
   // 章节记忆按题号记；跨局的卡牌熟练度表已经删掉，这里只留会影响出题的那一份。
-  recordAnswer({ stageTopic: G.stageTopic, qid: ctx.qid, right: ctx.right });
+  // 主题取题目自己的 `topic`，不取 `G.stageTopic`：题池回退到全部题目时两者不同，
+  // 按幕的主题记账会把别的主题的题记到这一章上。
+  recordAnswer({ stageTopic: ctx.q.topic, qid: ctx.qid, right: ctx.right });
 
   const v = ctx.v;
   // 同步这一刻只判玩家侧的即时死亡；敌人是否被打死要等最后一段落地，

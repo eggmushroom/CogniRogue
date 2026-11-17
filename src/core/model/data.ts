@@ -550,6 +550,12 @@ export const BAL = {
   cornerBlock: 4,
   /** 一场预抽几道题：牌组知识卡的答题要求总和每 `qOf` 次领 `qPer` 道，另加 `qPad` 道余量。 */
   qPer: 3, qOf: 5, qPad: 3,
+  /**
+   * 一道题被答过几次之后就不再抽到（跨局累计，读 `stagemem` 的 ok + bad）。
+   * 这是**题库寿命**的阈值，不是局内防重复：局内那个上限是
+   * `combat/questions.ts` 的 `MAX_PICK_PER_RUN`，两件事各有一个数。
+   */
+  retireAt: 3,
   /** 修书胶：复习点回复量**额外**加几点（叠在 `restHp` 上，是加不是乘） */
   mendRest: 10,
   /** 课表：每回合第一次打出基础牌补几点格挡 */

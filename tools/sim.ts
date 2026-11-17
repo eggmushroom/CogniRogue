@@ -12,6 +12,7 @@ import {
   G, PACK, answer, ackCardGet, availableNodes, bankQuestionCount, canPay, cardAskState, chooseEventOption, defOf, dismissFeedback,
   endTurn, enterNode, forgetCard, loadQuestionBank, openCardPick, playBasic, playFree, restHeal,
   skipReward, startRun, takeCard, ackPower, askCard, mergePacks, upgradeCard, cardKind, askOf,
+  resetStageMemory,
   moveOf, cancelPanel, isUpgraded, JUNK_ID, setScheduler,
 } from '../src/core';
 
@@ -212,6 +213,11 @@ function advance(idx: number) {
 }
 
 function runOne(p: number, st: Stat) {
+  // 每局都从"全新题库"开始：题目答满 BAL.retireAt 次就退役，而记忆是跨局累计的。
+  // 不重置的话，800 局跑到后面题池已经被前几局换过一轮，胜率就成了"跑了多少局"的函数，
+  // 基线再也没法和上一版对着看。退役是**内容供给**的机制，不是难度机制，
+  // 它的行为由 stage 的断言负责；这里要的是"一局游戏"这个单位的可比性。
+  resetStageMemory();
   startRun(MODE, BOON ? [BOON] : []);
   let guard = 0;
   let answers = 0;

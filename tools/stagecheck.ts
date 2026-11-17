@@ -10,6 +10,7 @@ import {
   runSaveInfo, skipReward, takeCard, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
   loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf, LEGACY_CARD_IDS,
   allQuestions, stageMemOf, resetStageMemory, recordAnswer, studySnapshot, STUDY_SNAPSHOT_V,
+  answeredCount, stagePool, isRetired, liveCount,
   cardKind, enterStage, BASICS, drawBattleQuestions,
   askOf, costOf, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight, restHeal,
@@ -2942,6 +2943,38 @@ C) 3
     '快照序列化往返之后数字不变');
   resetStageMemory();
   ok(studySnapshot().topics['快照章'] === undefined, '重置之后快照也清空');
+}
+
+{
+  // 题库寿命：一道题被答过 BAL.retireAt 次就退役，不再进池。
+  // 计数不另存一份 —— 直接读 stagemem 的 ok + bad，同一个数字不留两个来源。
+  resetStageMemory();
+  G.stage = 1;
+  enterStage(1);
+  const pool0 = stagePool();
+  const first = pool0[0];
+  ok(pool0.length > 0 && !!first && !isRetired(first),
+    `第 1 幕题池 ${pool0.length} 道，都没退役`);
+
+  for (let i = 0; i < BAL.retireAt; i++) recordAnswer({ stageTopic: first.topic, qid: first.qid, right: i === 0 });
+  ok(answeredCount(first.topic, first.qid) === BAL.retireAt,
+    `答满 ${BAL.retireAt} 次之后计数就是 ${answeredCount(first.topic, first.qid)}`);
+  ok(isRetired(first) && !stagePool().some((q) => q.qid === first.qid),
+    '答满的题不再进池');
+  ok(stagePool().length === pool0.length - 1,
+    `池子正好少一道（${pool0.length} → ${stagePool().length}）`);
+
+  // 整章答满：池子退回全部，而不是返回空 —— 空池会让知识卡变成点不开的死牌
+  for (const q of allQuestions()) {
+    for (let i = 0; i < BAL.retireAt; i++) recordAnswer({ stageTopic: q.topic, qid: q.qid, right: true });
+  }
+  ok(liveCount() === 0, '整章答满之后 liveCount 是 0（这就是"该重出这个主题"的信号）');
+  ok(stagePool().length === pool0.length,
+    `整章答满时池子退回全部 ${stagePool().length} 道，不留死牌`);
+
+  resetStageMemory();
+  ok(liveCount() === pool0.length && stagePool().length === pool0.length,
+    `重置记忆后 ${pool0.length} 道全部复活（退役是记忆驱动的，不是把题删了）`);
 }
 
 console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 结构检查通过');

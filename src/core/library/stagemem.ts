@@ -78,6 +78,18 @@ export function recordAnswer(a: { stageTopic: string; qid: string; right: boolea
   else s.bad += 1;
 }
 
+/**
+ * 一道题累计被答过几次（对 + 错）。
+ *
+ * 退役判据直接读它，不再另存一份计数：同一个数字存两处，
+ * 迟早出现"记忆说答过 3 次、题库说还能抽"的矛盾。不存在的题返回 0，
+ * 所以这里**不**用 `stageMemOf()` —— 那是写路径，会顺手建一个空条目。
+ */
+export function answeredCount(topic: string, qid: string): number {
+  const s = STAGE_MEM[topic]?.q[qid];
+  return s ? s.ok + s.bad : 0;
+}
+
 /** 一章的摘要：只报正确率，结算页读它。 */
 export function stageDigest(topic: string): StageDigest {
   const e = stageMemOf(topic);
