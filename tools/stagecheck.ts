@@ -141,14 +141,13 @@ ok(floorOf(3, 0) === 41 && floorOf(5, 19) === 100, '层号连续：第 3 幕第 
 }
 
 /**
- * 过幕掉落里会**当场**加生命上限的增益。
+ * 过幕掉落里会**当场**加生命上限的增益 —— 只有书脊（`applyInstant` 里调 `raiseMaxHp`）。
  *
- * 它们不进 `rulesOf().stageMaxHp`，因为语义不同：茶是"每次过幕都多给"，
- * 书脊是"拿到就长一截"。过幕那一屏会随机掉一个，所以任何比对总上限的断言
- * 都必须把这两条算进来 —— 不算就等于要求"掉落是确定的"，
- * 每隔几十次红一次，而读数（40 → 72）看起来像"上限加多了"。
+ * 茶**不在**这里：它改的是 `stageMaxHp`，下一次过幕才兑现。把它算成"当场"，
+ * 等于要求"这一屏别掉出茶来"，而掉落是随机的 —— 每隔几十次红一次，
+ * 读数（40 → 54）看着像"上限加少了"，其实是断言把两件事混成了一件。
  */
-const DROP_HP: Record<string, number> = { tea: BAL.teaMaxHp, spine: BAL.spineHp };
+const DROP_HP: Record<string, number> = { spine: BAL.spineHp };
 
 /** 过幕后新拿到的增益里，有多少点是直接加在生命上限上的。 */
 function DROP_HP_GAINED(had: readonly string[]): number {
@@ -169,19 +168,30 @@ G.enemy = {
 };
 G.enemy.hp = 0;
 G.pending = 'win';
+// 过幕那一笔是"过幕那一刻"的 `rulesOf().stageMaxHp` —— 手上已有的茶算在里面。
+// 拿 `BAL.stageMaxHp` 去比等于假设"这局没有茶"，那是另一件事。
+const bump = rulesOf().stageMaxHp;
 dismissFeedback();
 
 ok(G.stage === 2, `过幕后进入第 ${G.stage} 幕`);
 ok(G.hp === G.maxHp, `过幕回满血（${G.hp}/${G.maxHp}）`);
-// 读 `rulesOf()` 而不是 `BAL`：茶会让这条规则比声明值大，卡面与结算都跟它走。
-// 失败时打印三个数，一眼看得出是"没加"还是"加多了"。
-// 过幕那一笔是 `BAL.stageMaxHp` + 过幕**前**已有增益的贡献（茶）。
-// 但这一屏同时会掉落一个随机增益，其中茶与书脊当场就加上限 ——
-// 所以总量必须把掉落算进来，否则这条断言等于要求"掉落是确定的"，
-// 每隔几十次就会红一次，而读数（40 → 72）看起来像"上限加多了"。
+// 过幕这一屏还会随机掉一个增益，其中只有书脊是当场加上限的（见 DROP_HP）。
+// 所以总量 = 过幕那一笔 + 掉落里当场生效的那部分，两件事分开算。
 const dropHp = DROP_HP_GAINED(before.powers);
-ok(G.maxHp === 40 + BAL.stageMaxHp + dropHp,
-  `生命上限 +${BAL.stageMaxHp}${dropHp ? ` +${dropHp}（掉落）` : ''}（40 → ${G.maxHp}）`);
+ok(G.maxHp === 40 + bump + dropHp,
+  `生命上限 +${bump}${dropHp ? ` +${dropHp}（当场掉落的书脊）` : ''}（40 → ${G.maxHp}）`);
+
+// 上面那条之所以能只算书脊，是因为茶根本不在这时候结算 —— 这条把那个前提钉住。
+// 少了它，"茶被误当成即时增益"会以"每隔几十次红一次"的形式重新长回来。
+{
+  const saved = [...G.powers];
+  const mh = G.maxHp;
+  if (!G.powers.includes('tea')) G.powers.push('tea');
+  ok(G.maxHp === mh, '拿到茶不当场加上限');
+  ok(rulesOf().stageMaxHp === BAL.stageMaxHp + BAL.teaMaxHp,
+    `茶让下一次过幕多给 ${BAL.teaMaxHp}（过幕那一笔 ${rulesOf().stageMaxHp}）`);
+  G.powers = saved;
+}
 ok(G.map.length === STAGE_ROWS && G.pos === null, '换了一张新图，位置在入口');
 ok(G.screen === 'map', '过幕后回到地图而不是结算页');
 ok(G.panel.k === 'powerdrop', '幕 Boss 掉一个增益（拾取即生效）');

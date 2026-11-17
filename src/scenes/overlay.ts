@@ -1533,15 +1533,18 @@ function drawSettings(t: number) {
  */
 function drawModelForm(f: ModelForm, msg: string, ok: boolean, t: number) {
   dim();
-  const w = 760;
-  const h = 520;
+  const w = 700;
+  const h = 448;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
   box(x, y, w, h, withAlpha(C.gold, 0.35));
-  heading('设置 › 出题模型', x + 44, y + 62, '服务拿这组参数从文档生成题库。存在它那侧，不留在浏览器里。');
+  heading('设置 › 出题模型', x + 40, y + 58, '服务拿这组参数从文档生成题库。存在它那侧，不留在浏览器里。');
 
   const caretOn = Math.sin(t * 5) > -0.45; // 不闪的竖线看着像排版错误
-  const fw = w - 88 - 112;                 // 密钥那行右边要留出「显示」
+  // 左一列标签、中间一列输入、右一列放「显示」。三格同宽，读起来是一张表而不是三块空框。
+  const labX = x + 150;
+  const fx = x + 166;
+  const fw = 420;
   const kinds = [
     ['接口地址', 'https://api.deepseek.com/v1'],
     ['模型', 'deepseek-chat'],
@@ -1549,29 +1552,47 @@ function drawModelForm(f: ModelForm, msg: string, ok: boolean, t: number) {
   ] as const;
 
   modelFields(f).forEach((field, i) => {
-    const ry = y + 126 + i * 96;
-    const wide = i === 2 ? fw : w - 88;
-    text(kinds[i][0], x + 44, ry, { size: 12, color: C.dim });
-    drawField(x + 44, ry + 10, wide, 46, field, {
-      focused: f.field === i,
+    const ry = y + 124 + i * 58;
+    const focused = f.field === i;
+    text(kinds[i][0], labX, ry + 29, { size: 13, color: focused ? C.gold : C.dim, align: 'right' });
+    drawField(fx, ry, fw, 46, field, {
+      focused,
       masked: i === 2 && !f.reveal,
       placeholder: kinds[i][1],
-      caretOn,
+      caretOn: focused ? caretOn : false,
+      rightGap: focused && field.value ? 30 : 0,
     });
-    onClick(x + 44, ry + 10, wide, 46, () => focusModelField(i));
+    onClick(fx, ry, fw, 46, () => focusModelField(i));
+    // 有焦点且非空时给一个 ✕：整串换掉比一个字一个字退格现实，
+    // 而"点进格里就全选"那种隐形行为在没有选区高亮时会让人丢数据。
+    if (focused && field.value) {
+      const clearAt = fx + fw - 20;
+      const lit = hover(clearAt - 12, ry + 11, 28, 24);
+      text('✕', clearAt, ry + 29, { size: 12, color: lit ? C.ink : C.faint, align: 'center' });
+      onClick(clearAt - 12, ry + 11, 28, 24, () => { field.value = ''; field.caret = 0; });
+    }
     if (i === 2) {
-      action(x + 44 + wide + 8, ry + 10, 104, 46, f.reveal ? '隐藏' : '显示', toggleReveal, 'ghost', { size: 13 });
+      // 明文开关做成文字链接：它属于这一格，不该长成第二颗按钮
+      const lit = hover(fx + fw + 12, ry + 12, 64, 24);
+      text(f.reveal ? '隐藏' : '显示', fx + fw + 64, ry + 29, {
+        size: 12, color: lit ? C.ink : C.dim, align: 'right',
+      });
+      onClick(fx + fw + 12, ry + 12, 64, 24, toggleReveal);
     }
   });
 
-  text('Tab 换下一格 · Enter 保存 · Esc 返回', x + 44, y + 400, { size: 12, color: C.faint });
+  g.fillStyle = 'rgba(255,255,255,.06)';
+  g.fillRect(x + 40, y + 318, w - 80, 1);
+
   if (msg) {
     g.save();
     g.font = font(13, 500, FONT_UI);
     g.fillStyle = ok ? C.green : C.red;
-    wrapText(msg, w - 88).slice(0, 1).forEach((ln, i) => g.fillText(ln, x + 44, y + 426 - i * 18));
+    wrapText(msg, w - 80).slice(0, 1).forEach((ln) => g.fillText(ln, x + 40, y + 346));
     g.restore();
   }
-  action(x + w - 44 - 240, y + h - 72, 108, 44, '取消', closeModelForm, 'ghost', { size: 15 });
-  action(x + w - 44 - 120, y + h - 72, 120, 44, '保存', () => { void saveModelForm(); }, 'primary', { size: 15 });
+  text('Tab 换一格 · Enter 保存 · Esc 返回', x + 40, y + 396, { size: 11, color: C.faint });
+
+  action(x + w - 40 - 236, y + h - 80, 104, 42, '取消', closeModelForm, 'ghost', { size: 15 });
+  action(x + w - 40 - 120, y + h - 80, 120, 42, '保存', () => { void saveModelForm(); }, 'primary', { size: 15 });
 }

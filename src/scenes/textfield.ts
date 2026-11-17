@@ -1,5 +1,5 @@
 import { g, roundRect } from '../gfx/canvas';
-import { C, font, FONT_UI, withAlpha } from '../gfx/theme';
+import { C, FONT_NUM, font } from '../gfx/theme';
 import type { EditField } from '../core/model';
 
 /**
@@ -22,47 +22,68 @@ export function maskOf(s: string): string {
 
 export function drawField(
   x: number, y: number, w: number, h: number, f: Field,
-  opts: { focused: boolean; masked?: boolean; placeholder?: string; caretOn?: boolean },
+  opts: {
+    focused: boolean; masked?: boolean; placeholder?: string; caretOn?: boolean;
+    /** 右边留出的空隙：焦点格里有「✕ 清空」，文字不该钻到它下面 */
+    rightGap?: number;
+  },
 ) {
-  roundRect(x, y, w, h, 8);
-  g.fillStyle = opts.focused ? 'rgba(255,255,255,.07)' : 'rgba(255,255,255,.03)';
+  // 凹槽而不是浅色方块：比面板底色更深一档，看起来才像"能往里写字的地方"，
+  // 而不是又一颗按钮。焦点用金色描边 + 一点外发光，和面板的金属边框同一套语言。
+  roundRect(x, y, w, h, 7);
+  g.fillStyle = opts.focused ? 'rgba(9,12,19,.95)' : 'rgba(5,8,13,.75)';
   g.fill();
-  g.strokeStyle = opts.focused ? withAlpha(C.gold, .85) : C.line;
-  g.lineWidth = 1.3;
-  g.stroke();
+  if (opts.focused) {
+    // 一点暖色底 + 金色描边：焦点在哪一格，扫一眼就知道，不用去找光标
+    roundRect(x, y, w, h, 7);
+    g.fillStyle = 'rgba(232,182,76,.055)';
+    g.fill();
+    g.save();
+    g.shadowColor = 'rgba(232,182,76,.32)';
+    g.shadowBlur = 16;
+    g.strokeStyle = C.gold;
+    g.lineWidth = 1.5;
+    roundRect(x, y, w, h, 7);
+    g.stroke();
+    g.restore();
+  } else {
+    g.strokeStyle = 'rgba(255,255,255,.09)';
+    g.lineWidth = 1;
+    roundRect(x, y, w, h, 7);
+    g.stroke();
+  }
 
   const shown = opts.masked ? maskOf(f.value) : f.value;
-  const pad = 12;
-  const avail = w - pad * 2;
+  const pad = 14;
+  const avail = w - pad * 2 - (opts.rightGap ?? 0);
   const caretAt = opts.masked ? shown.length : f.caret;
+  const baseY = y + h / 2 + 5;
 
   g.save();
-  g.font = font(15, 500, FONT_UI);
+  roundRect(x, y, w, h, 7);
+  g.clip(); // 左滚和光标的越界都裁在凹槽里
+  // 等宽字体：地址、模型名、key 都是"数据"，一个字一个字对齐比排版好看更要紧
+  g.font = font(14, 500, FONT_NUM);
   g.textAlign = 'left';
-  if (shown) {
-    // 长了就往左滚：光标始终在框里，而不是让玩家猜自己打到哪儿了
+  if (!shown) {
+    g.fillStyle = C.faint;
+    g.fillText(opts.placeholder ?? '', x + pad, baseY);
+  } else {
+    // 长了就往左滚：光标始终在框里，而不是让玩家猜自己打到哪儿
     const before = g.measureText(shown.slice(0, caretAt)).width;
     const shift = Math.max(0, before - avail);
     g.fillStyle = C.ink;
-    g.fillText(shown, x + pad - shift, y + h / 2 + 5);
-    g.restore();
+    g.fillText(shown, x + pad - shift, baseY);
     if (opts.focused && opts.caretOn !== false) {
-      g.save();
       g.fillStyle = C.gold;
-      g.fillRect(x + pad + before - shift, y + h / 2 - 9, 1.6, 18);
-      g.restore();
+      g.fillRect(x + pad + before - shift, y + h / 2 - 9, 2, 18);
     }
-    return;
   }
-  g.fillStyle = C.faint;
-  g.fillText(opts.placeholder ?? '', x + pad, y + h / 2 + 5);
-  g.restore();
-  if (opts.focused && opts.caretOn !== false) {
-    g.save();
+  if (!shown && opts.focused && opts.caretOn !== false) {
     g.fillStyle = C.gold;
-    g.fillRect(x + pad, y + h / 2 - 9, 1.6, 18);
-    g.restore();
+    g.fillRect(x + pad, y + h / 2 - 9, 2, 18);
   }
+  g.restore();
 }
 
 /** 一个按键是不是"该交给人手"的编辑键（用来判断要不要吃掉它）。 */
