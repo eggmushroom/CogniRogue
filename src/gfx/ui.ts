@@ -504,6 +504,27 @@ function drawCardEffects(c: CardEffectsView) {
 }
 
 /** 手牌、奖励、牌组共用一种卡面；颜色按三类，不泄露知识归属。 */
+/**
+ * 卡名下面那条短线。它是分隔符，不是装饰框 —— 所以从名字末端渐隐到透明，
+ * 而不是画一条等宽的实线把卡面切两半。
+ *
+ * 完整卡面与 `choiceCard` 两处都要它。这段原先抄了两份，改一处忘另一处时
+ * 两张卡的卡名会差半个像素的基线。
+ */
+function drawNameUnderline(
+  x: number, w: number, pad: number, s: number,
+  nameLines: string[], by0: number, lh: number,
+) {
+  const nw = Math.max(40 * s, Math.min(w - pad * 2, g.measureText(nameLines[0] ?? '').width));
+  const uy = by0 + (nameLines.length - 1) * lh + 9.5 * s;
+  const ug = g.createLinearGradient(x + pad, 0, x + pad + nw, 0);
+  ug.addColorStop(0, 'rgba(255,255,255,.32)');
+  ug.addColorStop(0.6, 'rgba(255,255,255,.1)');
+  ug.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = ug;
+  g.fillRect(x + pad, uy, nw, Math.max(1.6, 2 * s));
+}
+
 export function drawCard(
   x: number, y: number, w: number, h: number,
   card: CardDef, out: EffOut, opts: CardOpts = {},
@@ -581,16 +602,7 @@ export function drawCard(
   }
 
   // 名字下的短线是分隔符，不是装饰框。
-  if (kind !== 'junk') {
-    const nw = Math.max(40 * s, Math.min(w - pad * 2, g.measureText(nameLines[0] ?? '').width));
-    const uy = by0 + (nameLines.length - 1) * lh + 9.5 * s;
-    const ug = g.createLinearGradient(x + pad, 0, x + pad + nw, 0);
-    ug.addColorStop(0, 'rgba(255,255,255,.32)');
-    ug.addColorStop(0.6, 'rgba(255,255,255,.1)');
-    ug.addColorStop(1, 'rgba(255,255,255,0)');
-    g.fillStyle = ug;
-    g.fillRect(x + pad, uy, nw, Math.max(1.6, 2 * s));
-  }
+  if (kind !== 'junk') drawNameUnderline(x, w, pad, s, nameLines, by0, lh);
 
   // 效果行：动词小、数字大、单位小。
   drawCardEffects({
@@ -688,16 +700,7 @@ export function drawPowerEmblem(
   g.textAlign = 'left';
   nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
 
-  {
-    const nw = Math.max(40 * s, Math.min(w - pad * 2, g.measureText(nameLines[0] ?? '').width));
-    const uy = by0 + (nameLines.length - 1) * lh + 9.5 * s;
-    const ug = g.createLinearGradient(x + pad, 0, x + pad + nw, 0);
-    ug.addColorStop(0, 'rgba(255,255,255,.32)');
-    ug.addColorStop(0.6, 'rgba(255,255,255,.1)');
-    ug.addColorStop(1, 'rgba(255,255,255,0)');
-    g.fillStyle = ug;
-    g.fillRect(x + pad, uy, nw, Math.max(1.6, 2 * s));
-  }
+  drawNameUnderline(x, w, pad, s, nameLines, by0, lh);
 
   // 效果文字居中于名字下沿和底部分隔线之间。
   const bodyTop = by0 + nameLines.length * lh + 12 * s;

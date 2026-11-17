@@ -12,8 +12,7 @@ import {
   allQuestions, stageMemOf, resetStageMemory, cardKind, enterStage, BASICS, drawBattleQuestions,
   askOf, costOf, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight, restHeal,
-  upGain, rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
-  grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
+  rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,  grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
   lastFeedback, onFx, effFace, planStrike, setScheduler, panelOf, buildSettlement,
   parseQuestionBank, shuffleOptions, SNAP_V, SAVE_KEY, drawEvent, MAP_COLS,
   isBasicId, baseIdOf, mechAmt, mechNote,
@@ -1894,10 +1893,19 @@ function missGain(eff: string) {
   // 抛光布 / 书脊 / 藏书票 / 裁纸刀 / 树脂：拿到那一刻就改底盘。
   startRun('test');
   G.powers = ['polish'];
-  const gain0 = upGain();
+  // 断言按消费者写：不看某个函数返回了几，而是看**精炼后的卡**真的多了几点。
+  // 早先这里只验 `upGain()` 变大，于是抛光布空转（没人读那个值）也照样全绿。
+  const upAtk0 = defOf('base:strike+').atk;
+  const upBlk0 = defOf('base:guard+').blk;
+  const focusDraw0 = planStrike('c04+', { noBoost: true }).draw;
   applyInstant('polish');
-  ok(upGain() === gain0 + BAL.polishUp,
-    `抛光布：精炼加成 +${BAL.polishUp}（${gain0} → ${upGain()}）`);
+  ok(defOf('base:strike+').atk === upAtk0 + BAL.polishUp,
+    `抛光布：精炼后的攻再多 +${BAL.polishUp}（${upAtk0} → ${defOf('base:strike+').atk}）`);
+  ok(defOf('base:guard+').blk === upBlk0 + BAL.polishUp,
+    `抛光布：精炼后的挡再多 +${BAL.polishUp}（${upBlk0} → ${defOf('base:guard+').blk}）`);
+  // 抛光布只抬攻挡：专注牌的抽牌数不该跟着变，否则就是又退回"一律加数值"。
+  ok(planStrike('c04+', { noBoost: true }).draw === focusDraw0,
+    `抛光布不动抽牌数（专注牌仍是抽 ${focusDraw0}）`);
 
   startRun('test');
   G.powers = ['spine'];
@@ -2323,7 +2331,13 @@ function missGain(eff: string) {
   ok(runSaveInfo() !== null, '带「整局一次」账与精炼加成的存档可读');
   resumeRun();
   ok(G.onceRun.wish === true, '读档后许愿条仍然是"已经用掉"的状态');
-  ok(upGain() === 3 + 2, `抛光布的加成随断点存回来（精炼 +${upGain()}）`);
+  // 断点里那个 upGrade=2 必须真的参与折算，不只是被存回来。
+  {
+    const raw = defOf('base:strike');
+    const expect = raw.atk + (raw.up?.atk ?? 0) + 2;
+    ok(defOf('base:strike+').atk === expect,
+      `抛光布那一档随断点存回来并参与折算（${raw.atk} → ${defOf('base:strike+').atk}）`);
+  }
 
   // 旧版本整份作废。
   put({ ...base, v: 2, upgraded: {} });

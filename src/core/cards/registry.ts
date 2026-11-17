@@ -39,27 +39,24 @@ export const isUpgraded = (id: CardId): boolean => id.endsWith(UP_MARK);
 /** 把一张牌变成它的精炼版本。已经精炼过的原样返回（不会变成 `++`）。 */
 export const upgradedId = (id: CardId): CardId => (isUpgraded(id) ? id : id + UP_MARK);
 
-/** 精炼加成 = 底数 3 + 「抛光布」写进 G.upGrade 的档位。 */
-const UP_GAIN = 3;
-
-/** 这一张牌的精炼加成：基础 3 点 + 抛光布那一档。 */
-export const upGain = (): number => UP_GAIN + G.upGrade;
-
 /**
  * 把一张定义按它的 `up` 声明折成精炼版本。
  *
- * 默认（没写 `up`）是攻、挡各 +`upGain()`。写了就以声明为准：只写 `{ draw: 1 }`
- * 的牌精炼后只多抽一张，不加攻挡 —— 这正是这一层存在的理由，
+ * `up` 说明这张牌该长在哪：只写 `{ draw: 1 }` 的牌精炼后只多抽一张，不碰攻挡 ——
  * 「抽 1 张的牌精炼成抽 2 张」不能靠底数硬凑。
  *
- * 纯函数：不读 G 以外的状态，也不写任何东西。`upGain()` 读 `G.upGrade`（抛光布）。
+ * 抛光布（`G.upGrade`）抬的是**这张牌已经声明要加的那几格**：声明了 atk 就 atk 多给，
+ * 声明了 blk 就 blk 多给，两边都声明就两边都给。不能退回「一律攻挡各 +N」——
+ * 那正是这次要消灭的规则，而且会让纯专注牌凭空长出攻击。
+ *
+ * 这里**没有**「没写 `up` 就默认 +N」的分支：`npm run cards` 强制每张牌都写 `up`。
+ * 留一条默认路径曾经把抛光布变成空转 —— 默认分支永远走不到，`G.upGrade` 写了也没人读。
  */
 function applyUp(d: CardDef): CardDef {
-  const g = upGain();
   const u = d.up;
-  // 底数增量：没写 up 就是默认 +g；写了 up 但没写 atk / blk 就是 0（不改）。
-  const dAtk = u ? (u.atk ?? 0) : g;
-  const dBlk = u ? (u.blk ?? 0) : g;
+  const extra = G.upGrade;
+  const dAtk = u?.atk !== undefined ? u.atk + extra : 0;
+  const dBlk = u?.blk !== undefined ? u.blk + extra : 0;
   const mods: EffMods | undefined = u && (
     u.healPer !== undefined || u.draw !== undefined || u.selfHp !== undefined || u.times !== undefined
   )
@@ -97,7 +94,12 @@ function applyUp(d: CardDef): CardDef {
   };
 }
 
-/** 精炼后的定义按 id 缓存：卡面每帧都会画，不能每帧重新拼一遍对象。 */
+/**
+ * 精炼后的定义按「id + 当时的抛光布档位」缓存：卡面每帧都会画，不能每帧重新拼对象。
+ *
+ * 键里带 `G.upGrade` 是必须的：抛光布中途拿到会改变折出来的数值，
+ * 只按 id 缓存会把拿到之前算好的那份一直发下去 —— 卡面写着 +2、实际没加。
+ */
 const UP_BY_ID = new Map<string, CardDef>();
 
 /**
@@ -111,10 +113,11 @@ export const defOf = (id: CardId | null | undefined): CardDef => {
   const raw = CARD_BY_ID.get(base);
   if (!raw) return JUNK;
   if (!isUpgraded(id)) return raw;
-  let up = UP_BY_ID.get(base);
+  const key = `${base}|${G.upGrade}`;
+  let up = UP_BY_ID.get(key);
   if (!up) {
     up = applyUp(raw);
-    UP_BY_ID.set(base, up);
+    UP_BY_ID.set(key, up);
   }
   return up;
 };
@@ -131,10 +134,22 @@ export const isKnownCardId = (id: string): boolean => {
 export const hasPower = (id: PowerId) => G.powers.includes(id);
 
 /**
+ * 牌组里每种卡（按**定义 id** 算，精炼前后是同一张）各有几份。
+ *
+ * 战后奖励、事件发牌、增益发牌三处都要按这个数判上限。它们各自抄过一份
+ * 同样的累加，改口径时必然漏掉一处 —— 所以只留这一个入口。
+ */
+export function deckCopies(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const id of G.deck) out[baseIdOf(id)] = (out[baseIdOf(id)] || 0) + 1;
+  return out;
+}
+
+/**
  * 这张牌此刻的攻 / 挡底数。
  *
- * 精炼已经折进 `defOf` 了，所以这里**只读定义**，不再自己加 `upGain()` ——
- * 早先这里加一次、`defOf` 不加，两个数字来源迟早对不上。
+ * 精炼（含抛光布那一档）已经折进 `defOf` 了，所以这里**只读定义**，
+ * 不再自己算一遍 —— 早先这里加一次、`defOf` 不加，两个数字来源迟早对不上。
  */
 export function statOf(id: CardId) {
   const d = defOf(id);

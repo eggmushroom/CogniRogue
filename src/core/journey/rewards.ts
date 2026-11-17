@@ -4,7 +4,7 @@ import { G } from '../infra/state';
 import { emit } from '../infra/events';
 import { shuffle } from '../infra/util';
 import { PACK } from '../cards/pack';
-import { baseIdOf, UP_MARK } from '../cards/registry';
+import { deckCopies, UP_MARK } from '../cards/registry';
 import { applyInstant, onceThisStage, rulesStatic } from '../cards/powers';
 import { finishNode } from './nodes';
 
@@ -13,8 +13,7 @@ import { finishNode } from './nodes';
  * 只有精英和幕 Boss 掉增益。
  */
 function rewardPool(n: number): CardDef[] {
-  const copies: Record<string, number> = {};
-  G.deck.forEach((id) => { copies[baseIdOf(id)] = (copies[baseIdOf(id)] || 0) + 1; });
+  const copies = deckCopies();
   // 上限读规则表：书挡会抬高每种卡的上限，奖励池必须跟着变宽。
   const cap = rulesStatic().maxCopies;
   const fresh = PACK.cards.filter((c) => !copies[c.id]);

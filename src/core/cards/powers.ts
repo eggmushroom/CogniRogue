@@ -6,7 +6,7 @@ import { healHp, raiseMaxHp, reviveHp } from '../infra/write';
 import { shuffle } from '../infra/util';
 import { PACK } from './pack';
 import { isBasicId } from './basics';
-import { baseIdOf, hasPower, isUpgraded, upgradedId } from './registry';
+import { baseIdOf, deckCopies, hasPower, isUpgraded, upgradedId } from './registry';
 
 /**
  * 增益的唯一读取入口：always 由 `rulesOf()` 折成数字，fight / stage / run
@@ -192,8 +192,8 @@ export function applyInstant(id: PowerId): string {
       return n ? `${n} 张基础牌全部精炼` : '牌组里的基础牌已经全是精炼版';
     }
     case 'polish': {
-      // 抛光布抬高的是**默认**精炼量：只对没写 `up` 的牌生效，
-      // 写了 `up` 的牌按自己声明的字段长，不受它影响。
+      // 抛光布抬的是「每张牌已经声明要加的那几格」：声明了 atk 就 atk 多给，
+      // 声明了 blk 就 blk 多给。`applyUp()` 读 `G.upGrade` 折进去。
       G.upGrade = BAL.polishUp;
       return `以后每次精炼，攻 / 挡再多 +${BAL.polishUp}`;
     }
@@ -205,8 +205,7 @@ export function applyInstant(id: PowerId): string {
 /** 塞 n 张不重复的随机知识卡，每种受 `rulesOf().maxCopies` 限制。 */
 function grantKnowledge(n: number): string[] {
   const cap = rulesOf().maxCopies;
-  const copies: Record<string, number> = {};
-  G.deck.forEach((id) => { copies[baseIdOf(id)] = (copies[baseIdOf(id)] || 0) + 1; });
+  const copies = deckCopies();
   const pool = shuffle(PACK.cards.filter((c) => (copies[c.id] || 0) < cap));
   const got: string[] = [];
   for (const c of pool) {

@@ -5,7 +5,7 @@ import { healHp, loseHp, raiseMaxHp } from '../infra/write';
 import { emit } from '../infra/events';
 import { pick, roll } from '../infra/util';
 import { PACK } from '../cards/pack';
-import { baseIdOf, defOf, isUpgraded, upgradedId } from '../cards/registry';
+import { baseIdOf, deckCopies, defOf, isUpgraded, upgradedId } from '../cards/registry';
 import { canOnceStage, onceThisStage, rulesStatic } from '../cards/powers';
 import { finishNode } from './nodes';
 
@@ -53,9 +53,7 @@ const FX = {
 
 /** 得到一张知识卡，上限同战后奖励 */
 function grantCard(up: boolean): CardDef | null {
-  // 数牌种，先剥 + 后缀，否则同名卡算两种
-  const copies: Record<string, number> = {};
-  G.deck.forEach((id) => { copies[baseIdOf(id)] = (copies[baseIdOf(id)] || 0) + 1; });
+  const copies = deckCopies();
   // 上限读规则表，书挡把它 +1。事件面板是战斗外的界面，读静态层。
   const pool = PACK.cards.filter((c) => (copies[c.id] || 0) < rulesStatic().maxCopies);
   if (!pool.length) return null;
@@ -159,8 +157,9 @@ export function openCardPick(mode: 'up' | 'rm', from?: CardPickFrom): boolean {
  */
 export function previewUpgrade(i: number) {
   const id = G.deck[i];
-  if (!id || isUpgraded(id)) return;
-  G.panel = { ...G.panel, pick: i } as Panel;
+  const p = G.panel;
+  if (!id || isUpgraded(id) || p.k !== 'cardpick') return;
+  G.panel = { ...p, pick: i };
 }
 
 /** 从预览退回列表。和取消整个面板不同：代价还没收，牌组也没动。 */
