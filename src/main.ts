@@ -8,7 +8,7 @@ import { bindInput, beginInput, clearWheel, endInput, hover, keyHandler, setInpu
 import { C } from './gfx/theme';
 import { G, onFx } from './core/infra';
 import { after } from './core/infra/schedule';
-import { initBanks } from './core/library';
+import { initBanks, refreshRemoteBanks } from './core/library';
 import { answer, cancelPanel, endTurn } from './core/combat';
 import { ackCardGet, ackPower, cancelPreview, dismissFeedback } from './core/journey';
 import {
@@ -298,6 +298,8 @@ function frame(now: number) {
 async function boot() {
   // 卡面在 cards/catalog.ts 里，启动时只把题库灌进 BANK（随程序的几份 + 玩家导入的）
   initBanks(SHIPPED_PACKS);
+  // 本机服务在就再问一次它还有哪些题库。不等它：没服务也要能立刻开局。
+  void refreshRemoteBanks();
   if (import.meta.env.DEV) {
     // 开发 / 截图入口：生产构建不会执行这个分支。
     const { devJump } = await import('./dev/jump');

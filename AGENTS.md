@@ -10,12 +10,21 @@
 
 ## 所以不要做
 
-- **不加后端**。没有登录、云存档、排行榜、多端同步。要存东西就存
-  localStorage，走 `core/infra/storage.ts`：无头模拟（`npm run sim` 在 Node 里跑）
-  没有 localStorage，隐私模式 `setItem` 也会抛，这两条都由它兜住。
-  不要绕过这层直接调 `localStorage`，否则 core 立刻跑不进 Node。
+- **前端只查询显示，判断和生成在本机服务里**（`server/index.mjs`，`npm run serve`）。
+  浏览器和它之间的全部往来只有五条：题库清单、题库原文、上传文档、生成任务、答题记录。
+  题目生成、文档解析、记账全在服务那侧；**模型 key 只存在服务里**
+  （`data/service/gen.json` 或环境变量），永远不下发到浏览器。
+- **`dist/index.html` 仍然要能单独玩**。服务不在是**正常状态**：前端只用随程序的五份题库，
+  请求失败一律静默回落，不弹错、也不让首屏等网络。
+- **浏览器不直连第三方**。模型调用只发生在服务里；前端只跟 `127.0.0.1:7777` 说话。
+- **不加账号 / 云存档 / 排行榜 / 多端同步**。这个服务是本机的一个进程，不是一台服务器：
+  只监听 `127.0.0.1`，没有认证，也没有别人的数据。
+- 玩家自己身上的东西仍然优先存 localStorage，走 `core/infra/storage.ts`：无头模拟
+  （`npm run sim` 在 Node 里跑）没有 localStorage，隐私模式 `setItem` 也会抛，
+  这两条都由它兜住。不要绕过这层直接调 `localStorage`，否则 core 立刻跑不进 Node。
 - **不加遥测 / 埋点 / 崩溃上报**。玩家的机器不该因为这个项目往外发请求。
-  目前运行时唯一的对外通信是 0 次，保持这样。
+  浏览器只和本机的题库服务说话；要出题时由那个服务调模型，那是玩家自己按下按钮才发生的。
+  项目自己不连任何第三方。目前运行时唯一的对外通信是 0 次，保持这样。
 - **不引入运行时依赖**。`dependencies` 永远为空；渲染是手写 Canvas 原语，
   没有 UI 框架，也不需要。devDependencies 只有 vite + typescript 那套。
 - **不为"以后可能的多用户"预留抽象**。单人单进程意味着 `G` 是唯一真相，
@@ -113,6 +122,7 @@
 | 题号 / 学习历史挂在谁身上 | `core/library/parse.ts` 的 `questionId(topic, concept)`：概念缺省回落到题干，所以老题库的号不变；改题干不改概念 = 同一个概念 |
 | 玩家侧数据离开浏览器 | `scenes/report.ts` 的「导出错题」→ `scenes/studyio.ts` → `library/stagemem.ts` 的 `studySnapshot()`。游戏不外发任何请求，这条闭环只能手动 |
 | 题库生成 | `tools/gen/`：切分在 `chunk.ts`、提示词在 `generate.ts`、DSL 输出在 `emit.ts`。**只在构建期跑**，模型写内容、代码保证格式，产物必须过 `parse.ts` |
+| **题库服务** | `server/index.mjs`：清单 / 原文 / 上传 / 生成任务 / 答题记账只在这儿；前端只经 `core/library/remote.ts` 与它往来，别处不许自己写 `fetch` 或直连模型 |
 
 **为什么加成的顺序要写死**：`planStrike()` 里只有一条链 ——
 **底数 → 效果形状 → 常驻加成 → 临时加成（续火 ×2）→ 整手削减（装订线）**。
@@ -174,11 +184,15 @@
 
 ## 验证门槛
 
-- 改完跑 `npm run verify`：`check`（tsc + 依赖方向守卫）→ `cards` → `coverage` →
-  `docs`（README / DESIGN 的怪名、增益名、常量、源码路径是否还成立）→
+- 改完跑 `npm run verify`：`check`（tsc + 依赖方向守卫 + 不变量 + `node --check server/index.mjs`）→
+  `cards` → `coverage` → `docs`（README / DESIGN 的怪名、增益名、常量、源码路径是否还成立）→
   `gencheck`（题库生成器：切分、整章取数、DSL 输出、JIT 取数，假模型离线跑）→
   `stage`（过幕 / 事件 / 存档的结构断言），六道确定性门槛串起来约六秒。
   分开跑也可以，但**别只跑其中一道就提交** —— 拆开正是它们各自长歪的原因。
+- 动过 `server/index.mjs` 记得**手跑一次真实请求**：它没有类型，`--check` 只查语法。
+  最小验证是 `curl 127.0.0.1:7777/api/health`、上传一份 md、起一个生成任务、看任务状态。
+  生成这一步可以用 `node .cache/fakegen.mjs` 那个假的 OpenAI 端点跑通链路，
+  不必烧真模型的额度 —— 它出一个字面挖空的机械题库，证明的是管道通，不是题好。
 - 改过数值、删过怪或增益、搬过文件，`npm run docs` 会拦：它对着 `FOES` / `POWERS` /
   `BAL` / `SNAP_V` 和文件系统核文档里的引用。这道门槛是补上来的 —— 在此之前
   没有一道门槛读文档，于是「穿透无视一半格挡」活过了整数化改造，

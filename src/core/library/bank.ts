@@ -2,6 +2,7 @@ import { CATALOG } from '../cards/catalog';
 import { readStore, writeStore } from '../infra/storage';
 import type { Question, QuestionBank } from '../model/types';
 import { QUESTION_FORMAT, hash32, parseAnyQuestionBank } from './parse';
+import { remoteBankText, remoteBanks, serviceInfo } from './remote';
 
 /**
  * 载入的题库，也是唯一允许外部替换的东西。
@@ -135,6 +136,15 @@ interface ShippedBank {
 
 let shipped: ShippedBank[] = [];
 
+/** 服务端还有哪些题库（随程序的那几份不重复列）。 */
+let remoteRows: Array<{ id: string; name: string; total: number; topics: number }> = [];
+/** 服务在不在。**它不是必需项**：不在的时候玩家照样有完整的内置题库。 */
+let serviceUp = false;
+/** 服务能不能出题（它那侧有没有模型 key；key 不下发到浏览器）。 */
+let serviceCanGen = false;
+export const serviceOnline = (): boolean => serviceUp;
+export const serviceReady = (): boolean => serviceCanGen;
+
 const shapeOf = (b: QuestionBank) => ({
   total: countQuestions(b),
   topics: Object.keys(b.byTopic).length,
@@ -165,8 +175,10 @@ export interface BankRow {
   total: number;
   topics: number;
   on: boolean;
-  /** 内置那份删不掉。 */
+  /** 随程序走的那几份删不掉。 */
   builtin: boolean;
+  /** 由本机服务提供（`npm run serve`）：切它要等一次网络往返。 */
+  remote?: boolean;
 }
 
 export function listBanks(): BankRow[] {
@@ -176,6 +188,9 @@ export function listBanks(): BankRow[] {
   }));
   for (const b of stored()) {
     rows.push({ id: b.id, name: b.name, total: b.total, topics: b.topics, on: b.id === on, builtin: false });
+  }
+  for (const b of remoteRows) {
+    rows.push({ id: b.id, name: b.name, total: b.total, topics: b.topics, on: b.id === on, builtin: false, remote: true });
   }
   return rows;
 }
@@ -216,6 +231,63 @@ export function useBank(id: string): { ok: boolean; msg: string } {
   const r = loadQuestionBank(rec.text);
   if (r.ok) writeStore(ACTIVE_KEY, id);
   return r;
+}
+
+/**
+ * 切到服务端的一份。只有它需要等网络，所以单独一个 async 入口 ——
+ * `useBank()` 保持同步，面板和启动流程里那些同步调用不用跟着改。
+ */
+export async function useRemoteBank(id: string): Promise<{ ok: boolean; msg: string }> {
+  const text = await remoteBankText(id);
+  if (!text) return { ok: false, msg: '服务没有回答，这份题库取不到 —— 服务是不是停了？内置题库不受影响。' };
+  const r = loadQuestionBank(text);
+  if (r.ok) writeStore(ACTIVE_KEY, id);
+  return r;
+}
+
+/**
+ * 问一次服务的状态：在不在、能不能出题。**不问题库清单**，很便宜，面板可以常调。
+ */
+export async function refreshServiceInfo(): Promise<boolean> {
+  const info = await serviceInfo();
+  serviceUp = !!info;
+  serviceCanGen = !!info?.canGenerate;
+  if (!serviceUp) remoteRows = [];
+  return serviceUp;
+}
+
+/**
+ * 问一次服务：还有哪些题库。
+ *
+ * 题数、主题数在**这里**数（`parse.ts` 是"什么叫一道题"的唯一真相），服务端只报文件名和字节数。
+ * 解析不了的直接不列 —— 列出来玩家点进去也是坏的。
+ * 上次用的那份如果正好是服务端的，这会儿才能接上。
+ */
+export async function refreshRemoteBanks(): Promise<number> {
+  if (!(await refreshServiceInfo())) return 0;
+
+  const rows: typeof remoteRows = [];
+  for (const b of await remoteBanks()) {
+    if (shipped.some((s) => s.id === b.id)) continue;
+    const text = await remoteBankText(b.id);
+    if (!text) continue;
+    try {
+      const qb = parseAnyQuestionBank(text);
+      const shape = shapeOf(qb);
+      // 0 道题的题库不列：生成任务失败时也会留下一个空文件，列出来只会让人点进去看空
+      if (!shape.total) continue;
+      rows.push({ id: b.id, name: qb.name || b.name, ...shape });
+    } catch {
+      continue;
+    }
+  }
+  remoteRows = rows;
+
+  const want = activeBankId();
+  if (want && rows.some((r) => r.id === want) && BANK.name !== rows.find((r) => r.id === want)?.name) {
+    await useRemoteBank(want);
+  }
+  return rows.length;
 }
 
 /**

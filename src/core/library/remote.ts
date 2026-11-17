@@ -1,0 +1,160 @@
+import { readStore, writeStore } from '../infra/storage';
+
+/**
+ * 本机题库服务的客户端。**前端只查询显示**：题库清单、原文、答题记账、
+ * 文档生成全在服务那侧（`server/index.mjs`，`npm run serve`）。
+ *
+ * 服务不在是**正常状态**，不是错误：`dist/index.html` 双击打开、没起服务，
+ * 玩家照样有随程序的五份题库。所以这里的每个函数失败都返回空值，不抛。
+ */
+
+const KEY = 'cognirogue.service.v1';
+export const DEFAULT_SERVICE = 'http://127.0.0.1:7777';
+
+export const serviceBase = (): string => (readStore(KEY) ?? DEFAULT_SERVICE).replace(/\/+$/, '');
+
+export function setServiceBase(url: string) {
+  writeStore(KEY, url.trim().replace(/\/+$/, ''));
+}
+
+export interface RemoteBank {
+  id: string;
+  name: string;
+  /** `pack` 是仓库里那几份，`generated` 是从文档生成出来的。 */
+  kind: 'pack' | 'generated';
+  bytes: number;
+}
+
+async function get(path: string, ms: number): Promise<Response | null> {
+  try {
+    const r = await fetch(serviceBase() + path, { signal: AbortSignal.timeout(ms) });
+    return r.ok ? r : null;
+  } catch {
+    // 没服务、端口不对、超时、被浏览器拦了：都当"没有服务"，回落到内置题库
+    return null;
+  }
+}
+
+async function post(path: string, body: unknown, ms: number): Promise<Response | null> {
+  try {
+    const r = await fetch(serviceBase() + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(ms),
+    });
+    return r.ok ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 服务在不在。超时要短：首页每帧都等它就等于卡住。 */
+export async function probeService(ms = 700): Promise<boolean> {
+  return !!(await get('/api/health', ms));
+}
+
+export async function remoteBanks(ms = 2000): Promise<RemoteBank[]> {
+  const r = await get('/api/banks', ms);
+  if (!r) return [];
+  try {
+    const list = (await r.json()) as unknown;
+    if (!Array.isArray(list)) return [];
+    return list.filter((b): b is RemoteBank =>
+      !!b && typeof b.id === 'string' && typeof b.name === 'string');
+  } catch {
+    return [];
+  }
+}
+
+export async function remoteBankText(id: string, ms = 15000): Promise<string | null> {
+  const r = await get('/api/banks/' + encodeURIComponent(id), ms);
+  return r ? await r.text() : null;
+}
+
+/** 局末把这一局的答题记录交给服务记账。服务不在就什么也不做。 */
+export async function sendAnswers(payload: unknown): Promise<boolean> {
+  return !!(await post('/api/answers', payload, 4000));
+}
+
+export interface ServiceInfo {
+  ok: boolean;
+  banks: number;
+  generated: number;
+  /** 服务有没有配置模型 key。**key 本身永远不下发到浏览器**。 */
+  canGenerate: boolean;
+  model: string;
+}
+
+export async function serviceInfo(ms = 1200): Promise<ServiceInfo | null> {
+  const r = await get('/api/health', ms);
+  if (!r) return null;
+  try {
+    return (await r.json()) as ServiceInfo;
+  } catch {
+    return null;
+  }
+}
+
+export interface DocUpload {
+  ok: boolean;
+  docId?: string;
+  name?: string;
+  chars?: number;
+  kind?: string;
+  error?: string;
+}
+
+/** 上传一份文档。pdf 由服务端抽文字（pymupdf 在服务端，不在浏览器）。 */
+export async function uploadDoc(name: string, body: ArrayBuffer): Promise<DocUpload> {
+  try {
+    const r = await fetch(serviceBase() + '/api/docs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'x-doc-name': encodeURIComponent(name) },
+      body,
+      // 大 PDF 抽文字要时间，给足 120 秒
+      signal: AbortSignal.timeout(120_000),
+    });
+    return (await r.json()) as DocUpload;
+  } catch {
+    return { ok: false, error: '连不上本机服务 —— 先跑 npm run serve。' };
+  }
+}
+
+export interface GenJob {
+  ok: boolean;
+  job?: string;
+  error?: string;
+}
+
+export async function startGenerate(docId: string, per = 20): Promise<GenJob> {
+  const r = await post('/api/generate', { docId, per }, 15_000);
+  if (!r) return { ok: false, error: '服务没有回答（是不是没起，或者已经开始生成别的了）。' };
+  try {
+    return (await r.json()) as GenJob;
+  } catch {
+    return { ok: false, error: '服务的回答看不懂。' };
+  }
+}
+
+export interface JobState {
+  state: 'running' | 'done' | 'fail';
+  bankId: string;
+  ms: number;
+  tail: string;
+}
+
+export async function jobState(id: string, ms = 8000): Promise<JobState | null> {
+  const r = await get('/api/jobs/' + encodeURIComponent(id), ms);
+  if (!r) return null;
+  try {
+    return (await r.json()) as JobState;
+  } catch {
+    return null;
+  }
+}
+
+/** 把模型配置交给服务（存在服务那侧，浏览器只过一手）。 */
+export async function setGenConfig(cfg: { baseUrl: string; key: string; model: string }): Promise<boolean> {
+  return !!(await post('/api/config', cfg, 5000));
+}

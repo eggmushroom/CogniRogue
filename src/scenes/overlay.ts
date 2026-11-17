@@ -6,7 +6,7 @@ import { easeOut } from '../gfx/geom';
 import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
 import { clamp, G, shuffle } from '../core/infra';
 import { curFloor } from '../core/map';
-import { countQuestions, isRetired, listBanks, sourceBank } from '../core/library';
+import { countQuestions, isRetired, listBanks, serviceOnline, serviceReady, sourceBank } from '../core/library';
 import {
   BASICS, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded, upgradedId,
   isXCost, rulesStatic, UP_MARK,
@@ -21,7 +21,7 @@ import {
 } from '../core/journey';
 import type { Feedback, ModeId, PowerDef, Question, QView } from '../core/model';
 import { drawReport } from './report';
-import { dropBank, pastePack, requestPackFile, switchBank } from './packio';
+import { dropBank, generateFromDoc, pasteGenConfig, pastePack, requestPackFile, switchBank } from './packio';
 
 /* ── 通用外壳 ─────────────────────────────────────────────── */
 
@@ -1354,17 +1354,19 @@ function drawPack() {
   const gap = 12;
   const listW = w - pad * 2;
   const rows = listBanks();
+  const online = serviceOnline();
   const contentH = Math.max(rowH, rows.length * (rowH + gap) - gap);
   // 高度跟着条目走：两三份题库时不留一大片空面板。上限按 6 行算 ——
   // 随程序的就有 5 份，刚好一行不留地被裁一半是最难看的
   const listH = Math.min(contentH, 448);
-  const h = 268 + listH;
+  // 324 = 顶栏 112 + 按钮行 72 + 消息区 60 + 底行 80
+  const h = 324 + listH;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
   box(x, y, w, h, withAlpha(C.cyan, 0.4));
 
   heading('题库', x + 44, y + 62,
-    '切到哪份，下一局开局生效。导入的题库存在这台浏览器里，刷新还在。');
+    `切到哪份，下一局开局生效 · 导入的存这台浏览器里 · 本机服务${serviceOnline() ? '已连接' : '未连接（npm run serve）'}`);
 
   const view = scrollArea(x + pad, y + 112, listW, listH, contentH, 'pack');
 
@@ -1394,7 +1396,9 @@ function drawPack() {
       { size: 17, weight: 700, color: row.on ? C.ink : C.ink2, maxW: mainW - 34 });
     text(`${row.total} 道题 / ${row.topics} 个主题`, view.x + 26, cy + 50, { size: 12, color: C.dim });
 
-    if (!row.builtin) {
+    if (row.remote) {
+      text('服务', view.x + mainW + 32, cy + rowH / 2 + 5, { size: 13, color: C.cyan, align: 'center' });
+    } else if (!row.builtin) {
       const dx = view.x + mainW;
       const dy = cy + (rowH - 34) / 2;
       const dh = shown && hover(dx, dy, 64, 34);
@@ -1415,21 +1419,36 @@ function drawPack() {
   view.restore();
   overflowAffordance(view, x + pad, listW);
 
-  const fy = y + h - 118;
-  action(x + pad, fy, 240, 52, '选一个 .md 文件', () => requestPackFile());
-  action(x + pad + 254, fy, 240, 52, '从剪贴板粘贴', () => pastePack());
+  const fy = y + h - 168;
+  action(x + pad, fy, 236, 46, '从文档建题库', () => generateFromDoc());
+  action(x + pad + 246, fy, 236, 46, '选一个 .md 文件', () => requestPackFile());
+  action(x + pad + 492, fy, 236, 46, '从剪贴板粘贴', () => pastePack());
 
-  const src = sourceBank();
-  text(`当前：${src.name} · ${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个主题`,
-    x + w - pad, fy + 32, { size: 13, color: C.dim, align: 'right' });
-
+  const sy = y + h - 96;
   if (p.msg) {
     g.font = font(14, 500, FONT_UI);
     g.fillStyle = p.ok ? C.green : C.red;
-    wrapText(p.msg, w - pad * 2).slice(0, 3).forEach((ln, i) => g.fillText(ln, x + pad, y + h - 52 + i * 21));
+    wrapText(p.msg, w - pad * 2).slice(0, 2).forEach((ln, i) => g.fillText(ln, x + pad, sy + i * 21));
   } else {
-    text('格式：## 主题 / ### 题干（或 ? 题干）/ A) 选项 / = 答案字母；样例见 packs/algorithms.md',
-      x + pad, y + h - 52, { size: 13, color: C.faint, maxW: w - pad * 2 });
+    const src = sourceBank();
+    text(`当前：${src.name} · ${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个主题`,
+      x + pad, sy, { size: 13, color: C.dim, maxW: w - pad * 2 });
+  }
+
+  // 最底一行：格式速查（左下）+ 生成能力（右下）。没有 key 时这里就是入口。
+  const ly = y + h - 44;
+  text('格式：## 主题 / ### 题干 / A) 选项 / = 答案字母（样例 packs/algorithms.md）',
+    x + pad, ly, { size: 12, color: C.faint, maxW: w - pad * 2 - 240 });
+  if (!online) {
+    text('生成要在本机跑 npm run serve', x + w - pad, ly, { size: 12, color: C.faint, align: 'right' });
+  } else if (serviceReady()) {
+    text('模型已配置', x + w - pad, ly, { size: 12, color: C.dim, align: 'right' });
+  } else {
+    const lw = 96;
+    const lx = x + w - pad - lw;
+    const hov = hover(lx, ly - 14, lw, 22);
+    text('粘贴模型配置 ›', lx + lw, ly, { size: 12, color: hov ? C.gold : C.dim, align: 'right' });
+    onClick(lx, ly - 14, lw, 22, () => pasteGenConfig(), 'pack:cfg');
   }
 }
 

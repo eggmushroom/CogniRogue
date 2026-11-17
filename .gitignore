@@ -12,3 +12,5 @@ data/sources/*.md
 !data/sources/SOURCES.md
 # 生成器的出题记忆：跟着上一次跑的那份源文档走，是本地状态不是产物
 gen/
+# 本地服务的玩家侧数据：上传的文档、生成出来的题库、答题记录
+data/service/

@@ -4,6 +4,7 @@
  */
 export * from './parse';
 export * from './bank';
+export * from './remote';
 export * from './stage';
 export * from './stagemem';
 export * from './question';
