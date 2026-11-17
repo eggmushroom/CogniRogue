@@ -107,6 +107,9 @@
 | 多选一卡片的视觉 | `gfx/ui.ts` 的 `choiceCard()`：序号、徽记、标题、说明槽位、底部事实行都在这里；场景只给数据和命中矩形 |
 | 平台适配（DOM / localStorage） | `core/infra/storage.ts` |
 | 题库的位置依赖 | 数据属性 `Question.noShuffle`，`core/library/parse.ts` 解析期校验 |
+| 题号 / 学习历史挂在谁身上 | `core/library/parse.ts` 的 `questionId(topic, concept)`：概念缺省回落到题干，所以老题库的号不变；改题干不改概念 = 同一个概念 |
+| 玩家侧数据离开浏览器 | `scenes/report.ts` 的「导出错题」→ `scenes/studyio.ts` → `library/stagemem.ts` 的 `studySnapshot()`。游戏不外发任何请求，这条闭环只能手动 |
+| 题库生成 | `tools/gen/`：切分在 `chunk.ts`、提示词在 `generate.ts`、DSL 输出在 `emit.ts`。**只在构建期跑**，模型写内容、代码保证格式，产物必须过 `parse.ts` |
 
 **为什么加成的顺序要写死**：`planStrike()` 里只有一条链 ——
 **底数 → 效果形状 → 常驻加成 → 临时加成（续火 ×2）→ 整手削减（装订线）**。
@@ -170,7 +173,8 @@
 
 - 改完跑 `npm run verify`：`check`（tsc + 依赖方向守卫）→ `cards` → `coverage` →
   `docs`（README / DESIGN 的怪名、增益名、常量、源码路径是否还成立）→
-  `stage`（过幕 / 事件 / 存档的结构断言），五道确定性门槛串起来约五秒。
+  `gencheck`（题库生成器：切分、整章取数、DSL 输出、JIT 取数，假模型离线跑）→
+  `stage`（过幕 / 事件 / 存档的结构断言），六道确定性门槛串起来约六秒。
   分开跑也可以，但**别只跑其中一道就提交** —— 拆开正是它们各自长歪的原因。
 - 改过数值、删过怪或增益、搬过文件，`npm run docs` 会拦：它对着 `FOES` / `POWERS` /
   `BAL` / `SNAP_V` 和文件系统核文档里的引用。这道门槛是补上来的 —— 在此之前

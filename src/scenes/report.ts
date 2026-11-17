@@ -4,6 +4,7 @@ import { action, bar, panel, text } from '../gfx/ui';
 import { POWER_BY_ID, stageOf } from '../core/model';
 import { backToTitle, restart } from '../core/journey';
 import type { ReportData } from '../core/model';
+import { downloadStudySnapshot } from './studyio';
 
 export function drawReport(d: ReportData) {
   g.fillStyle = `rgba(3,4,8,${SCRIM})`;
@@ -118,6 +119,7 @@ export function drawReport(d: ReportData) {
   const vTop = vy + (100 - vLines.length * 24) / 2 + 17;
   vLines.forEach((ln, i) => text(ln, x + 72, vTop + i * 24, { size: 15, color: C.ink2 }));
 
+  action(x + w - 584, y + h - 74, 170, 52, '导出错题', () => downloadStudySnapshot());
   action(x + w - 400, y + h - 74, 170, 52, '再来一局', () => restart(), 'primary');
   action(x + w - 216, y + h - 74, 170, 52, '回到首页', () => backToTitle());
 }

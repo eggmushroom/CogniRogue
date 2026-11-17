@@ -9,13 +9,14 @@ import {
   dismissFeedback, endTurn, forgetCard, intentText, playBasic,
   runSaveInfo, skipReward, takeCard, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
   loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf, LEGACY_CARD_IDS,
-  allQuestions, stageMemOf, resetStageMemory, cardKind, enterStage, BASICS, drawBattleQuestions,
+  allQuestions, stageMemOf, resetStageMemory, recordAnswer, studySnapshot, STUDY_SNAPSHOT_V,
+  cardKind, enterStage, BASICS, drawBattleQuestions,
   askOf, costOf, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight, restHeal,
   rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
   grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
   lastFeedback, onFx, effFace, planStrike, setScheduler, panelOf, buildSettlement,
-  parseQuestionBank, shuffleOptions, SNAP_V, SAVE_KEY, drawEvent, MAP_COLS,
+  parseQuestionBank, questionId, shuffleOptions, SNAP_V, SAVE_KEY, drawEvent, MAP_COLS,
   isBasicId, baseIdOf, mechAmt, mechNote,
 } from '../src/core';
 
@@ -1323,6 +1324,35 @@ function missGain(eff: string) {
       && q?.noShuffle === true && shuffleOptions(q!).answer === 1
       && !normal?.noShuffle,
     `题库自描述：声明 ${flagged.issues.length} 条问题 / 未声明 ${missing.issues.length} 条 / 固定顺序答案 ${q ? shuffleOptions(q).answer : '-'}`);
+}
+
+{
+  // 概念主键：题号按「主题 + 概念」派生，于是改写题干不会丢学习历史 ——
+  // 这是「按错题重生成」那条闭环的前提。而老题库没写 `~`，所以必须仍然按题干算，
+  // 否则 400 道题的题号一次性漂移，玩家跨局攒的错题记录全部作废。
+  const a = parseQuestionBank('### 二分最坏情况：问法一\n~ algo/binary-worst\nA) 甲\nB) 乙\n= B\n').byTopic['未分类']?.[0];
+  const b = parseQuestionBank('### 完全不同的一种问法\n~ algo/binary-worst\nA) 甲\nB) 乙\n= B\n').byTopic['未分类']?.[0];
+  const c = parseQuestionBank('### 另一个知识点\n~ algo/binary-best\nA) 甲\nB) 乙\n= B\n').byTopic['未分类']?.[0];
+  ok(!!a && !!b && !!c && a.qid === b.qid && a.qid !== c.qid,
+    `概念主键：换问法仍同号（${a?.qid}/${b?.qid}），换概念换号（${c?.qid}）`);
+
+  const plain = parseQuestionBank('### 普通题\nA) 甲\nB) 乙\n= B\n').byTopic['未分类']?.[0];
+  ok(plain?.qid === questionId('未分类', '普通题'),
+    '没写 ~ 的题，题号仍按题干算（老题库不漂移）');
+
+  const loaded = allQuestions();
+  ok(loaded.length > 0 && loaded.every((x) => x.qid === questionId(x.topic, x.concept ?? x.q)),
+    `当前题库 ${loaded.length} 道题的题号都能由「主题 + 概念」复算出来`);
+
+  // 概念是学习历史的单位：同一概念两道题，会把「这个知识点我错了几次」劈成两笔
+  const dup = parseQuestionBank('## 池\n### 问法一\n~ k1\nA) 甲\nB) 乙\n= B\n### 问法二\n~ k1\nA) 甲\nB) 乙\n= B\n');
+  ok(dup.byTopic['池']?.length === 1, `同一概念只留第一道（剩 ${dup.byTopic['池']?.length ?? 0} 道）`);
+
+  // 空概念会把不相干的题撞成一个；`~` 落在题外面说明写错了位置
+  const empty = parseQuestionBank('### 空概念\n~\nA) 甲\nB) 乙\n= B\n');
+  const stray = parseQuestionBank('~ 没有题目\n### 题\nA) 甲\nB) 乙\n= B\n');
+  ok(empty.issues.length === 1 && stray.issues.length === 1,
+    `空概念与错位的 ~ 都被拒绝（${empty.issues.length}/${stray.issues.length} 条）`);
 }
 
 {
@@ -2892,6 +2922,26 @@ C) 3
   endTurn();
   ok(G.hand.length === 0 && G.discard.includes('base:strike') && G.discard.includes(JUNK_ID),
     '战斗在回合结束时分出胜负：手牌照样全进弃牌堆');
+}
+
+{
+  // 导出错题：玩家侧数据离开浏览器的唯一一条路。它必须带上**每道题**的对错，
+  // 否则生成工具只知道"这一章错得多"，不知道是哪几道 —— 那正好是它要重写的东西。
+  resetStageMemory();
+  recordAnswer({ stageTopic: '快照章', qid: 'q_a', right: true });
+  recordAnswer({ stageTopic: '快照章', qid: 'q_a', right: false });
+  recordAnswer({ stageTopic: '快照章', qid: 'q_b', right: false });
+  const snap = studySnapshot();
+  const t = snap.topics['快照章'];
+  ok(snap.v === STUDY_SNAPSHOT_V && t?.ok === 1 && t?.bad === 2
+      && t?.q['q_a']?.ok === 1 && t?.q['q_a']?.bad === 1 && t?.q['q_b']?.bad === 1,
+    `导出快照带上每道题的对错（${t?.ok} 对 / ${t?.bad} 错 / ${Object.keys(t?.q ?? {}).length} 道）`);
+  // 生成工具拿到的是文本，不是内存对象：往返一圈数字必须不变
+  const round = JSON.parse(JSON.stringify(snap)) as typeof snap;
+  ok(round.topics['快照章']?.q['q_a']?.bad === 1 && round.topics['快照章']?.ok === 1,
+    '快照序列化往返之后数字不变');
+  resetStageMemory();
+  ok(studySnapshot().topics['快照章'] === undefined, '重置之后快照也清空');
 }
 
 console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 结构检查通过');

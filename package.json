@@ -15,8 +15,10 @@
     "stage": "esbuild tools/stagecheck.ts --bundle --platform=node --format=esm --outfile=.cache/stagecheck.mjs --log-level=warning && node .cache/stagecheck.mjs",
     "cards": "esbuild tools/cards.ts --bundle --platform=node --format=esm --outfile=.cache/cards.mjs --log-level=warning && node .cache/cards.mjs",
     "coverage": "esbuild tools/coverage.ts --bundle --platform=node --format=esm --outfile=.cache/coverage.mjs --log-level=warning && node .cache/coverage.mjs",
-    "verify": "npm run check && npm run cards && npm run coverage && npm run docs && npm run stage",
+    "gencheck": "esbuild tools/gen/selftest.ts --bundle --platform=node --format=esm --outfile=.cache/gencheck.mjs --log-level=warning && node .cache/gencheck.mjs",
+    "verify": "npm run check && npm run cards && npm run coverage && npm run docs && npm run gencheck && npm run stage",
     "words": "node tools/words.mjs",
+    "gen": "esbuild tools/gen/main.ts --bundle --platform=node --format=esm --outfile=.cache/gen.mjs --log-level=warning && node .cache/gen.mjs",
     "docs": "esbuild tools/docs.ts --bundle --platform=node --format=esm --outfile=.cache/docs.mjs --log-level=warning && node .cache/docs.mjs"
   },
   "devDependencies": {

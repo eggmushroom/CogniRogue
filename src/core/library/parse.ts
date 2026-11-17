@@ -6,6 +6,7 @@ import type { Question, QuestionBank } from '../model/types';
  *   # 题库名                 可选
  *   ## 任意主题              可选，题池名不校验
  *   ### 题干
+ *   ~ 概念名                 可选：题号按它派生，换问法不丢历史
  *   A) 选项 / B) 选项
  *   = B                      答案字母
  *   + 解析                   可选
@@ -17,7 +18,9 @@ import type { Question, QuestionBank } from '../model/types';
  * 选项的题必须自己写 `! 固定顺序`，解析器在校验期就拒绝没声明的题，
  * 而不是等出题时靠正则猜选项文案。
  * 违规题进 `issues`，由 `loadQuestionBank` 整体拒绝。
- * 每题生成稳定题号 `qid`（主题 + 规范化题干的 hash）。
+ * 每题生成稳定题号 `qid`（主题 + 概念；没写概念就是规范化题干）。
+ * 同一个主题里概念相同的题只留第一道：概念是**学习历史的单位**，
+ * 一个概念两道题会让"这道题我错了几次"分成两笔。
  * `@ 卡名` / `% 攻 挡 效果` 是旧包遗留行，解析时忽略。
  * 卡面在 `cards/catalog.ts`，导入题库换不掉卡池。
  */
@@ -48,9 +51,15 @@ function hash32(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-/** 题号 = 主题 + 规范化题干。主题相同的两道同题干题会被 `push` 去重。 */
-export const questionId = (topic: string, stem: string): string =>
-  `q_${hash32(topic + '\u0000' + normStem(stem))}`;
+/** 题号 = 主题 + 概念。概念相同的两道题会被 `push` 去重。 */
+export const questionId = (topic: string, concept: string): string =>
+  `q_${hash32(topic + '\u0000' + normStem(concept))}`;
+
+/**
+ * 这道题的概念主键。没写 `~ ` 就回落到题干 —— 于是老题库的题号一个都不变，
+ * 而写了概念的题在改写题干之后仍然指回同一笔学习历史。
+ */
+const conceptOf = (q: Question) => q.concept?.trim() || q.q;
 
 const newQ = (s: string): Question => ({ qid: '', topic: '', q: s, options: [], answer: -1, explain: '' });
 
@@ -71,13 +80,16 @@ function diagnose(q: Question | null, lineNo: number): string | null {
   if (q.options.some((o) => POSITIONAL_HINT.test(o)) && !q.noShuffle) {
     return `${tag}：有依赖位置的选项，但未写「! 固定顺序」——打乱后会变成错题`;
   }
+  if (q.concept !== undefined && !q.concept.trim()) {
+    return `${tag}：「~」后面要写概念名，空概念会让它和别的空概念撞成一个`;
+  }
   return null;
 }
 
-/** 把一道合格的题放进题池；同主题重复题干只保留第一道。 */
+/** 把一道合格的题放进题池；同主题概念相同的题只保留第一道。 */
 function push(bank: QuestionBank, topic: string, q: Question) {
   q.topic = topic;
-  q.qid = questionId(topic, q.q);
+  q.qid = questionId(topic, conceptOf(q));
   const pool = (bank.byTopic[topic] ??= []);
   if (!pool.some((x) => x.qid === q.qid)) pool.push(q);
 }
@@ -150,6 +162,14 @@ export function parseQuestionBank(text: string): QuestionBank {
       continue;
     }
 
+    // 概念主键：接在这一道题上，决定它的题号
+    if (line.startsWith('~')) {
+      const name = line.slice(1).trim();
+      if (q) q.concept = name;
+      else bank.issues.push(`第 ${lineNo} 行：~ 概念 前面没有题目`);
+      continue;
+    }
+
     // 旧知识包的卡面行：卡面现在内置，这些行不影响任何东西
     if (line.startsWith('@ ') || line.startsWith('% ')) continue;
   }
@@ -182,13 +202,14 @@ export function parseAnyQuestionBank(text: string): QuestionBank {
     (list ?? []).forEach((x, i) => {
       const q: Question = {
         qid: '', topic,
+        concept: x.concept,
         q: x.q ?? '', options: x.options ?? [], answer: x.answer ?? -1,
         explain: x.explain ?? '', noShuffle: x.noShuffle,
       };
       const issue = diagnose(q, 0);
       if (issue) bank.issues.push(`${where}[${i}]：${issue.slice(issue.indexOf('：') + 1)}`);
       else {
-        q.qid = questionId(topic, q.q);
+        q.qid = questionId(topic, conceptOf(q));
         if (!out.some((y) => y.qid === q.qid)) out.push(q);
       }
     });

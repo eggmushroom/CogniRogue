@@ -84,3 +84,23 @@ export function stageDigest(topic: string): StageDigest {
   const total = e.ok + e.bad;
   return { ok: e.ok, bad: e.bad, mastery: total ? e.ok / total : 0 };
 }
+
+/**
+ * 章节记忆的快照，给「导出错题」用。
+ *
+ * 这是玩家侧数据离开浏览器的**唯一**一条路：游戏运行时对外通信是 0 次，
+ * 所以想按错题重出题，只能由玩家自己把这份快照交给生成工具。
+ * 形状和存档一样，但**不复用存档键**：存档是断点，这是给别人读的数据。
+ */
+export interface StudySnapshot {
+  /** 快照版本。生成工具只认这个数，换格式就抬它。 */
+  v: 1;
+  /** 主题 → 累计对错 + 每道题（按 `qid`）累计对错。 */
+  topics: Record<string, { ok: number; bad: number; q: Record<string, { ok: number; bad: number }> }>;
+}
+
+export const STUDY_SNAPSHOT_V = 1;
+
+export function studySnapshot(): StudySnapshot {
+  return { v: STUDY_SNAPSHOT_V, topics: STAGE_MEM };
+}
