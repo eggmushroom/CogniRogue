@@ -1,11 +1,13 @@
-import { MODE_BY_ID, STAGES } from '../model/data';
+import { BAL, MODE_BY_ID, STAGES } from '../model/data';
 import type { ModeId, PowerId } from '../model/types';
 import { G, newRunState, resetBattleFields } from '../infra/state';
+import { shuffle } from '../infra/util';
 import { raiseMaxHp, refillHp } from '../infra/write';
 import { basicDeck } from '../cards/basics';
 import { startDeck } from '../cards/starter';
 import { applyInstant, clearStageOnce, rulesOf } from '../cards/powers';
-import { enterStage } from '../library/stage';
+import { sourceBank } from '../library/bank';
+import { buildRunPool, runLabel } from '../library/stage';
 import { saveStageMem } from '../library/stagemem';
 import { availableNodes, genStage } from '../map/gen';
 import { setSettleHandler, startBattle } from '../combat';
@@ -18,9 +20,17 @@ import { clearRun } from './save';
 // 注册发生在 journey 加载时，战斗代码不再反向 import journey。
 setSettleHandler(settlePending);
 
+/** 没指定主题时随机抽 `BAL.topicsMin`–`BAL.topicsMax` 个：这就是「从所有主题里随机抽」那条路。 */
+function pickTopics(): string[] {
+  const all = Object.keys(sourceBank().byTopic);
+  if (!all.length) return [];
+  const want = BAL.topicsMin + Math.floor(Math.random() * (BAL.topicsMax - BAL.topicsMin + 1));
+  return shuffle(all).slice(0, Math.min(want, all.length));
+}
+
 /** 一局的编排：开局、进节点、结算后决定下一步。 */
 /** 幕 Boss 死掉是换图，只有第五幕的 Boss 结束一局。 */
-export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []) {
+export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = [], topics?: string[]) {
   // 开局前先把上一局的答题流水落盘
   saveStageMem();
   clearRun();
@@ -28,16 +38,18 @@ export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []
   const modeDef = mode ? MODE_BY_ID[mode] : null;
   // extraPowers 只给模拟 / 调试用
   const startPowers = [...new Set([...(modeDef?.powers ?? []), ...extraPowers])];
+  // 主题最多 `BAL.topicsMax` 个：多出来的忽略，而不是报错（题库里可能只有一两个池）
+  const picked = (topics?.length ? topics : pickTopics()).slice(0, BAL.topicsMax);
 
   // 整局状态换一份新的；这里只覆盖“这一局特有的选择”，不手抄字段清单。
   Object.assign(G, newRunState(), {
     screen: 'map', mode, deck, map: genStage(1), powers: startPowers,
+    topics: picked, stageTopic: runLabel(picked),
   });
   // 模式能力若是「拾取即结算」类，和精英掉落走同一条通道
   for (const id of startPowers) applyInstant(id);
-  // 题库按幕从来源题库里切出来
-  enterStage(1);
-
+  // 整局共用一份临时题库：按主题连续排列，五幕都从它里面抽
+  buildRunPool(picked);
 }
 
 export function enterNode(key: string) {
@@ -74,7 +86,6 @@ function nextStage() {
   // 流水先落盘再换阶段，否则写到下一章头上
   saveStageMem();
   G.stage = next;
-  enterStage(next);
   // 新的一章，本局“本章答题”重新计数；整局统计不动。
   G.stageOk = 0;
   G.stageBad = 0;

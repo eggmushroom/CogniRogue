@@ -21,7 +21,7 @@
 - **不为"以后可能的多用户"预留抽象**。单人单进程意味着 `G` 是唯一真相，
   调试接口可以随便读写它 —— 这不是偷懒，是不给一份不会兑现的保险交保费。
   同理：存档不追求向后兼容，换格式就抬版本号。两个键各管一段：
-  断点 `cognirogue.run.v9`（`journey/save.ts` 的 `SNAP_V`）和章节档案
+  断点 `cognirogue.run.v10`（`journey/save.ts` 的 `SNAP_V`）和章节档案
   `cognirogue.stage.v1`（`library/stagemem.ts`）。跨局的"卡牌熟练度"表已经删掉 ——
   它只写不读，旧键 `cognirogue.v1` 留在玩家机器上不再被读，也不用清理。
 - **不加需要说明书才能用的功能**。多一个开关就多一处要维护的假设。
@@ -107,6 +107,8 @@
 | 多选一卡片的视觉 | `gfx/ui.ts` 的 `choiceCard()`：序号、徽记、标题、说明槽位、底部事实行都在这里；场景只给数据和命中矩形 |
 | 平台适配（DOM / localStorage） | `core/infra/storage.ts` |
 | 题库的位置依赖 | 数据属性 `Question.noShuffle`，`core/library/parse.ts` 解析期校验 |
+| **本局临时题库** | `core/library/stage.ts` 的 `buildRunPool()`：开局从选中的 2–5 个主题里各取一批，按主题连续排成一条队列；抽题只许经 `nextQuestions()` 往前走，别处不许自己从题库里挑题 |
+| 局内发牌的取舍 | `core/combat/questions.ts`：本局已答对的不发（答对即出局），本局抽满 `MAX_PICK_PER_RUN` 次的不发（一道答不对的题不许占光位置）；队列走完才复用，不锁牌 |
 | 题号 / 学习历史挂在谁身上 | `core/library/parse.ts` 的 `questionId(topic, concept)`：概念缺省回落到题干，所以老题库的号不变；改题干不改概念 = 同一个概念 |
 | 玩家侧数据离开浏览器 | `scenes/report.ts` 的「导出错题」→ `scenes/studyio.ts` → `library/stagemem.ts` 的 `studySnapshot()`。游戏不外发任何请求，这条闭环只能手动 |
 | 题库生成 | `tools/gen/`：切分在 `chunk.ts`、提示词在 `generate.ts`、DSL 输出在 `emit.ts`。**只在构建期跑**，模型写内容、代码保证格式，产物必须过 `parse.ts` |
@@ -220,10 +222,12 @@
 - 固定 1600×900 逻辑分辨率：13 寸笔记本上（1366 宽）缩放约 0.85，
   牌面 11px 的小字只剩 9px 出头。要真解决得做第二套紧凑布局，
   在那之前不要用调字号的方式局部打补丁 —— 会把版式调乱，还治不好。
-- 内置题库当前是**临时单词表** `packs/words.md`（400 题 / 5 个题池）；课程表
-  `CURRICULUM` 取其中五章对应五幕，每一幕从来源题库切出自己的 BANK（`library/stage.ts`）。
+- 内置题库当前是**临时单词表** `packs/words.md`（400 题 / 5 个题池）。一局开局时从选中的
+  2–5 个主题里各取 `min(可抽, BAL.runTopicQuota)` 道，拼成**本局临时题库**
+  （`library/stage.ts` 的 `buildRunPool`）：按主题连续排列，五幕共用，局中不换。
+  幕不再对应主题，所以没有课程表，也没有"每幕切一份 BANK"。
   卡池恒定 101 张（83 张常规卡 + 4 张联动卡 + 14 张扩充卡），固化在 `cards/catalog.ts`；原来的 CS 三份 md（algorithms / advanced /
   systems）保留在 `packs/` 里可导入。加题改 `packs/words.md`（或导入新题库），加卡改 catalog，
-  调整课程只改 `CURRICULUM`，三件事互不牵连。
+  两件事互不牵连。
 - `packs/words.md` 是生成物，别手改：源表（单词 → 释义）在 `tools/words.mjs`，
   跑 `npm run words` 整体重写。手改的题会在下一次生成时被覆盖。

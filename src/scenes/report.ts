@@ -31,10 +31,10 @@ export function drawReport(d: ReportData) {
     [d.mode, '开局模式'],
     [`${d.runOk}/${total}`, '本局答题'],
     [`${total ? Math.round((d.runOk / total) * 100) : 0}%`, '正确率'],
-    [`第 ${d.stage} 幕`, `本章 · ${d.stageTopic}`],
-    [`${d.stageOk}/${d.stageOk + d.stageBad}`, '本章答题'],
+    [`第 ${d.stage} 幕`, `主题 · ${d.stageTopic}`],
+    [`${d.stageOk}/${d.stageOk + d.stageBad}`, '本幕答题'],
     [`${d.deckSize}`, '牌组张数'],
-    [`${Math.round(d.mastery * 100)}%`, '章节掌握度'],
+    [`${Math.round(d.mastery * 100)}%`, '主题掌握度'],
   ];
   const sw = (w - 96) / stats.length;
   stats.forEach(([v, k], i) => {

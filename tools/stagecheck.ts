@@ -3,16 +3,15 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS, effSummaryOf } from '../src/core/model';
-import type { MapNode, PowerId } from '../src/core/model';
+import type { MapNode, PowerId, Question } from '../src/core/model';
 import {
   EVENTS, G, answer, askCard, canAsk, canPay, canPayHp, cancelPanel, ackCardGet, chooseEventOption, clearRun, defOf,
   dismissFeedback, endTurn, forgetCard, intentText, playBasic,
   runSaveInfo, skipReward, takeCard, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
   loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf, LEGACY_CARD_IDS,
   allQuestions, stageMemOf, resetStageMemory, recordAnswer, studySnapshot, STUDY_SNAPSHOT_V,
-  answeredCount, stagePool, isRetired, liveCount,
-  cardKind, enterStage, BASICS, drawBattleQuestions,
-  askOf, costOf, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
+  rightCount, runPool, isRetired, buildRunPool, nextQuestions, sourceBank,
+  cardKind, BASICS, drawBattleQuestions,  askOf, costOf, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight, restHeal,
   rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
   grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
@@ -194,7 +193,6 @@ ok(gotPower === 1, `过幕真的拿到一个增益（${gotPower} 个）`);
 
 // ── 4. 终局 ──
 G.stage = STAGES.length;
-enterStage(G.stage);
 G.node = { ...bossNode, r: STAGE_ROWS - 1 };
 G.enemy = { ...FOES.find((f) => f.type === 'boss')!, maxHp: 10, hp: 0, block: 0, mv: 0 };
 G.pending = 'win';
@@ -2348,6 +2346,9 @@ function missGain(eff: string) {
     map: genStage(1), pos: null, seen: {}, eventsSeen: [], topicWrong: {},
     floors: 0, runOk: 0, runBad: 0, stageOk: 0, stageBad: 0, answerDraws: 0,
     qPicked: {}, onceStage: [], onceRun: [], upGrade: 0,
+    // 一局的主题与临时题库也要在断点里；缺了它们读档后题目会对不上
+    topics: [Object.keys(sourceBank().byTopic)[0] ?? '未分类'],
+    runQueue: [], runCursor: 0, qSolved: {},
   };
   const put = (snap: unknown) => {
     clearRun();
@@ -2479,45 +2480,40 @@ function missGain(eff: string) {
     [readFileSync(join(here, '..', 'packs', 'words.md'), 'utf8')],
     '阶段题库测试',
   ));
-  startRun();
+  startRun(null, [], ['基础动词', '生活名词']);
+  ok(allQuestions().every((q) => q.qid.startsWith('q_')), '每道题都有稳定题号');
+
+  // 一局只建一次临时题库：按主题连续排，五幕共用，不随换幕重切。
+  const topicOf = new Map(allQuestions().map((q) => [q.qid, q.topic]));
+  const order = G.runQueue.map((id) => topicOf.get(id));
+  const cut = order.findIndex((t) => t !== '基础动词');
+  ok(cut > 0 && order.slice(cut).every((t) => t === '生活名词'),
+    `临时题库按主题连续：${cut} 道「基础动词」+ ${order.length - cut} 道「生活名词」`);
+
   G.node = G.map[0][0];
   startBattle(G.node);
   G.ap = 9;
 
-  ok(allQuestions().length > 0 && allQuestions().every((q) => q.topic === '基础动词'),
-    `第 1 幕题库只含「基础动词」（${allQuestions().length} 道）`);
-  ok(allQuestions().every((q) => q.qid.startsWith('q_')), '每道题都有稳定题号');
-
-  // 卡和题解耦：随便一张知识卡，问的都是当前章的题。
+  // 卡和题解耦：随便一张知识卡，抽的都是本局主题里的题。
   const other = PACK.cards.find((c) => c.kind === 'knowledge' && askOf(c) === 1 && (c.cost ?? 1) === 1)!;
   G.hand[0] = other.id;
   askCard(0);
   const p1 = panelOf('question')!;
-  ok(p1.k === 'question' && p1.topic === '基础动词',
-    `卡「${other.name}」问的是本章题（题「${p1.topic}」）`);
-  ok(!!p1.qid && allQuestions().some((q) => q.qid === p1.qid), 'Panel 带题号，且题号属于当前阶段题库');
+  ok(p1.k === 'question' && G.topics.includes(p1.topic),
+    `卡「${other.name}」抽的是本局主题的题（题「${p1.topic}」）`);
+  ok(!!p1.qid && G.runQueue.includes(p1.qid), '题号来自本局临时题库');
   answer(p1.view.answer);
   if (panelKind() === 'feedback') dismissFeedback();
-  ok(stageMemOf('基础动词').ok > 0, '答题记进本章记忆（按题号，不按卡）');
+  ok(stageMemOf(p1.topic).ok > 0, '答题记进题目自己的主题（不按幕、不按卡）');
 
+  // 换幕不换题库：第 2 幕仍从同一份临时题库往前走
+  const cursor = G.runCursor;
   G.stage = 2;
   G.map = genStage(2);
   G.node = G.map[0][0];
-  // 换幕之后要重新切题库、重新预抽本场的题：题池在开战时就算好了，
-  // 只改 G.stage 的话面板里还是上一章的题。
-  enterStage(2);
   drawBattleQuestions();
-  G.ap = 9;
-  // 起手只有 2 张知识卡，上一手已经打掉一张；换章之前先补一张进手牌，
-  // 否则这里测的是"手里没牌"，不是"题库换了"。
-  const anyK = PACK.cards.find((c) => c.kind === 'knowledge' && (c.cost ?? 1) === 1)!;
-  G.hand[0] = anyK.id;
-  G.charge = {};
-  const idx2 = G.hand.findIndex((e) => cardKind(defOf(e)) === 'knowledge');
-  askCard(idx2);
-  const p2 = panelOf('question')!;
-  ok(p2.k === 'question' && p2.topic === '生活名词',
-    `换到第 2 幕后题目来自「生活名词」（实际「${p2.topic}」）`);
+  ok(G.runCursor > cursor, `换幕后继续沿同一份题库走（游标 ${cursor} → ${G.runCursor}）`);
+  ok(G.qLeft.every((q) => G.topics.includes(q.topic)), '换幕后抽到的仍是本局主题里的题');
 }
 
 // ── 18. 题库可替换，卡牌和 card id 不动 ─────────────────────
@@ -2714,7 +2710,6 @@ C) 3
 {
   startRun('test');
   G.stage = 1;
-  enterStage(1);
   const node: MapNode = { r: 0, i: 0, key: '0:0', col: 1, type: 'fight', next: [] };
   startBattle(node);
   // 固定一只没有反伤/回复机制的木桩，避免敌人机制污染“这张牌自己扣了多少”。
@@ -2946,35 +2941,90 @@ C) 3
 }
 
 {
-  // 题库寿命：一道题被答过 BAL.retireAt 次就退役，不再进池。
-  // 计数不另存一份 —— 直接读 stagemem 的 ok + bad，同一个数字不留两个来源。
+  // 本局的临时题库：整局一份池子，按主题**连续**排列，五幕共用。
   resetStageMemory();
-  G.stage = 1;
-  enterStage(1);
-  const pool0 = stagePool();
-  const first = pool0[0];
-  ok(pool0.length > 0 && !!first && !isRetired(first),
-    `第 1 幕题池 ${pool0.length} 道，都没退役`);
+  const topics = Object.keys(sourceBank().byTopic).slice(0, 2) as [string, string];
+  // 这些主题里还有多少道没退役的题 —— 就是"该不该补题"的判据
+  const live = (ts: readonly string[]) =>
+    allQuestions().filter((q) => ts.includes(q.topic) && !isRetired(q)).length;
+  buildRunPool(topics);
+  const queue = G.runQueue;
+  const byId = new Map(allQuestions().map((q) => [q.qid, q]));
+  ok(queue.length > 0, `临时题库建出 ${queue.length} 道`);
+  ok(runPool().length === queue.length, '队列里的每个题号都能在题库里取回来');
+  ok(queue.length <= topics.length * BAL.runTopicQuota,
+    `每个主题最多 ${BAL.runTopicQuota} 道（${topics.length} 个主题 → 上限 ${topics.length * BAL.runTopicQuota}）`);
 
-  for (let i = 0; i < BAL.retireAt; i++) recordAnswer({ stageTopic: first.topic, qid: first.qid, right: i === 0 });
-  ok(answeredCount(first.topic, first.qid) === BAL.retireAt,
-    `答满 ${BAL.retireAt} 次之后计数就是 ${answeredCount(first.topic, first.qid)}`);
-  ok(isRetired(first) && !stagePool().some((q) => q.qid === first.qid),
-    '答满的题不再进池');
-  ok(stagePool().length === pool0.length - 1,
-    `池子正好少一道（${pool0.length} → ${stagePool().length}）`);
+  // 连续性：队列是一段一段的，不会把两个主题的题打散混在一起
+  const order = queue.map((id) => byId.get(id)?.topic);
+  const cut = order.findIndex((t) => t !== topics[0]);
+  ok(cut > 0 && order.slice(cut).every((t) => t === topics[1]),
+    `按主题连续：前 ${cut} 道是「${topics[0]}」，之后全是「${topics[1]}」`);
 
-  // 整章答满：池子退回全部，而不是返回空 —— 空池会让知识卡变成点不开的死牌
+  // 抽题只往前走，不回头
+  const got = nextQuestions(3);
+  ok(got.length === 3 && got[0]?.qid === queue[0] && G.runCursor === 3,
+    `取 3 道，游标走到 ${G.runCursor}`);
+  nextQuestions(queue.length);
+  ok(G.runCursor === queue.length, '队列走完，游标停在末尾');
+  ok(nextQuestions(5).length === 0, '走完之后不再给新题（回头交给 takeQuestion 复用兜底）');
+
+  // 退役在**建池时**生效；局内不再筛，否则池子会提前见底
+  const first = byId.get(queue[0] as string)!;
+  for (let i = 0; i < BAL.retireAt; i++) recordAnswer({ stageTopic: first.topic, qid: first.qid, right: true });
+  ok(rightCount(first.topic, first.qid) === BAL.retireAt,
+    `答对 ${BAL.retireAt} 次，计数就是 ok = ${rightCount(first.topic, first.qid)}`);
+  ok(isRetired(first), '这道题被判退役');
+  buildRunPool(topics);
+  ok(!G.runQueue.includes(first.qid), '退役的题不再进下一局的池子');
+
+  // 整章答满：退回该主题全部的题，而不是建出空池 —— 空池会让知识卡变成点不开的死牌
   for (const q of allQuestions()) {
     for (let i = 0; i < BAL.retireAt; i++) recordAnswer({ stageTopic: q.topic, qid: q.qid, right: true });
   }
-  ok(liveCount() === 0, '整章答满之后 liveCount 是 0（这就是"该重出这个主题"的信号）');
-  ok(stagePool().length === pool0.length,
-    `整章答满时池子退回全部 ${stagePool().length} 道，不留死牌`);
+  ok(live(topics) === 0, '两个主题的活题都是 0（这就是"该补题了"的信号）');
+  buildRunPool(topics);
+  ok(G.runQueue.length > 0, `整章答满时仍建出 ${G.runQueue.length} 道，不留空池`);
 
   resetStageMemory();
-  ok(liveCount() === pool0.length && stagePool().length === pool0.length,
-    `重置记忆后 ${pool0.length} 道全部复活（退役是记忆驱动的，不是把题删了）`);
+  buildRunPool(topics);
+  ok(live(topics) > 0 && G.runQueue.length > 0,
+    `重置记忆后活题 ${live(topics)} 道（退役是记忆驱动的，不是把题删了）`);
+}
+
+{
+  // 局内均衡：答对即出局；一直答错的题抽满 MAX_PICK_PER_RUN 次也让位。
+  // 只有队列而不看这两个计数的话，一道一直答错的题会被连抽十几次，
+  // 把别的题全挤掉 —— 这一组挡的就是那件事。
+  resetStageMemory();
+  const topics = Object.keys(sourceBank().byTopic).slice(0, 2);
+  buildRunPool(topics);
+  ok(G.runQueue.length > 8, `临时题库 ${G.runQueue.length} 道，够做这组断言`);
+
+  G.qPicked = {};
+  G.qSolved = {};
+  const solved = G.runQueue.slice(0, 3);
+  const capped = G.runQueue.slice(3, 6);
+  solved.forEach((id) => { G.qSolved[id] = true; });
+  capped.forEach((id) => { G.qPicked[id] = MAX_PICK_PER_RUN; });
+  G.runCursor = 0;
+
+  drawBattleQuestions();
+  const left = G.qLeft.map((q) => q.qid);
+  ok(!solved.some((id) => left.includes(id)), '答对过的题不再进本场');
+  ok(!capped.some((id) => left.includes(id)), `抽满 ${MAX_PICK_PER_RUN} 次的题不再进本场`);
+  ok(left.length > 0, `跳掉 6 道之后本场仍抽到 ${left.length} 道`);
+  ok(G.runCursor > 6, `被跳过的题也让游标往前走（游标 ${G.runCursor}）`);
+
+  // 答对即出局要验在发牌那条路上：takeQuestion 才是真正把手牌发出去的地方
+  const head = runPool()[0] as Question;
+  G.qSolved = {};
+  G.qPicked = {};
+  G.qLeft = [head];
+  ok(takeQuestion()?.qid === head.qid, '第一次发牌给的是本局题池的第一道');
+  G.qSolved[head.qid] = true;
+  G.qLeft = [head];
+  ok(takeQuestion()?.qid !== head.qid, '答对之后，同一道题不再发给玩家');
 }
 
 console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 结构检查通过');

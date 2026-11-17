@@ -1,4 +1,4 @@
-import { CURRICULUM, FOES, STAGES } from '../core/model';
+import { FOES, STAGES } from '../core/model';
 import type { Move, PowerId } from '../core/model';
 import { PACK } from '../core/cards';
 import { G } from '../core/infra';
@@ -8,7 +8,7 @@ import {
 import { applyInstant } from '../core/cards';
 import { answer, askCard, canAsk } from '../core/combat';
 import { genStage } from '../core/map';
-import { enterStage, stageMemOf } from '../core/library';
+import { stageMemOf } from '../core/library';
 
 /**
  * 开发 / 截图入口：`?dev=battle` 直接落到某个画面。只是入口，规则仍是同一套 core。
@@ -27,8 +27,6 @@ export function devJump() {
   const gotoStage = (n: number) => {
     if (!n) return;
     G.stage = n;
-    // 截图/调试也要切当前章的题库，否则幕名和"本章"会对不上。
-    enterStage(n);
     G.map = genStage(n);
     G.pos = null;
     G.seen = {};
@@ -155,12 +153,14 @@ export function devJump() {
     // 只是为了让文档截图里不是一排 0：正常游戏里这些数字全部来自真实答题。
     // 章节掌握读的是 STAGE_MEM，所以这里造的是章节档案。
     const demo: Array<[number, number]> = [[9, 2], [7, 4], [12, 6], [4, 5], [0, 0]];
-    CURRICULUM.forEach((p, i) => {
-      const e = stageMemOf(p.topic);
-      e.ok = demo[i][0];
-      e.bad = demo[i][1];
+    // 结算页现在报的是**本局选中的**主题，所以造的档案也要跟着这局的主题走
+    G.topics.forEach((topic, i) => {
+      const e = stageMemOf(topic);
+      const [ok, bad] = demo[i] ?? [0, 0];
+      e.ok = ok;
+      e.bad = bad;
       e.q = {};
-      for (let j = 0; j < e.bad; j++) e.q[`q_demo_${p.stage}_${j}`] = { ok: 0, bad: 1 };
+      for (let j = 0; j < bad; j++) e.q[`q_demo_${i}_${j}`] = { ok: 0, bad: 1 };
     });
     G.answerDraws = 14;
     G.runOk = 12;
@@ -169,7 +169,6 @@ export function devJump() {
     G.stageBad = 6;
     G.floors = 5;
     G.stage = 3;
-    enterStage(3);
     // 牌组里加一张 3 费卡：起手只给 0–1 费，所以这张一定是新卡种
     G.deck.push(PACK.cards.find((c) => c.cost === 3)!.id);
     endRun(true);

@@ -1,5 +1,5 @@
 import type {
-  Foe, FoeTpl, Mech, ModeId, NodeType, PowerDef, PowerId, StageDef, StagePlan,
+  Foe, FoeTpl, Mech, ModeId, NodeType, PowerDef, PowerId, StageDef,
 } from './types';
 
 /** 每一幕 20 层，五幕共 100 层。 */
@@ -35,19 +35,6 @@ export const STAGES: StageDef[] = [
 ];
 
 export const stageOf = (i: number): StageDef => STAGES[Math.max(0, Math.min(STAGES.length - 1, i - 1))];
-
-/** 示例课程表：五幕对应五章。`library/stage.ts` 按这张表从来源题库切出本幕的 BANK。 */
-export const CURRICULUM: StagePlan[] = [
-  { stage: 1, topic: '基础动词', title: '第 1 章 · 基础动词' },
-  { stage: 2, topic: '生活名词', title: '第 2 章 · 生活名词' },
-  { stage: 3, topic: '形容词与副词', title: '第 3 章 · 形容词与副词' },
-  { stage: 4, topic: '学术高频', title: '第 4 章 · 学术高频' },
-  { stage: 5, topic: '抽象概念', title: '第 5 章 · 抽象概念' },
-];
-
-/** 第 `stage` 幕对应的章节；越界夹到最后一章。 */
-export const planFor = (stage: number): StagePlan =>
-  CURRICULUM[Math.max(0, Math.min(CURRICULUM.length - 1, stage - 1))];
 
 /**
  * 敌人表：按幕分组，一幕内「小怪 → 精英 → Boss」；moves 是循环表，下一步可见。
@@ -556,6 +543,16 @@ export const BAL = {
    * `combat/questions.ts` 的 `MAX_PICK_PER_RUN`，两件事各有一个数。
    */
   retireAt: 3,
+  /**
+   * 一局开局时选几个主题。幕不再绑定主题，整局共用一份临时题库，
+   * 所以这条决定了这份题库由几个主题拼成。
+   */
+  topicsMin: 2, topicsMax: 5,
+  /**
+   * 每个主题往临时题库里放几道。整局按主题**连续**消费：先把一个主题走完再走下一个，
+   * 所以这个数决定"一局会在一个主题里待多久"，而不是总共几道。
+   */
+  runTopicQuota: 20,
   /** 修书胶：复习点回复量**额外**加几点（叠在 `restHp` 上，是加不是乘） */
   mendRest: 10,
   /** 课表：每回合第一次打出基础牌补几点格挡 */

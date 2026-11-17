@@ -3,22 +3,17 @@ import type { Question, QuestionBank } from '../model/types';
 import { QUESTION_FORMAT, parseAnyQuestionBank } from './parse';
 
 /**
- * 当前阶段题库，也是唯一允许外部替换的东西。
+ * 载入的题库，也是唯一允许外部替换的东西。
  * 卡池在 `cards/catalog.ts` 写死，换题库只换题目。
  *
- * `sourceBank()` 是载入的完整题库，`BANK` 是当前阶段从它切出来的那份。
+ * 这里是**整份**题库（所有主题）。一局开局时 `library/stage.ts` 从它按主题取一批题，
+ * 拼成本局的临时题库；阶段不再各自切一份。
  * `BANK` 是 let 绑定，调试入口必须用 getter 读。
  * `byTopic` 的键只是分组名，不设白名单。
  */
 export let BANK: QuestionBank = { name: '（尚未载入题库）', byTopic: {}, issues: [] };
 
-/** 载入的完整题库。切阶段、换题库都从它出发，而不是从上一阶段的切片出发。 */
-let SOURCE: QuestionBank | null = null;
-/** 来源题库版本号：`loadQuestionBank` 换一次 +1，阶段层据此判断要不要重切。 */
-let GEN = 0;
-
-export const bankGeneration = (): number => GEN;
-export const sourceBank = (): QuestionBank => SOURCE ?? BANK;
+export const sourceBank = (): QuestionBank => BANK;
 
 export const countQuestions = (bank: QuestionBank): number =>
   Object.values(bank.byTopic).reduce((n, pool) => n + pool.length, 0);
@@ -38,7 +33,7 @@ export function flattenBank(bank: QuestionBank): Question[] {
   return out;
 }
 
-/** 当前阶段题库的全部题目。 */
+/** 当前题库的全部题目（所有主题）。 */
 export function allQuestions(): Question[] {
   return flattenBank(BANK);
 }
@@ -69,7 +64,7 @@ export function setActiveBank(next: QuestionBank) {
  * 原样报出来（静默丢题会让写题人以为题写进去了）。校验失败时原题库
  * 原封不动，不会出现「一半是新题、一半是旧题」的中间状态。
  *
- * 它换的是**来源题库**；当前阶段会等下一次 `enterStage()` 才重新切片。
+ * 换的是整份题库；本局已经建好的临时题库不受影响 —— 新题下一局开局才进池。
  */
 export function loadQuestionBank(text: string): { ok: boolean; msg: string } {
   let next: QuestionBank;
@@ -96,13 +91,11 @@ export function loadQuestionBank(text: string): { ok: boolean; msg: string } {
     return { ok: false, msg: `没有解析出任何题目。格式要求：${QUESTION_FORMAT}。` };
   }
 
-  SOURCE = next;
   BANK = next;
-  GEN += 1;
   const pools = Object.keys(next.byTopic).length;
   return {
     ok: true,
     msg: `载入「${next.name}」：${total} 道题 / ${pools} 个题池。`
-      + `卡池仍是内置的 ${CATALOG.length} 张卡；每个阶段会从这份题库里切出自己那一章。`,
+      + `卡池仍是内置的 ${CATALOG.length} 张卡；下一局开局会按主题从这里取题。`,
   };
 }

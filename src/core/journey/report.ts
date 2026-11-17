@@ -1,5 +1,5 @@
 import type { ReportRow } from '../model/types';
-import { CURRICULUM, MODE_BY_ID } from '../model/data';
+import { MODE_BY_ID } from '../model/data';
 import { G } from '../infra/state';
 import { saveStageMem, stageDigest } from '../library/stagemem';
 import { baseIdOf } from '../cards/registry';
@@ -8,14 +8,15 @@ import { clearRun } from './save';
 
 /**
  * 一局的结算：只读统计，不改规则、不驱动战斗。
- * 掌握度按章节算，不按卡牌。
+ * 掌握度按主题算，不按卡牌；报的是**这一局选中的**那几个主题，
+ * 不是固定的五章 —— 幕不再绑定主题，五章固定行会报出这局没碰过的主题。
  */
 export function endRun(win: boolean) {
   // 一局结束就没有断点了
   clearRun();
-  const rows: ReportRow[] = CURRICULUM.map((plan) => {
-    const d = stageDigest(plan.topic);
-    return { t: plan.topic, ok: d.ok, bad: d.bad, mast: d.mastery };
+  const rows: ReportRow[] = G.topics.map((topic) => {
+    const d = stageDigest(topic);
+    return { t: topic, ok: d.ok, bad: d.bad, mast: d.mastery };
   });
   const total = rows.length ? rows.reduce((n, r) => n + r.mast, 0) / rows.length : 0;
   // rows 会把没打过的章节也补成空条目，所以章节记忆在算完 rows 之后再落盘，

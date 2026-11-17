@@ -43,14 +43,6 @@ export interface QuestionBank {
   issues: string[];
 }
 
-/** 一幕对应的课程章节：阶段是 20 层的容器，topic 才是这一段学什么。 */
-export interface StagePlan {
-  stage: number;
-  /** 必须能对上题库里的 `## 主题`，否则这一章抽不到题。 */
-  topic: string;
-  title: string;
-}
-
 /** 一章的答题摘要：结算页按它算每章正确率。 */
 export interface StageDigest {
   ok: number;
@@ -507,6 +499,19 @@ export interface GameState {
   qLeft: Question[];
   /** 本局每题被抽到几次；到 3 次不再进新题池。跨场保留，`startRun` 清。 */
   qPicked: Record<string, number>;
+  /**
+   * 这一局选中的主题，开局定死。幕不再绑定主题，整局共用一份临时题库。
+   */
+  topics: string[];
+  /** 本局临时题库：题号队列，按主题连续排列。开局建一次，整局只消费不重建。 */
+  runQueue: string[];
+  /** 队列游标。它是**唯一的**消耗位置，抽题只许往前走。 */
+  runCursor: number;
+  /**
+   * 本局已经答对过的题：答对即出局，这一局不再抽它，把位置让给还没学会的。
+   * 局内每道题最多答对一次，所以它只增不减；`startRun` 清。
+   */
+  qSolved: Record<string, true>;
   topicWrong: Record<string, number>;
   okThisTurn: number;
   /** 本回合答对了「本局错得最多的主题」；存主题名，每回合清零。 */

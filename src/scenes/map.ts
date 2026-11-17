@@ -4,7 +4,7 @@ import { bar, panel, text } from '../gfx/ui';
 import { drawArtIcon } from '../gfx/art/icons';
 import type { ArtIconName } from '../gfx/art/icons';
 import { consumeDragY, consumeWheel, hover, onClick } from '../input';
-import { CURRICULUM, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS, stageOf } from '../core/model';
+import { NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS, stageOf } from '../core/model';
 import { G } from '../core/infra';
 import { FLOOR_MAX, MAP_COLS, availableNodes, curFloor, floorOf } from '../core/map';
 import { enterNode } from '../core/journey';
@@ -444,7 +444,7 @@ function header(st: { name: string; sub: string; color: string }) {
   // 幕名是这一屏最重要的一个字：它告诉玩家"换地方了"，层号只回答"爬了多远"
   text(`第 ${G.stage} 幕 · ${st.name}`, 40, 86, { size: 16, color: st.color, weight: 700 });
   // 卡题解耦后，"这一章问什么"要单独说：它和牌组没有关系。
-  text(`第 ${floor} / ${FLOOR_MAX} 层 · 本章 ${G.stageTopic}`, 40, 110, { size: 13, color: C.dim });
+  text(`第 ${floor} / ${FLOOR_MAX} 层 · ${G.stageTopic}`, 40, 110, { size: 13, color: C.dim });
   // 一道短金线把标题和层级收在一起，和地图里"走过的路"同一个颜色
   g.fillStyle = withAlpha(st.color, 0.55);
   g.fillRect(40, 122, 46, 2);
@@ -489,7 +489,7 @@ function leftPanel() {
   g.lineWidth = 1;
   g.stroke();
   text(`牌组 · ${G.deck.length} 张`, x + 30, dy + 17, { size: 14, color: dhv ? C.ink : C.ink2 });
-  text(`${CURRICULUM.length} 章 · 本章 ${G.stageTopic}`, x + w - 24, dy + 17, { size: 12, color: C.dim, align: 'right' });
+  text(`${G.topics.length} 个主题 · 第 ${G.stage} 幕`, x + w - 24, dy + 17, { size: 12, color: C.dim, align: 'right' });
   onClick(x + 16, dy, w - 32, 34, () => { G.panel = { k: 'deck' }; });
 
   // 增益：整局生效的印记，不进牌组、不占牌位。这里回答"我这一局已经会了什么"。

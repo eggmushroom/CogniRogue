@@ -194,6 +194,9 @@ function finishAnswer(ctx: AnswerCtx) {
   // 主题取题目自己的 `topic`，不取 `G.stageTopic`：题池回退到全部题目时两者不同，
   // 按幕的主题记账会把别的主题的题记到这一章上。
   recordAnswer({ stageTopic: ctx.q.topic, qid: ctx.qid, right: ctx.right });
+  // 答对即出局：这一局不再抽它，把位置让给还没学会的题。
+  // 只有"对"才出局 —— 答错的题必须回来，否则错题就再也见不到了。
+  if (ctx.right) G.qSolved[ctx.qid] = true;
 
   const v = ctx.v;
   // 同步这一刻只判玩家侧的即时死亡；敌人是否被打死要等最后一段落地，

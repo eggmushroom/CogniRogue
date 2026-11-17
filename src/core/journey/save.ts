@@ -4,7 +4,7 @@ import { MODE_BY_ID, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS } from '../model
 import { MAP_COLS, floorOf } from '../map';
 import { baseIdOf, isKnownCardId } from '../cards/registry';
 import { LEGACY_CARD_IDS } from '../cards/legacy';
-import { enterStage } from '../library/stage';
+import { runLabel } from '../library/stage';
 import type { GameState, MapNode, ModeId, PowerId } from '../model/types';
 
 /**
@@ -14,14 +14,14 @@ import type { GameState, MapNode, ModeId, PowerId } from '../model/types';
  * `v: 8` + 字符串 key，升版本时全都要跟着改，漏一处就变成"合法存档读不出来"。
  * 版本号只有这里一处真值，谁能读到就引用它。
  */
-export const SNAP_V = 9;
+export const SNAP_V = 10;
 export const SAVE_KEY = `cognirogue.run.v${SNAP_V}`;
 
 /** 断点里要保存的 GameState 字段；`Pick` 让新增字段要么显式纳入，要么明确不存。 */
 type SavedFields = Pick<GameState,
   | 'stage' | 'mode' | 'hp' | 'maxHp' | 'deck' | 'powers' | 'map' | 'pos' | 'seen'
   | 'topicWrong' | 'floors' | 'runOk' | 'runBad' | 'answerDraws' | 'upGrade' | 'eventsSeen'
-  | 'qPicked' | 'stageOk' | 'stageBad'
+  | 'qPicked' | 'stageOk' | 'stageBad' | 'topics' | 'runQueue' | 'runCursor' | 'qSolved'
 >;
 
 interface Snapshot extends SavedFields {
@@ -71,6 +71,12 @@ export function saveRun() {
     stageBad: G.stageBad,
     answerDraws: G.answerDraws,
     qPicked: G.qPicked,
+    // 临时题库存**题号队列**，不存题目正文：一百多道题的正文塞进存档太重，
+    // 而且题库一更新，存下来的旧正文就成了幽灵。读档时按 qid 回题库里取。
+    topics: G.topics,
+    runQueue: G.runQueue,
+    runCursor: G.runCursor,
+    qSolved: G.qSolved,
     onceStage: usedIds(G.onceStage),
     onceRun: usedIds(G.onceRun),
     upGrade: G.upGrade,
@@ -123,8 +129,11 @@ export function resumeRun(): boolean {
     onceRun: usedTable(s.onceRun),
     upGrade: s.upGrade,
     runOk: s.runOk, runBad: s.runBad, stageOk: s.stageOk, stageBad: s.stageBad, floors: s.floors,
+    // 主题与临时题库都要复原：重建一份池子会让读档后的题和存档前不一样
+    topics: s.topics, runQueue: s.runQueue, runCursor: s.runCursor,
+    qSolved: s.qSolved,
+    stageTopic: runLabel(s.topics),
   });
-  enterStage(s.stage);
   return true;
 }
 

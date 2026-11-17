@@ -2,7 +2,7 @@ import { FOES, mechAmt } from '../model/data';
 import type { CardId, MapNode } from '../model/types';
 import { G, checkPending, resetBattleFields } from '../infra/state';
 import { pick, shuffle } from '../infra/util';
-import { stagePool } from '../library/stage';
+import { runPool } from '../library/stage';
 import { floorOf } from '../map/gen';
 import { shuffleOptions } from '../library/question';
 import { defOf } from '../cards/registry';
@@ -67,7 +67,7 @@ export function cardAskState(id: CardId | null | undefined): 'free' | 'ask' | 'e
   const card = defOf(id);
   if (cardKind(card) !== 'knowledge') return 'other';
   if (!needsAsk(id, G.charge)) return 'free';
-  return stagePool().length ? 'ask' : 'empty';
+  return runPool().length ? 'ask' : 'empty';
 }
 
 /** 这张牌现在点下去会不会出题。费用是另一回事（`canPay`）。 */

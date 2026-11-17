@@ -102,7 +102,7 @@ const all = DOCS.map((d) => src[d]).join('\n');
     ['README.md', '初始生命', BAL.baseHp, BAL.baseHp],
     ['README.md', '复习回血', BAL.restHp, BAL.restHp],
     ['README.md', '换幕上限', BAL.stageMaxHp, BAL.stageMaxHp],
-    ['DESIGN.md', '存档版本', 9, SNAP_V],
+    ['DESIGN.md', '存档版本', 10, SNAP_V],
     ['DESIGN.md', '每回合行动力', BAL.baseAp, BAL.baseAp],
     ['DESIGN.md', '复习回血', BAL.restHp, BAL.restHp],
   ];
