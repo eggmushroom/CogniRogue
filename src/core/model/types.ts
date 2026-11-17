@@ -432,6 +432,11 @@ export type Panel =
   | { k: 'none' }
   /** 开局选模式：学习 2 / 复习 1 / 测试 0 个初始增益，其余规则不变。 */
   | { k: 'boon' }
+  /**
+   * 开局选主题。`picks` 是**勾选顺序**，不是集合：先勾的先出题，
+   * 所以顺序有语义，别改成排序后存。
+   */
+  | { k: 'topic'; mode: ModeId | null; picks: string[] }
   /** `q` 是点开那一刻抽到的题目快照，答题期间不随题库变。 */
   | { k: 'question'; idx: number; qid: string; topic: string; q: Question; view: QView }
   | { k: 'feedback'; fb: Feedback }

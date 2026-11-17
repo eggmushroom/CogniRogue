@@ -391,6 +391,16 @@ async function waitBoon(ms = 20000) {
   return '';
 }
 
+/**
+ * 选主题：点前两个，再开始。三处开局都走它 ——
+ * 漏一处就会卡在选主题那一屏，而症状是"点开始没反应"，很难看出漏了哪。
+ */
+async function pickTopicsThenStart() {
+  await clickLabel('topic:0');
+  await clickLabel('topic:1');
+  await clickLabel('开始这一局');
+}
+
 const S = (path) => evalJs(`(${path})`);
 
 /**
@@ -406,19 +416,25 @@ if (CPU_RATE > 0) {
 
 await boot();
 
-await step('标题 → 选一个模式 → 开局', async () => {
+await step('标题 → 选模式 → 选两个主题 → 开局', async () => {
   await clickLabel('开始新的一局');
   const label = await waitBoon();
   if (!label) throw new Error('开局选模式没有出现');
   await clickLabel(label);
   globalThis.__mode = label.slice('mode:'.length);
+  await pickTopicsThenStart();
   // 退款现在是借书证给的，不再人人有；后面那条经济断言按这一局实际有没有它来算。
   globalThis.__refund = await evalJs('cog.state.powers.includes("librarycard") ? 1 : 0');
 }, async () => {
-  const st = await evalJs(`({ screen: cog.state.screen, mode: cog.state.mode, powers: cog.state.powers })`);
+  const st = await evalJs(`({
+    screen: cog.state.screen, mode: cog.state.mode, powers: cog.state.powers,
+    topics: cog.state.topics, queue: cog.state.runQueue.length,
+  })`);
   // 模式必须真的兑现成初始能力：学习 2 张、复习 1 张、测试 0 张。
   const want = st.mode === 'study' ? 2 : st.mode === 'review' ? 1 : 0;
-  return st.screen === 'map' && st.mode === globalThis.__mode && st.powers.length === want;
+  // 选中的两个主题要真的变成这一局的临时题库，否则抽题会抽到没选的主题
+  return st.screen === 'map' && st.mode === globalThis.__mode && st.powers.length === want
+    && st.topics.length === 2 && st.queue > 0;
 });
 await step('地图 → 进节点', () => clickLabel('node'), async () => (await S('cog.state.screen')) === 'battle');
 // 点牌就是出题：中间不该再有任何浮层。这一步挂了就说明又退回了"先选档再看题"
@@ -1249,6 +1265,7 @@ await step('开新的一局 → 断点清掉，再刷新首页不再提「继续
   const bl = await waitBoon();
   if (!bl) throw new Error('开局选模式没有出现');
   await clickLabel(bl);
+  await pickTopicsThenStart();
   if ((await S('cog.state.screen')) !== 'map') throw new Error('没有进入地图');
   // 再刷一次：首页应该退回"没有存档"的那套版式
   await boot(URL_);
@@ -1434,6 +1451,7 @@ await step('结算 → 再来一局 → 重新选模式', async () => {
   const label = await waitBoon();
   if (!label) throw new Error('再来一局没有回到模式选择');
   await clickLabel(label);
+  await pickTopicsThenStart();
   globalThis.__mode2 = label.slice('mode:'.length);
 }, async () => {
   const st = await evalJs(`({ p: cog.state.panel.k, floor: cog.state.floors, mode: cog.state.mode })`);

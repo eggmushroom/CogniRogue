@@ -150,6 +150,11 @@ export function cancelPanel() {
     else G.panel = { k: 'none' };
     return;
   }
+  // 选主题还没开局，取消退回选模式，而不是把玩家扔回标题。
+  if (G.panel.k === 'topic') {
+    G.panel = { k: 'boon' };
+    return;
+  }
   if (G.panel.k === 'deck' || G.panel.k === 'pile'
       || G.panel.k === 'help' || G.panel.k === 'pack' || G.panel.k === 'boon') {
     G.panel = { k: 'none' };

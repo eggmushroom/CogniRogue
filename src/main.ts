@@ -180,7 +180,7 @@ keyHandler((k) => {
     if (p.k === 'cardget') { ackCardGet(); return; }
     // cardpick 也要能按 Esc 退出：取消后回到事件 / 复习面板，账一起清掉。
     if (p.k === 'question' || p.k === 'deck' || p.k === 'pile' || p.k === 'cardpick'
-        || p.k === 'help' || p.k === 'pack' || p.k === 'boon') cancelPanel();
+        || p.k === 'help' || p.k === 'pack' || p.k === 'boon' || p.k === 'topic') cancelPanel();
     return;
   }
   if (k === 'confirm') {

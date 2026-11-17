@@ -8,7 +8,7 @@ import {
 import { applyInstant } from '../core/cards';
 import { answer, askCard, canAsk } from '../core/combat';
 import { genStage } from '../core/map';
-import { stageMemOf } from '../core/library';
+import { sourceBank, stageMemOf } from '../core/library';
 
 /**
  * 开发 / 截图入口：`?dev=battle` 直接落到某个画面。只是入口，规则仍是同一套 core。
@@ -19,6 +19,14 @@ export function devJump() {
   if (!d || d === 'title') return;
   // 开局选模式面板
   if (d === 'boon') { G.panel = { k: 'boon' }; return; }
+  // 选主题面板：预勾两个，截图里才看得出"勾上是什么样"
+  if (d === 'topic') {
+    G.panel = {
+      k: 'topic', mode: 'study',
+      picks: Object.keys(sourceBank().byTopic).slice(0, 2),
+    };
+    return;
+  }
   // 素材图集：不需要开局，是一张独立的质量检验页
   if (d === 'atlas') { G.screen = 'atlas'; return; }
   // 地图/战斗的截图要能指定幕：?dev=map&stage=4

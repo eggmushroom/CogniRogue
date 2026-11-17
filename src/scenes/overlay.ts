@@ -4,14 +4,14 @@ import { action, button, choiceCard, drawCard, drawPowerEmblem, squeeze, text } 
 import { consumeWheel, hover, onClick } from '../input';
 import { easeOut } from '../gfx/geom';
 import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
-import { clamp, G } from '../core/infra';
+import { clamp, G, shuffle } from '../core/infra';
 import { curFloor } from '../core/map';
-import { countQuestions, sourceBank } from '../core/library';
+import { countQuestions, isRetired, sourceBank } from '../core/library';
 import {
   BASICS, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded, upgradedId,
   isXCost, PACK, rulesStatic, UP_MARK,
 } from '../core/cards';
-import { answer, cancelPanel } from '../core/combat';
+import { answer, cancelPanel, MAX_PICK_PER_RUN } from '../core/combat';
 import { liveStatOf } from '../core/combat/link';
 import { basicsSummary, planStrike } from '../core/combat/strike';
 import {
@@ -19,7 +19,7 @@ import {
   openCardPick, previewUpgrade,
   restHeal, restWanted, startRun, skipReward, takeCard, upgradeCard,
 } from '../core/journey';
-import type { Feedback, PowerDef, Question, QView } from '../core/model';
+import type { Feedback, ModeId, PowerDef, Question, QView } from '../core/model';
 import { drawReport } from './report';
 import { requestPackFile, pastePack } from './packio';
 
@@ -135,6 +135,7 @@ export function drawOverlay(t: number, quiz: QuizState = IDLE_QUIZ) {
   switch (p.k) {
     case 'question': return drawQuestion(p.idx, p.q, p.view);
     case 'boon': return drawBoon();
+    case 'topic': return drawTopics(p);
     case 'feedback':
       // 答对不画判定面板：效果已经当场结算，这块整屏面板只会盖住战场，
       // 把光刃、伤害数字和敌人的反应全压在底下，打击感立刻没了。
@@ -1038,11 +1039,117 @@ function drawBoon() {
       cta: ['点击选择', '从这里开始 →'],
     });
     // 这个 label 是冒烟测试点开局的入口：坐标可以改，名字不能改。
-    onClick(cx, cy, cw, ch, () => startRun(m.id), `mode:${m.id}`);
+    // 点击后进选主题，开局在那边发生。
+    onClick(cx, cy, cw, ch, () => { G.panel = { k: 'topic', mode: m.id, picks: [] }; }, `mode:${m.id}`);
   });
 
   text('选定后整局不变，想换就重开一局。Esc 返回。',
     x + 44, y + h - 26, { size: 12, color: C.faint });
+}
+
+/* ── 开局前：选主题 ───────────────────────────────────────── */
+
+/**
+ * 一局 2–5 个主题。勾选顺序就是出题顺序：先勾的主题先走完，才轮到下一个。
+ *
+ * 每张牌子报两个数：「题」是这个主题一共有多少道，「可抽」是还没答对满
+ * `BAL.retireAt` 次的。抽题逻辑对玩家是隐藏的，但"还剩多少"必须让他看见 ——
+ * 题变少而不说明，玩家只会以为题库丢了。
+ */
+function drawTopics(p: { mode: ModeId | null; picks: string[] }) {
+  const src = sourceBank();
+  const names = Object.keys(src.byTopic);
+  const pad = 44;
+  const gap = 16;
+  const cardH = 96;
+  const w = 1040;
+  // 列数按主题数取：题库里的 `## 主题` 数量不设限，三列在 5 个主题时最像一排卡，
+  // 再多就该加列而不是把面板拉出屏幕。
+  const cols = names.length <= 3 ? Math.max(1, names.length)
+    : names.length <= 8 ? 3
+      : names.length <= 15 ? 4 : 5;
+  const rows = Math.max(1, Math.ceil(names.length / cols));
+  const contentH = rows * (cardH + gap) - gap;
+  // 面板最高 780：再高就压到屏幕上沿，宁可让网格自己滚
+  const gridH = Math.min(contentH, 780 - 188 - 76);
+  const h = 188 + gridH + 76;
+  const x = (VW - w) / 2;
+  const y = (VH - h) / 2;
+  const gridW = w - pad * 2;
+  const cw = (gridW - gap * (cols - 1)) / cols;
+
+  dim();
+  box(x, y, w, h, withAlpha(C.gold, 0.35));
+  heading('这一局练哪几个主题', x + pad, y + 62,
+    `选 ${BAL.topicsMin}–${BAL.topicsMax} 个。勾选顺序就是出题顺序，开局后整局不变。`);
+
+  const view = scrollArea(x + pad, y + 144, gridW, gridH, contentH, 'topic');
+  names.forEach((name, i) => {
+    const cx = view.x + (i % cols) * (cw + gap);
+    const cy = view.y + Math.floor(i / cols) * (cardH + gap);
+    // 滚出去的牌子必须一起失去热区，否则它会盖住下面那张的点击
+    const shown = cy >= view.y0 - 1 && cy + cardH <= view.y0 + view.h + 1;
+    const pool = src.byTopic[name] ?? [];
+    const left = pool.filter((q) => !isRetired(q)).length;
+    const at = p.picks.indexOf(name);
+    const on = at >= 0;
+    const hv = shown && hover(cx, cy, cw, cardH);
+    const tint = topicColor(name);
+
+    roundRect(cx, cy, cw, cardH, 12);
+    g.fillStyle = on ? withAlpha(tint, 0.13)
+      : hv ? 'rgba(255,255,255,.055)' : 'rgba(255,255,255,.025)';
+    g.fill();
+    g.strokeStyle = on ? tint : (hv ? withAlpha(C.lineHi, 0.8) : C.line);
+    g.lineWidth = on ? 1.8 : 1.2;
+    g.stroke();
+
+    // 左侧色条：和卡面、地图节点用的是同一套主题色
+    roundRect(cx + 12, cy + 14, 4, cardH - 28, 2);
+    g.fillStyle = withAlpha(tint, on ? 1 : 0.5);
+    g.fill();
+
+    text(name, cx + 26, cy + 36, { size: 17, weight: 700, color: on ? C.ink : C.ink2 });
+    text(`${pool.length} 道 · 可抽 ${left}`, cx + 26, cy + 64,
+      { size: 12, color: left ? C.dim : withAlpha(C.red, 0.85) });
+
+    // 右下角写的是**出题顺序**，不是序号：这张牌是第几个被勾上的
+    if (on) {
+      text(`${at + 1}`, cx + cw - 22, cy + cardH - 18,
+        { size: 22, weight: 700, color: tint, align: 'right', family: FONT_TITLE });
+    }
+
+    if (shown) {
+      onClick(cx, cy, cw, cardH, () => {
+        const idx = p.picks.indexOf(name);
+        if (idx >= 0) p.picks.splice(idx, 1);
+        else if (p.picks.length < BAL.topicsMax) p.picks.push(name);
+      }, `topic:${i}`);
+    }
+  });
+  view.restore();
+  overflowAffordance(view, x + pad, gridW);
+
+  const fy = y + h - 64;
+  const bw = 190;
+
+  action(x + w - pad - bw * 2 - 14, fy, bw, 50, '随机挑几个', () => {
+    const want = BAL.topicsMin
+      + Math.floor(Math.random() * (BAL.topicsMax - BAL.topicsMin + 1));
+    p.picks = shuffle(names).slice(0, Math.min(want, names.length));
+  }, 'ghost', { size: 15 });
+
+  if (p.picks.length >= BAL.topicsMin) {
+    action(x + w - pad - bw, fy, bw, 50, '开始这一局', () => startRun(p.mode, [], p.picks),
+      'primary', { size: 17, sub: `${p.picks.length} 个主题` });
+  } else {
+    text(`至少选 ${BAL.topicsMin} 个主题`, x + w - pad, fy + 30,
+      { size: 15, color: withAlpha(C.red, 0.9), align: 'right' });
+  }
+
+  text(`已选 ${p.picks.length} / ${BAL.topicsMax}`, x + pad, fy + 18, { size: 14, color: C.ink2 });
+  text(`同一道题答对 ${BAL.retireAt} 次之后不再抽到，但仍能在题库里看到。`,
+    x + pad, fy + 42, { size: 12, color: C.faint });
 }
 
 /* ── 说明 ─────────────────────────────────────────────────── */
@@ -1076,16 +1183,21 @@ function drawHelp() {
       '答对足够次数之后，这一场剩下的时间它直接打、不再出题。计数每场清零。',
       '答错不补格挡、不补抽。橡皮、草稿纸、装订线各改其中一条。',
     ]],
-    ['每一场都有自己的题池', [
+    ['开局先选 2–5 个主题', [
+      `勾选顺序就是出题顺序：前一个主题的题走完，才轮到下一个。每个主题最多带 ${BAL.runTopicQuota} 道，整局共用这一份。`,
+      '开局之后不能换主题，想换只能重开一局。',
+      `同一道题答对 ${BAL.retireAt} 次之后不再抽到，但仍能在题库里看到；答错不算次数。`,
+    ]],
+    ['每一场都有自己的题量', [
       '开战时按牌组算题量：牌组里贵的牌越多，这一场新题越多。顶栏「题 N」是本场还没问过的新题。',
-      '点开一张要答题的知识卡消耗一道，答错也消耗。新题用完不锁牌，改问本局被问得最少的题，顶栏显示「题 复用」。',
-      '同一道题一局最多进 3 次新题池。',
+      '点开一张要答题的知识卡消耗一道，答错也消耗。本局答对过的题不再发给玩家；新题用完不锁牌，改问本局被问得最少的题，顶栏显示「题 复用」。',
+      `同一道题一局最多被抽 ${MAX_PICK_PER_RUN} 次，免得一道一直答不对的题把位置占光。`,
     ]],
     ['三种模式，开局前选', [
       '学习：借书证 + 课表，2 个初始增益。',
       '复习：只带借书证，1 个初始增益。',
       '测试：没有初始增益；答对不退行动力，也没有额外防御。',
-      '模式只决定开局带哪几个增益。',
+      '模式只决定开局带哪几个增益；模式和主题都在开局前定死。',
     ]],
     ['行动力是唯一的节奏', [
       // 读 rulesStatic()：BAL 是不带增益的声明值，写死在帮助页会和实际抽牌数差开。
@@ -1240,7 +1352,7 @@ function drawPack() {
     '= B                   → 正确答案字母（不能越过选项数）',
     '+ 解析（可选，答完会显示）',
     '! 固定顺序            → 有「以上都对」这类选项时必写',
-    '点开一张牌 → 从当前这一章的题目里抽；这一章没题就抽全部',
+    '点开一张牌 → 从本局选中主题的题里抽',
     `卡面（${PACK.cards.length} 张 / 攻挡 / 效果）内置，md 换不掉`,
   ];
   roundRect(x + 44, y + 120, w - 88, 216, 10);
