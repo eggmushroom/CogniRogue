@@ -1109,8 +1109,20 @@ function drawTopics(p: { mode: ModeId | null; picks: string[] }) {
     g.fillStyle = withAlpha(tint, on ? 1 : 0.5);
     g.fill();
 
-    text(name, cx + 26, cy + 36, { size: 17, weight: 700, color: on ? C.ink : C.ink2 });
-    text(`${pool.length} 道 · 可抽 ${left}`, cx + 26, cy + 64,
+    // 主题名是题库作者写的，长度不受控 —— 真语料里有
+    // 「使用包、Crate 和模块管理不断增长的项目」这种，单行不截断会直接压到隔壁牌上。
+    // 两行封顶，再放不下就把第二行收成省略号：截断必须留痕，静默截断会被读成"本来就叫这个"。
+    const nameW = cw - 26 - 14;
+    g.save();
+    g.font = font(17, 700, FONT_UI);
+    const wrapped = wrapText(name, nameW);
+    g.restore();
+    const titleLines = wrapped.length > 2 ? [wrapped[0], `${wrapped[1]}…`] : wrapped;
+    titleLines.forEach((ln, k) => {
+      text(ln, cx + 26, cy + 34 + k * 19,
+        { size: 17, weight: 700, color: on ? C.ink : C.ink2, maxW: nameW });
+    });
+    text(`${pool.length} 道 · 可抽 ${left}`, cx + 26, cy + cardH - 26,
       { size: 12, color: left ? C.dim : withAlpha(C.red, 0.85) });
 
     // 右下角写的是**出题顺序**，不是序号：这张牌是第几个被勾上的
