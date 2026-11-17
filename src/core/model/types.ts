@@ -462,6 +462,7 @@ export type Panel =
   | { k: 'pile'; kind: 'draw' | 'discard' }
   | { k: 'help' }
   | { k: 'pack'; msg: string; ok: boolean }
+| { k: 'settings'; msg: string; ok: boolean }
   | { k: 'report'; data: ReportData };
 
 export interface GameState {

@@ -2,7 +2,7 @@ import { G } from '../core/infra';
 import { after } from '../core/infra/schedule';
 import {
   countQuestions, importBank, jobState, listBanks, refreshRemoteBanks, removeBank,
-  setGenConfig, sourceBank, startGenerate, uploadDoc, useBank, useRemoteBank,
+  sourceBank, startGenerate, uploadDoc, useBank, useRemoteBank,
 } from '../core/library';
 
 /**
@@ -91,23 +91,6 @@ export async function generateFromDoc() {
       return say('生成回来是空的：服务跑完了，但一道题也没出。多半是这份文档里没有能出题的段落 —— 看看服务终端的输出。', false);
     }
     return say(`已生成「${bank.name}」：${bank.total} 道题 / ${bank.topics} 个主题，已切过去。`, true);
-  }
-}
-
-/** 模型配置走剪贴板：`{"baseUrl":"…","key":"…","model":"…"}`。key 存服务那侧，不进浏览器存储。 */
-export async function pasteGenConfig() {
-  try {
-    const txt = (await navigator.clipboard.readText()).trim();
-    if (!txt) return say('剪贴板是空的。', false);
-    const cfg = JSON.parse(txt) as { baseUrl?: string; key?: string; model?: string };
-    if (!cfg.key) return say('配置里没有 key。', false);
-    const ok = await setGenConfig({
-      baseUrl: String(cfg.baseUrl ?? ''), key: String(cfg.key), model: String(cfg.model ?? ''),
-    });
-    return say(ok ? `模型配置已交给服务：${cfg.model || '默认模型'}。现在可以从文档生成题库了。`
-      : '服务没有接受这份配置（它在跑吗？）。', ok);
-  } catch (err) {
-    return say('配置要是一段 JSON：{"baseUrl":"…","key":"…","model":"…"}。' + (err as Error).message, false);
   }
 }
 

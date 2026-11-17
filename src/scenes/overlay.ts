@@ -6,7 +6,7 @@ import { easeOut } from '../gfx/geom';
 import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
 import { clamp, G, shuffle } from '../core/infra';
 import { curFloor } from '../core/map';
-import { countQuestions, isRetired, listBanks, serviceOnline, serviceReady, sourceBank } from '../core/library';
+import { countQuestions, DEFAULT_SERVICE, isRetired, listBanks, serviceModelName, serviceOnline, serviceReady, sourceBank } from '../core/library';
 import {
   BASICS, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded, upgradedId,
   isXCost, rulesStatic, UP_MARK,
@@ -21,7 +21,8 @@ import {
 } from '../core/journey';
 import type { Feedback, ModeId, PowerDef, Question, QView } from '../core/model';
 import { drawReport } from './report';
-import { dropBank, generateFromDoc, pasteGenConfig, pastePack, requestPackFile, switchBank } from './packio';
+import { dropBank, generateFromDoc, pastePack, requestPackFile, switchBank } from './packio';
+import { pasteModelConfig, reconnectService } from './settings';
 
 /* ── 通用外壳 ─────────────────────────────────────────────── */
 
@@ -154,6 +155,7 @@ export function drawOverlay(t: number, quiz: QuizState = IDLE_QUIZ) {
       p.kind === 'draw' ? G.draw.slice().reverse() : G.discard);
     case 'help': return drawHelp();
     case 'pack': return drawPack();
+    case 'settings': return drawSettings();
     case 'report': return drawReport(p.data);
     default: return;
   }
@@ -1435,20 +1437,82 @@ function drawPack() {
       x + pad, sy, { size: 13, color: C.dim, maxW: w - pad * 2 });
   }
 
-  // 最底一行：格式速查（左下）+ 生成能力（右下）。没有 key 时这里就是入口。
+  // 最底一行只留格式速查。模型配没配、连没连上都在「设置」里说，这里不写第二遍。
   const ly = y + h - 44;
   text('格式：## 主题 / ### 题干 / A) 选项 / = 答案字母（样例 packs/algorithms.md）',
     x + pad, ly, { size: 12, color: C.faint, maxW: w - pad * 2 - 240 });
   if (!online) {
-    text('生成要在本机跑 npm run serve', x + w - pad, ly, { size: 12, color: C.faint, align: 'right' });
-  } else if (serviceReady()) {
-    text('模型已配置', x + w - pad, ly, { size: 12, color: C.dim, align: 'right' });
+    text('从文档建题库要先跑 npm run serve', x + w - pad, ly, { size: 12, color: C.faint, align: 'right' });
+  }
+}
+
+/**
+ * 设置：说明、本机服务、出题模型。三行都是"看一眼状态、按一下就走"，
+ * 没有开关，也没有输入框 —— 需要输入一长串字符的只有模型配置，那条走剪贴板。
+ */
+function drawSettings() {
+  const p = G.panel;
+  if (p.k !== 'settings') return;
+  dim();
+  const w = 760;
+  const rowH = 100;
+  const h = 112 + rowH * 3 + 76;
+  const x = (VW - w) / 2;
+  const y = (VH - h) / 2;
+  box(x, y, w, h, withAlpha(C.gold, 0.35));
+  heading('设置', x + 44, y + 62, '说明、本机服务、出题模型 —— 都是这台机器上的事。');
+
+  const online = serviceOnline();
+  const ready = serviceReady();
+  const remote = listBanks().filter((b) => b.remote).length;
+
+  const rows = [
+    {
+      name: '玩法说明',
+      desc: '牌怎么打、题从哪来、界面上每块是什么',
+      btn: '打开 ›',
+      color: C.dim,
+      run: () => { G.panel = { k: 'help' }; },
+    },
+    {
+      name: '本机服务',
+      desc: online
+        ? `已连接 · ${DEFAULT_SERVICE} · 另有 ${remote} 份题库`
+        : `未连接 · 只用随程序的 5 份题库`,
+      btn: online ? '重新连接' : '试着连接',
+      color: online ? C.green : C.dim,
+      run: () => { void reconnectService(); },
+    },
+    {
+      name: '出题模型',
+      desc: ready
+        ? `已配置（${serviceModelName() || '默认模型'}）· 用来从文档生成题库`
+        : '未配置 —— 「从文档建题库」要先配它',
+      btn: '粘贴配置',
+      color: ready ? C.green : C.dim,
+      run: () => { void pasteModelConfig(); },
+    },
+  ];
+
+  rows.forEach((r, i) => {
+    const ry = y + 112 + i * rowH;
+    if (i) {
+      g.fillStyle = 'rgba(255,255,255,.06)';
+      g.fillRect(x + 44, ry, w - 88, 1);
+    }
+    text(r.name, x + 44, ry + 40, { size: 16, weight: 700, color: C.ink });
+    text(r.desc, x + 44, ry + 64, { size: 12, color: r.color, maxW: w - 88 - 168 });
+    action(x + w - 44 - 132, ry + 26, 132, 40, r.btn, r.run, 'ghost', { size: 14 });
+  });
+
+  const fy = y + h - 36;
+  if (p.msg) {
+    g.font = font(13, 500, FONT_UI);
+    g.fillStyle = p.ok ? C.green : C.red;
+    const lines = wrapText(p.msg, w - 88).slice(0, 2);
+    lines.forEach((ln, i) => g.fillText(ln, x + 44, fy - (lines.length - 1 - i) * 19));
   } else {
-    const lw = 96;
-    const lx = x + w - pad - lw;
-    const hov = hover(lx, ly - 14, lw, 22);
-    text('粘贴模型配置 ›', lx + lw, ly, { size: 12, color: hov ? C.gold : C.dim, align: 'right' });
-    onClick(lx, ly - 14, lw, 22, () => pasteGenConfig(), 'pack:cfg');
+    text('Esc 关闭', x + 44, fy, { size: 12, color: C.faint });
   }
 }
 

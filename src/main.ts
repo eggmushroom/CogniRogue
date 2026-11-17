@@ -77,8 +77,8 @@ let enemyHold = 0;
 
 /** 组合根交给世界层的两个入口；场景自己不认识浮层状态。 */
 const SCENE_HOOKS = {
-  openHelp: () => { G.panel = { k: 'help' }; },
   openPack: () => { G.panel = { k: 'pack', msg: '', ok: true }; },
+  openSettings: () => { G.panel = { k: 'settings', msg: '', ok: true }; },
 };
 
 onFx((e) => {
@@ -180,7 +180,7 @@ keyHandler((k) => {
     if (p.k === 'cardget') { ackCardGet(); return; }
     // cardpick 也要能按 Esc 退出：取消后回到事件 / 复习面板，账一起清掉。
     if (p.k === 'question' || p.k === 'deck' || p.k === 'pile' || p.k === 'cardpick'
-        || p.k === 'help' || p.k === 'pack' || p.k === 'boon' || p.k === 'topic') cancelPanel();
+        || p.k === 'help' || p.k === 'pack' || p.k === 'settings' || p.k === 'boon' || p.k === 'topic') cancelPanel();
     return;
   }
   if (k === 'confirm') {

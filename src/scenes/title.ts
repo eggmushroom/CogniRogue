@@ -7,13 +7,17 @@ import { resumeRun, runSaveInfo } from '../core/journey';
 import { bankProgress, countQuestions, sourceBank } from '../core/library';
 
 /**
- * 世界层：只画标题、按钮、题库卡片、进度和它们的热区；书架由 layers.ts 的背景层统一画。
+ * 世界层：只画标题、三个入口、学习进度和它们的热区；书架由 layers.ts 的背景层统一画。
  *
- * 首页只回答三个问题：**接着打还是开新的**、**这些题是哪来的**、**我学到哪了**。
- * 之前「题库」既是一颗按钮、又是底部一段单独的文字，中间空着一大片 ——
- * 同一个东西写两遍，还互相离得很远。现在合成一张卡片，空出来的位置放进度。
+ * 首页只回答三件事：**接着打还是开新的**、**这些题是哪来的**、**我学到哪了**。
+ * 三颗按钮就是三个入口，题库名写在「题库」那颗的副标题里 —— 它原来是单独一张卡片，
+ * 和按钮各占一列宽、左边缘还差一截，同一个东西在页面上出现两遍。
+ *
+ * 玩法说明没有消失，它搬进了「设置」：那是一页说明，不是每天要按的东西。
  */
-export function drawTitle(t: number, openHelp: () => void, openPack: () => void) {
+export function drawTitle(
+  t: number, openPack: () => void, openSettings: () => void,
+) {
   const cx = VW / 2;
 
   // 标题光
@@ -46,67 +50,59 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
     size: 15, align: 'center', color: C.dim,
   });
 
-  // 按钮、题库卡片、进度条共用同一列宽：三块各自居中最容易看出"左边缘不齐"
   const bw = 460;
   const bx = cx - bw / 2;
+  const bh = 64;
 
-  // 有断点就把它摆到第一位。100 层的一局接近一小时，首页上「继续」比「开始」更常用；
-  // 反过来，一旦按错「开始新的一局」，代价不是十分钟，是整座塔：
-  // 所以破坏性的那个降成次按钮，要点的那个是唯一带金边的。
+  /*
+   * 有断点时整列上提，并在「继续」和「题库」之间插一行小字「开始新的一局」。
+   *
+   * 100 层的一局接近一小时，首页上「继续」比「开始」更常用；反过来，一旦按错
+   * 「开始新的一局」，代价不是十分钟，是整座塔 —— 所以它是小字，不是按钮。
+   */
   const save = runSaveInfo();
-  let cardTop: number;
+  let by: number;
   if (save) {
-    action(bx, 424, bw, 60, '继续这一局', () => { resumeRun(); }, 'primary', {
-      size: 23, sub: `第 ${save.stage} 幕 · ${save.stageName}`,
+    action(bx, 416, bw, bh, '继续这一局', () => { resumeRun(); }, 'primary', {
+      size: 23, sub: `第 ${save.stage} 幕 · ${save.stageName} · ${save.hp}/${save.maxHp} 生命`,
     });
-    text(`第 ${save.floor}/100 层 · ${save.hp}/${save.maxHp} 生命`, cx, 506, {
-      size: 13, align: 'center', color: C.dim,
-    });
-    action(bx, 524, bw, 50, '开始新的一局', () => { G.panel = { k: 'boon' }; });
-    action(bx, 586, bw, 50, '这游戏怎么玩', openHelp);
-    cardTop = 654;
+    drawNewRunLink(496);
+    by = 512;
   } else {
-    action(bx, 448, bw, 60, '开始新的一局', () => { G.panel = { k: 'boon' }; }, 'primary', { size: 22 });
-    action(bx, 524, bw, 52, '这游戏怎么玩', openHelp);
-    cardTop = 596;
+    action(bx, 452, bw, bh, '开始游戏', () => { G.panel = { k: 'boon' }; }, 'primary', { size: 23 });
+    by = 532;
   }
 
-  drawBankCard(cardTop, openPack);
-  drawProgress(cardTop + 96);
+  // 题库那颗的副标题就是"正在用哪份、共多少题"，点开是题库面板
+  const src = sourceBank();
+  action(bx, by, bw, bh, '题库', openPack, 'ghost', {
+    size: 21, sub: `${src.name} · ${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个主题`,
+  });
+  action(bx, by + 80, bw, bh, '设置', openSettings, 'ghost', {
+    size: 21, sub: '玩法说明 · 本机服务 · 出题模型',
+  });
 
-  // 版本和许可合成右下角一行。左下原来还有一行"v0.4 · TypeScript + Canvas"：
-  // 技术栈对玩家没有意义，对读源码的人 README 里也有。
+  // 进度条的位置两种版式一致：多了一个断点，它不该跟着往下跳
+  drawProgress(720);
+
+  // 版本和许可合成右下角一行。技术栈对玩家没有意义，读源码的人看 README。
   text('v0.4 · MIT License', VW - 40, VH - 28, { size: 12, color: C.faint, align: 'right' });
 }
 
-/** 现在用的是哪份题库 —— 名字、题数、主题数都在这里，点开是题库面板。 */
-function drawBankCard(y: number, openPack: () => void) {
-  const w = 460;
+/**
+ * 「开始新的一局」：一行小字，不是按钮。它会丢掉断点，所以不配和「继续」抢注意力。
+ */
+function drawNewRunLink(y: number) {
+  const w = 160;
   const x = VW / 2 - w / 2;
-  const h = 76;
-  const hv = hover(x, y, w, h);
-
-  roundRect(x, y, w, h, 12);
-  g.fillStyle = hv ? 'rgba(255,255,255,.06)' : 'rgba(255,255,255,.028)';
-  g.fill();
-  g.strokeStyle = hv ? withAlpha(C.gold, 0.7) : C.line;
-  g.lineWidth = 1.3;
-  g.stroke();
-
-  // 首页展示的是**来源题库**（正在用的那份），不是某一幕切出来的切片。
-  // 数的是**题池**：卡和题解耦之后，玩家真正会遇到的分组是题库里的 `## 主题`。
-  const src = sourceBank();
-  text(src.name, x + 22, y + 30, { size: 17, weight: 700, color: C.ink, maxW: w - 140 });
-  text(`${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个主题`,
-    x + 22, y + 54, { size: 12, color: C.dim });
-  text('换一份 ›', x + w - 22, y + 42, { size: 13, color: hv ? C.gold : C.dim, align: 'right' });
-
-  onClick(x, y, w, h, openPack, 'title:bank');
+  const hv = hover(x, y - 16, w, 24);
+  text('开始新的一局', VW / 2, y, { size: 13, align: 'center', color: hv ? C.gold : C.dim });
+  onClick(x, y - 16, w, 24, () => { G.panel = { k: 'boon' }; }, '开始新的一局');
 }
 
 /**
  * 学到哪了：答对满 `BAL.retireAt` 次的题不再抽，所以"已掌握"就是这道进度条。
- * 一个学习游戏，首页上一眼能看到自己攒了多少，比知道题库有几百道题重要得多。
+ * 一个学习游戏，首页上一眼看到自己攒了多少，比知道题库有几百道题重要得多。
  */
 function drawProgress(y: number) {
   const w = 460;

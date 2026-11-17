@@ -155,7 +155,7 @@ export function cancelPanel() {
     G.panel = { k: 'boon' };
     return;
   }
-  if (G.panel.k === 'deck' || G.panel.k === 'pile'
+  if (G.panel.k === 'deck' || G.panel.k === 'pile' || G.panel.k === 'settings'
       || G.panel.k === 'help' || G.panel.k === 'pack' || G.panel.k === 'boon') {
     G.panel = { k: 'none' };
   }

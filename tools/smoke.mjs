@@ -416,8 +416,24 @@ if (CPU_RATE > 0) {
 
 await boot();
 
+/**
+ * 首页只该有三个入口。这条同时守住"题库不再是一张单独的卡片"和
+ * "玩法说明搬进设置"：多了少了都是版式回来了。
+ */
+await step('首页三个入口，设置能开能关', async () => {
+  const want = ['开始游戏', '题库', '设置'];
+  const got = await evalJs(`cog.hots().map((h) => h.label)`);
+  for (const w of want) {
+    if (!got.includes(w)) throw new Error(`首页没有「${w}」：${got.join(' / ')}`);
+  }
+  await clickLabel('设置');
+  if (!await waitFor('打开 ›')) throw new Error('设置面板没打开');
+  await pressKey('Escape', 'Escape', 27);
+  if (await waitFor('打开 ›', 800)) throw new Error('Esc 关不掉设置面板');
+}, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
 await step('标题 → 选模式 → 选两个主题 → 开局', async () => {
-  await clickLabel('开始新的一局');
+  await clickLabel('开始游戏');
   const label = await waitBoon();
   if (!label) throw new Error('开局选模式没有出现');
   await clickLabel(label);

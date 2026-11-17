@@ -44,15 +44,15 @@ export function drawSceneBackdrop(screen: string, t: number) {
 }
 
 export interface SceneHooks {
-  openHelp(): void;
   openPack(): void;
+  openSettings(): void;
 }
 
 /** 世界层：HUD / 节点 / 立绘 / 手牌，以及它们各自的点击热区。 */
 export function drawSceneWorld(screen: string, t: number, dt: number, hooks: SceneHooks) {
   switch (screen) {
     case 'atlas': drawAtlas(t); return;
-    case 'title': drawTitle(t, hooks.openHelp, hooks.openPack); return;
+    case 'title': drawTitle(t, hooks.openPack, hooks.openSettings); return;
     case 'map': drawMap(t, dt); return;
     default: drawBattle(t, dt); return;
   }

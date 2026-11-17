@@ -1,5 +1,3 @@
-import { readStore, writeStore } from '../infra/storage';
-
 /**
  * 本机题库服务的客户端。**前端只查询显示**：题库清单、原文、答题记账、
  * 文档生成全在服务那侧（`server/index.mjs`，`npm run serve`）。
@@ -8,14 +6,14 @@ import { readStore, writeStore } from '../infra/storage';
  * 玩家照样有随程序的五份题库。所以这里的每个函数失败都返回空值，不抛。
  */
 
-const KEY = 'cognirogue.service.v1';
+/**
+ * 服务的地址。**写死一个**：端口是可配的，但"浏览器配一个、服务配另一个"只会多一处
+ * 对不上的地方，而它的全部价值就是找得到对方。服务那侧改端口（`PORT=`）时，
+ * 这里也要改。
+ */
 export const DEFAULT_SERVICE = 'http://127.0.0.1:7777';
 
-export const serviceBase = (): string => (readStore(KEY) ?? DEFAULT_SERVICE).replace(/\/+$/, '');
-
-export function setServiceBase(url: string) {
-  writeStore(KEY, url.trim().replace(/\/+$/, ''));
-}
+export const serviceBase = (): string => DEFAULT_SERVICE;
 
 export interface RemoteBank {
   id: string;

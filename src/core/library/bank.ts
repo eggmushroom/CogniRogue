@@ -142,8 +142,11 @@ let remoteRows: Array<{ id: string; name: string; total: number; topics: number 
 let serviceUp = false;
 /** 服务能不能出题（它那侧有没有模型 key；key 不下发到浏览器）。 */
 let serviceCanGen = false;
+/** 服务在用的模型名，只为了在设置里显示"配的是哪个"。 */
+let serviceModel = '';
 export const serviceOnline = (): boolean => serviceUp;
 export const serviceReady = (): boolean => serviceCanGen;
+export const serviceModelName = (): string => serviceModel;
 
 const shapeOf = (b: QuestionBank) => ({
   total: countQuestions(b),
@@ -252,6 +255,7 @@ export async function refreshServiceInfo(): Promise<boolean> {
   const info = await serviceInfo();
   serviceUp = !!info;
   serviceCanGen = !!info?.canGenerate;
+  serviceModel = info?.model ?? '';
   if (!serviceUp) remoteRows = [];
   return serviceUp;
 }
