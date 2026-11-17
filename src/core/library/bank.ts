@@ -124,9 +124,16 @@ interface StoredBank {
   topics: number;
 }
 
-/** 内置那份的档案。`text` 由 `initBanks()` 在启动时灌进来。 */
-let builtin: { name: string; text: string; total: number; topics: number } =
-  { name: '内置题库', text: '', total: 0, topics: 0 };
+/** 随程序走的那些题库（`builtin.ts` 在启动时灌进来）。删不掉。 */
+interface ShippedBank {
+  id: string;
+  name: string;
+  text: string;
+  total: number;
+  topics: number;
+}
+
+let shipped: ShippedBank[] = [];
 
 const shapeOf = (b: QuestionBank) => ({
   total: countQuestions(b),
@@ -149,8 +156,8 @@ function stored(): StoredBank[] {
 
 const saveStored = (list: StoredBank[]) => writeStore(BANKS_KEY, JSON.stringify(list));
 
-/** 现在用的是哪份：`'builtin'` 或某个导入题库的 id。 */
-export const activeBankId = (): string => readStore(ACTIVE_KEY) ?? 'builtin';
+/** 现在用的是哪份。空串表示"没选过"，用列表里第一份。 */
+export const activeBankId = (): string => readStore(ACTIVE_KEY) ?? '';
 
 export interface BankRow {
   id: string;
@@ -163,33 +170,45 @@ export interface BankRow {
 }
 
 export function listBanks(): BankRow[] {
-  const on = activeBankId();
-  const rows: BankRow[] = [
-    { id: 'builtin', name: builtin.name, total: builtin.total, topics: builtin.topics, on: on === 'builtin', builtin: true },
-  ];
+  const on = activeBankId() || shipped[0]?.id || '';
+  const rows: BankRow[] = shipped.map((b) => ({
+    id: b.id, name: b.name, total: b.total, topics: b.topics, on: b.id === on, builtin: true,
+  }));
   for (const b of stored()) {
-    rows.push({ id: b.id, name: b.name, total: b.total, topics: b.topics, on: on === b.id, builtin: false });
+    rows.push({ id: b.id, name: b.name, total: b.total, topics: b.topics, on: b.id === on, builtin: false });
   }
   return rows;
 }
 
 /**
- * 启动：先把内置那份挂上，再恢复上次用的那份（不在了就回落内置）。
+ * 启动：把随程序走的题库都量一遍，再挂上该用的那份。
  * 顺序不能反 —— 恢复失败时 `BANK` 必须是可用的，标题页会直接读它。
  */
-export function initBanks(md: string): void {
-  builtin = { name: '内置题库', text: md, total: 0, topics: 0 };
-  const r = loadQuestionBank(md);
-  if (r.ok) builtin = { ...builtin, name: BANK.name, ...shapeOf(BANK) };
-  const id = activeBankId();
-  if (id !== 'builtin' && stored().some((b) => b.id === id)) useBank(id);
+export function initBanks(packs: Array<{ id: string; md: string }>): void {
+  shipped = [];
+  for (const p of packs) {
+    const r = loadQuestionBank(p.md);
+    // 随程序走的题库解析不过说明是构建出了问题：少一份，别让整个游戏起不来
+    if (!r.ok) continue;
+    shipped.push({ id: p.id, name: BANK.name, text: p.md, ...shapeOf(BANK) });
+  }
+  const first = shipped[0];
+  if (!first) return;
+  loadQuestionBank(first.text);
+
+  // 老版本把"内置那份"记成字面量 'builtin'，这里当成第一份
+  const want = activeBankId() === 'builtin' ? first.id : activeBankId();
+  if (!want || want === first.id) return;
+  // 上次用的那份可能已经不在了（导入的被删掉、或换了版本）：那就留在默认那份上
+  if (shipped.some((b) => b.id === want) || stored().some((b) => b.id === want)) useBank(want);
 }
 
 /** 切到某一份。切完立刻生效（面板与标题页都读 `BANK`），已经开局的那一局不受影响。 */
 export function useBank(id: string): { ok: boolean; msg: string } {
-  if (id === 'builtin') {
-    const r = loadQuestionBank(builtin.text);
-    if (r.ok) writeStore(ACTIVE_KEY, 'builtin');
+  const ship = shipped.find((b) => b.id === id);
+  if (ship) {
+    const r = loadQuestionBank(ship.text);
+    if (r.ok) writeStore(ACTIVE_KEY, id);
     return r;
   }
   const rec = stored().find((b) => b.id === id);
@@ -224,7 +243,7 @@ export function importBank(text: string): { ok: boolean; msg: string } {
 
   // 写不进去（配额满、隐私模式）时不能假装存好了：读回来比一比
   if (stored().length !== list.length) {
-    return { ok: true, msg: `${r.msg}但这台浏览器存不下（配额满了），刷新就回到内置题库。` };
+    return { ok: true, msg: `${r.msg}但这台浏览器存不下（配额满了），刷新就回到默认题库。` };
   }
   writeStore(ACTIVE_KEY, id);
   return { ok: true, msg: `${r.msg}已经存在这台浏览器里，下次打开还是它。` };
@@ -238,8 +257,9 @@ export function removeBank(id: string): { ok: boolean; msg: string } {
   if (left.length === list.length) return { ok: false, msg: '没有这份题库。' };
   saveStored(left);
   if (activeBankId() === id) {
-    const r = useBank('builtin');
-    return { ok: true, msg: `删掉了「${name}」，换回${r.ok ? '内置题库' : '空题库'}。` };
+    const back = shipped[0];
+    const r = back ? useBank(back.id) : { ok: false, msg: '' };
+    return { ok: true, msg: `删掉了「${name}」，换回${r.ok ? '默认题库' : '空题库'}。` };
   }
   return { ok: true, msg: `删掉了「${name}」。` };
 }

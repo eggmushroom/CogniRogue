@@ -1,5 +1,5 @@
 import './style.css';
-import { BUILTIN_MD } from './core/builtin';
+import { SHIPPED_PACKS } from './core/builtin';
 import { EFFS, POWER_BY_ID } from './core/model';
 import { beginFrame, g, initCanvas, toLogic } from './gfx/canvas';
 import { loadArt } from './gfx/assets';
@@ -296,8 +296,8 @@ function frame(now: number) {
 }
 
 async function boot() {
-  // 卡面在 cards/catalog.ts 里，启动时只把题库灌进 BANK（内置那份 + 上次用的那份）
-  initBanks(BUILTIN_MD);
+  // 卡面在 cards/catalog.ts 里，启动时只把题库灌进 BANK（随程序的几份 + 玩家导入的）
+  initBanks(SHIPPED_PACKS);
   if (import.meta.env.DEV) {
     // 开发 / 截图入口：生产构建不会执行这个分支。
     const { devJump } = await import('./dev/jump');

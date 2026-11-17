@@ -1355,8 +1355,9 @@ function drawPack() {
   const listW = w - pad * 2;
   const rows = listBanks();
   const contentH = Math.max(rowH, rows.length * (rowH + gap) - gap);
-  // 高度跟着条目走：只有两三份题库时不要留出一大片空面板
-  const listH = Math.min(contentH, 336);
+  // 高度跟着条目走：两三份题库时不留一大片空面板。上限按 6 行算 ——
+  // 随程序的就有 5 份，刚好一行不留地被裁一半是最难看的
+  const listH = Math.min(contentH, 448);
   const h = 268 + listH;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
