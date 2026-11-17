@@ -1,4 +1,4 @@
-import type { AnswerRecord, StageDigest } from '../model/types';
+import type { StageDigest } from '../model/types';
 import { readStore, storeAvailable, writeStore } from '../infra/storage';
 
 /**
@@ -69,7 +69,7 @@ export function resetStageMemory() {
 }
 
 /** 答完一道题记一笔。按**章节**归档，题号只用于定位具体是哪道题。 */
-export function recordAnswer(a: Pick<AnswerRecord, 'stageTopic' | 'qid' | 'right'>) {
+export function recordAnswer(a: { stageTopic: string; qid: string; right: boolean }) {
   const e = stageMemOf(a.stageTopic);
   if (a.right) e.ok += 1;
   else e.bad += 1;
@@ -78,26 +78,9 @@ export function recordAnswer(a: Pick<AnswerRecord, 'stageTopic' | 'qid' | 'right
   else s.bad += 1;
 }
 
-/**
- * 一章的摘要：正确率 + 错得最多的题。
- *
- * 只输出题号、不输出题干：摘要是给 agent 做生成依据的，不是第二份题库；
- * 题面在题库里，拿题号去查即可。
- */
-export function stageDigest(stage: number, topic: string): StageDigest {
+/** 一章的摘要：只报正确率，结算页读它。 */
+export function stageDigest(topic: string): StageDigest {
   const e = stageMemOf(topic);
   const total = e.ok + e.bad;
-  const weak = Object.keys(e.q)
-    .map((qid) => ({ qid, ok: e.q[qid].ok, bad: e.q[qid].bad }))
-    .filter((x) => x.bad > 0)
-    .sort((a, b) => b.bad - a.bad || a.ok - b.ok)
-    .slice(0, 8);
-  return {
-    stage,
-    topic,
-    ok: e.ok,
-    bad: e.bad,
-    mastery: total ? e.ok / total : 0,
-    weak,
-  };
+  return { ok: e.ok, bad: e.bad, mastery: total ? e.ok / total : 0 };
 }

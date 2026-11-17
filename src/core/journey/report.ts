@@ -14,7 +14,7 @@ export function endRun(win: boolean) {
   // 一局结束就没有断点了
   clearRun();
   const rows: ReportRow[] = CURRICULUM.map((plan) => {
-    const d = stageDigest(plan.stage, plan.topic);
+    const d = stageDigest(plan.topic);
     return { t: plan.topic, ok: d.ok, bad: d.bad, mast: d.mastery };
   });
   const total = rows.length ? rows.reduce((n, r) => n + r.mast, 0) / rows.length : 0;

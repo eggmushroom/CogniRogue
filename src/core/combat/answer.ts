@@ -192,12 +192,6 @@ function finishAnswer(ctx: AnswerCtx) {
 
   // 章节记忆按题号记；跨局的卡牌熟练度表已经删掉，这里只留会影响出题的那一份。
   recordAnswer({ stageTopic: G.stageTopic, qid: ctx.qid, right: ctx.right });
-  G.answers.push({
-    qid: ctx.qid, topic: ctx.q.topic, stageTopic: G.stageTopic, stage: G.stage, right: ctx.right, choice: ctx.choice,
-    answer: ctx.view.answer, stem: ctx.q.q.slice(0, 80),
-  });
-  // 环形缓冲，只留最近若干条
-  if (G.answers.length > 120) G.answers.shift();
 
   const v = ctx.v;
   // 同步这一刻只判玩家侧的即时死亡；敌人是否被打死要等最后一段落地，

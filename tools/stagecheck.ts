@@ -1355,7 +1355,7 @@ function missGain(eff: string) {
 }
 
 {
-  // 本章统计只由答题累加，和 answers 环形缓冲脱钩。
+  // 本章统计只由答题累加。
   battle(1, 'examiner');
   G.powers = [];
   G.ap = 9;

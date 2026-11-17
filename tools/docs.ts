@@ -43,8 +43,6 @@ const all = DOCS.map((d) => src[d]).join('\n');
 // 去游戏里找，找不到就是「文档在说一件不存在的事」。
 {
   const names = new Set(FOES.map((f) => f.name));
-  // 只查「**粗体**」里的名字：那是文档在指认具体某只怪，比正文里的随口一提可靠。
-  const bold = [...all.matchAll(/\*\*([^*\n]{2,10})\*\*/g)].map((m) => m[1]);
   // 只挑「像怪名」的：在 FOES 里有同字前缀/后缀，或者出现在机制段落里。
   // 这里用一个保守判据：**粗体 + 后接「的攻击 / 会 / 每回合 / 你答错」**这类谓语。
   const claimed = [...all.matchAll(
@@ -59,7 +57,6 @@ const all = DOCS.map((d) => src[d]).join('\n');
   });
   ok(missing.length === 0,
     `文档里指认的怪名都在 FOES 里（找不到：${missing.join('、') || '无'}）`);
-  void bold;
 }
 
 // ── 2. 增益名 ──

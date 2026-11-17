@@ -14,8 +14,6 @@ export interface LiveStat {
   blk: number;
   /** 这一手数值是怎么算出来的，写进判定面板 */
   reasons: string[];
-  /** 有没有待兑现的一次性加成；数值不在这里生效，见 planStrike */
-  boosted: boolean;
 }
 
 /** 此刻把这张牌打出去，它的攻/挡底数是多少。纯读，不写 G。 */
@@ -51,7 +49,7 @@ export function liveStatOf(id: CardId): LiveStat {
     reasons.push(`「${b.from}」留给下一张：伤害 ×${b.mul}${b.add ? ` +${b.add}` : ''}`);
   }
 
-  return { atk: Math.max(0, atk), blk: base.blk, reasons, boosted: !!b };
+  return { atk: Math.max(0, atk), blk: base.blk, reasons };
 }
 
 /**

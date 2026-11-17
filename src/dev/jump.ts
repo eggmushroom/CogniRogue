@@ -170,11 +170,6 @@ export function devJump() {
     G.floors = 5;
     G.stage = 3;
     enterStage(3);
-    // 本章答题也来自流水，不是卡牌记忆；造 18 条，12 对 6 错。
-    G.answers = Array.from({ length: 18 }, (_, i) => ({
-      qid: `q_demo_3_${i}`, topic: G.stageTopic, stageTopic: G.stageTopic, stage: G.stage,
-      right: i < 12, choice: 0, answer: 0, stem: `演示题 ${i + 1}`,
-    }));
     // 牌组里加一张 3 费卡：起手只给 0–1 费，所以这张一定是新卡种
     G.deck.push(PACK.cards.find((c) => c.cost === 3)!.id);
     endRun(true);

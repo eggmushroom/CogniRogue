@@ -43,17 +43,12 @@ export interface StagePlan {
   title: string;
 }
 
-/** 某一章当前的题库。运行时只认它。 */
-/** 一章的摘要，给结算页和下一章生成用；不放完整题面。 */
+/** 一章的答题摘要：结算页按它算每章正确率。 */
 export interface StageDigest {
-  stage: number;
-  topic: string;
   ok: number;
   bad: number;
-  /** 当前章节的正确率，只用于结算页。 */
+  /** 当前章节的正确率（0..1），只用于结算页。 */
   mastery: number;
-  /** 错得最多的题，按 bad 降序；给下一章生成时做重点。 */
-  weak: { qid: string; ok: number; bad: number }[];
 }
 
 /**
@@ -368,20 +363,6 @@ export interface MapNode {
   next: number[];
 }
 
-/** 一次答题的流水：只给统计、阶段摘要和导出用，不参与结算。 */
-export interface AnswerRecord {
-  qid: string;
-  /** 这道题在来源题库里的主题（内容归属） */
-  topic: string;
-  /** 这一手是在哪一章问的；章节记忆和结算按它归档。 */
-  stageTopic: string;
-  stage: number;
-  right: boolean;
-  choice: number;
-  answer: number;
-  stem: string;
-}
-
 /* ── 运行状态：只描述形状，唯一的可变实例在 `infra/state.ts` ── */
 
 export interface Feedback {
@@ -518,8 +499,6 @@ export interface GameState {
   qLeft: Question[];
   /** 本局每题被抽到几次；到 3 次不再进新题池。跨场保留，`startRun` 清。 */
   qPicked: Record<string, number>;
-  /** 本局答题流水（环形，最近 N 条）。阶段摘要与导出读它，不参与规则。 */
-  answers: AnswerRecord[];
   topicWrong: Record<string, number>;
   okThisTurn: number;
   /** 本回合答对了「本局错得最多的主题」；存主题名，每回合清零。 */
