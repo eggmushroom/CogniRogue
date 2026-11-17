@@ -227,6 +227,25 @@ id 就调它。所以 `costOf` / `planStrike` / 卡面 / 结算全都自动读�
 一起取消 —— 一次 Esc 就从"看结果"跳到"关掉整个面板"，会白丢一次精炼机会。
 `npm run smoke` 有一条断言专门盯"预览态与返回都不改牌组"，防止将来有人让它顺手改。
 
+### 事件白送的卡要摆出牌面
+
+事件给的是随机卡，选项上只能写「获得一张随机知识卡」—— 卡名要到选完才知道。
+早先选完只把卡名塞进一句会飘走的提示（`note` → `FX.floatText`），
+于是玩家读完那句话，仍然不知道这张牌打出来是几点：**名字不等于牌面**。
+
+现在 `grantCard()` / `copyCard()` 在把卡推进牌组的同一刻把面板换成 `cardget`，
+摆出这张牌的卡面。读数走 `defOf(id)` / `planStrike()`，所以事件给的
+「已精炼」那张显示的就是精炼后的数 —— 界面不许自己再算一遍。
+那一句结算话术改成挂在面板里（`cardget.note`），不再飘在卡上面盖住它。
+
+这一屏**没有"要不要"**：卡在选项被选中的那一刻就已经进牌组了，
+它只是让玩家看清自己拿到了什么。所以 `box()` 传 `onClose: null`（没有 ×），
+按卡、按「知道了」、按 Esc 都走 `ackCardGet()` → `finishNode()`。
+
+`chooseEventOption()` 里那几次读面板走 `panelNow()` 而不是直接读 `G.panel`：
+`run()` 会当场把面板换掉，而 TS 的 narrowing 还停在调用前，
+直接读会让 `after.k === 'cardget'` 被判成永远不成立（编译期就报"没有交集"）。
+
 ### 能力牌是另一套框架
 
 能力牌（`POWERS`）不是手牌：它不占牌位、不进牌组、不抽、不精炼、不遗忘，也不走 `planStrike()`。它的形状是 `PowerDef`（`scope` / `card` / `desc` / `icon`），由 `rulesStatic()`、`onceThisFight/Stage/Run()`、`applyInstant()` 三个时机兑现；渲染走 `drawPowerEmblem()`，不画卡面。**不要为了“统一”把 `PowerDef` 塞进 `CardDef`**：两者的生命周期和结算时机不同，合并只会让每个入口都多判一次“这到底是牌还是增益”。

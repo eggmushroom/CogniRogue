@@ -58,7 +58,10 @@ function grantCard(up: boolean): CardDef | null {
   const pool = PACK.cards.filter((c) => (copies[c.id] || 0) < rulesStatic().maxCopies);
   if (!pool.length) return null;
   const c = pick(pool);
-  G.deck.push(up ? upgradedId(c.id) : c.id);
+  const id = up ? upgradedId(c.id) : c.id;
+  G.deck.push(id);
+  // 卡已经进牌组了，但玩家还不知道它长什么样：把牌面摆出来再走。
+  G.panel = { k: 'cardget', id };
   return c;
 }
 
@@ -79,6 +82,8 @@ function copyCard(): CardDef | null {
   // 拿这一条去卡它，复印机会永远只印出白纸。
   if (d.kind !== 'basic' && same >= rulesStatic().maxCopies) return null;
   G.deck.push(id);
+  // 复印出来的是牌组里已有的某一张，玩家同样不知道随机挑中了谁。
+  G.panel = { k: 'cardget', id };
   return d;
 }
 
@@ -578,6 +583,16 @@ export function drawEvent(): EventDef {
   return ev;
 }
 
+/**
+ * 重新读一次面板。
+ *
+ * 选项的 `run()` 会直接换掉 `G.panel`（交给 cardpick / cardget），
+ * 但 TS 的 narrowing 还停在调用之前 —— 直接再读 `G.panel` 会被当成"还是 event"，
+ * 于是 `after.k === 'cardget'` 这类分支会被判成永远不成立。
+ * 走一次函数调用，narrowing 就断在边界上，也不必写 `as Panel`。
+ */
+const panelNow = (): Panel => G.panel;
+
 export function chooseEventOption(i: number) {
   if (G.panel.k !== 'event') return;
   const ev = G.panel.ev;
@@ -587,18 +602,31 @@ export function chooseEventOption(i: number) {
   // 变成「失去 0 点」而卡照给。判断放在唯一的入口，不在 9 个事件里各写一遍。
   if (!canPayHp(opt.payHp ?? 0)) return;
   const msg = opt.run();
-  // 选项可能把面板交给 cardpick；记住来源，取消时才能回到事件本身而不是直接关掉。
-  // `run()` 可能改写 G.panel，TS 仍按调用前的 narrowing 看它，所以这里重新按 Panel 读一次。
-  const after = G.panel as Panel;
+  // 选项可能把面板交给 cardpick / cardget；记住来源，取消时才能回到事件本身而不是直接关掉。
+  const after = panelNow();
   if (after.k === 'cardpick') after.from = { k: 'event', ev };
   // null 表示选项没被消费，面板留在原地
   if (msg === null) return;
   // 选完就把这一句送到玩家眼前。早先 `run()` 的返回值只被拿去判 `null`，
   // 42 个选项写的「你付出了 8 点生命」「你抄下了某某」全部没人读 ——
   // 界面只剩血条自己在动，玩家不知道刚才发生了什么。
-  if (msg) emit({ t: 'note', text: msg });
-  // 选项可能把面板交给 cardpick，收尾由 picker 自己做
-  if (G.panel.k === 'event') finishNode();
+  // 拿到卡的那一屏自己会摆出牌面，这句话挂在面板里，别飘在卡上面盖住它。
+  if (after.k === 'cardget') after.note = msg;
+  else if (msg) emit({ t: 'note', text: msg });
+  // 选项可能把面板交给 cardpick / cardget，收尾由那个面板自己做
+  if (panelNow().k === 'event') finishNode();
+}
+
+/**
+ * 看过到手的那张卡，继续走节点。
+ *
+ * 卡在 `grantCard()` 里就已经进牌组了，这一屏只是让玩家看见它 ——
+ * 所以这里没有"要不要"，按哪里都是同一个结果。
+ */
+export function ackCardGet() {
+  if (G.panel.k !== 'cardget') return;
+  G.panel = { k: 'none' };
+  finishNode();
 }
 
 /** 选牌收尾时结算待付的代价与收益。取消走 `cancelPanel`，那里直接清零。 */

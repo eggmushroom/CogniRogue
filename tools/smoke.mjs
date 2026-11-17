@@ -1120,6 +1120,31 @@ await boot(URL_ + '?dev=event');
 await step('事件 → 选一个选项', () => clickLabel('eventopt', 0), async () =>
   (await S('cog.state.panel.k')) !== 'event');
 
+// 事件白送的卡：选项上只能写「获得一张随机知识卡」，卡名要到选完才知道；
+// 而只报一个名字，玩家仍然不知道它打出来是几点。这一屏必须把牌面本身摆出来。
+await boot(URL_ + '?dev=event&ev=index-cards');
+await step('事件拿卡 → 摆出牌面，看过才回地图', async () => {
+  globalThis.__deckBefore = await S('cog.state.deck.length');
+  await clickLabel('eventopt', 0);
+  const st = await S(`({
+    k: cog.state.panel.k, id: cog.state.panel.id, deck: cog.state.deck,
+  })`);
+  if (st.k !== 'cardget') throw new Error('没有摆出卡面，面板是 ' + st.k);
+  if (st.deck.length !== globalThis.__deckBefore + 1) {
+    throw new Error('卡没进牌组：' + st.deck.length);
+  }
+  // 摆出来的必须就是刚进牌组的那一张 —— 不是"某一张长得差不多的"。
+  if (st.id !== st.deck[st.deck.length - 1]) {
+    throw new Error('摆出来的不是刚进牌组的那一张：' + JSON.stringify(st));
+  }
+  await clickLabel('知道了');
+}, async () => {
+  const st = await S(`({ k: cog.state.panel.k, deck: cog.state.deck.length })`);
+  if (st.k !== 'none') throw new Error('看过之后面板没收起：' + st.k);
+  if (st.deck !== globalThis.__deckBefore + 1) throw new Error('牌组不对：' + st.deck);
+  return true;
+});
+
 // 选牌类事件（旧笔记本：精炼一张，失去 10 点生命）打开面板后取消，
 // 必须回到事件本身、一分血不扣、也不白拿收益 —— 这条路径以前会把节点空丢在半路。
 await boot(URL_ + '?dev=event&ev=notebook');

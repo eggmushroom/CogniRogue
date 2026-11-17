@@ -10,7 +10,7 @@ import { G, onFx } from './core/infra';
 import { after } from './core/infra/schedule';
 import { loadQuestionBank } from './core/library';
 import { answer, cancelPanel, endTurn } from './core/combat';
-import { ackPower, cancelPreview, dismissFeedback } from './core/journey';
+import { ackCardGet, ackPower, cancelPreview, dismissFeedback } from './core/journey';
 import {
   DISCARD_TO, ENEMY, ENEMY_GROUND, HERO, heroHand,
   resetBattleView, syncBattle,
@@ -176,6 +176,8 @@ keyHandler((k) => {
     // 精炼预览是面板里的第二层：Esc 先退回列表，再按一次才连代价一起取消。
     // 一次 Esc 就从"看结果"跳到"关掉整个面板"会白丢一次精炼机会。
     if (p.k === 'cardpick' && p.pick !== undefined) { cancelPreview(); return; }
+    // 到手的那张卡没有"取消"可言：它已经进牌组了，Esc 就等于"知道了"。
+    if (p.k === 'cardget') { ackCardGet(); return; }
     // cardpick 也要能按 Esc 退出：取消后回到事件 / 复习面板，账一起清掉。
     if (p.k === 'question' || p.k === 'deck' || p.k === 'pile' || p.k === 'cardpick'
         || p.k === 'help' || p.k === 'pack' || p.k === 'boon') cancelPanel();
@@ -185,6 +187,7 @@ keyHandler((k) => {
     if (p.k === 'feedback') dismissFeedback();
     // 掉落面板只有一个出口，回车就是"知道了"
     else if (p.k === 'powerdrop') ackPower();
+    else if (p.k === 'cardget') ackCardGet();
     // 没有面板时，空格/回车结束回合：键盘能做的事不该只有鼠标能做。
     else if (p.k === 'none' && G.screen === 'battle') endTurn();
     return;

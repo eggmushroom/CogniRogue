@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { BAL, MODE_BY_ID, POWER_BY_ID } from '../src/core/model';
 import type { CardDef, CardId, ModeId, PowerId } from '../src/core/model';
 import {
-  G, PACK, answer, availableNodes, bankQuestionCount, canPay, cardAskState, chooseEventOption, defOf, dismissFeedback,
+  G, PACK, answer, ackCardGet, availableNodes, bankQuestionCount, canPay, cardAskState, chooseEventOption, defOf, dismissFeedback,
   endTurn, enterNode, forgetCard, loadQuestionBank, openCardPick, playBasic, playFree, restHeal,
   skipReward, startRun, takeCard, ackPower, askCard, mergePacks, upgradeCard, cardKind, askOf,
   moveOf, cancelPanel, isUpgraded, JUNK_ID, setScheduler,
@@ -249,6 +249,8 @@ function runOne(p: number, st: Stat) {
     }
     // 掉落面板：捡了就生效，唯一的选择是"知道了"
     if (panel.k === 'powerdrop') { ackPower(); continue; }
+    // 事件白送的卡：卡已经进牌组了，这一屏只是让玩家看清牌面。
+    if (panel.k === 'cardget') { ackCardGet(); continue; }
     if (panel.k === 'rest') {
       // 复习点：血线够就精炼，不够就休息。精炼是这一版唯一的"变强"路径：
       // 卡面 +3 攻/+3 挡，一副 15 张牌精炼一半，输出就翻了半倍。

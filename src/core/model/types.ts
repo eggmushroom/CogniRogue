@@ -457,6 +457,13 @@ export type Panel =
   | { k: 'reward'; cards: CardDef[]; ledger?: boolean }
   /** 精英 / Boss 掉落；只有一个 id，没有"要不要拿"。 */
   | { k: 'powerdrop'; id: PowerId }
+  /**
+   * 事件白送进牌组的卡。
+   *
+   * 早先只把卡名塞进一句会飘走的提示里，玩家读完也不知道那张牌打出来是几点 ——
+   * 名字不等于牌面。这一屏把卡本身摆出来，看过才回到节点。
+   */
+  | { k: 'cardget'; id: CardId; note?: string }
   | { k: 'rest' }
   | { k: 'cardpick'; mode: 'up' | 'rm'; from?: CardPickFrom; pick?: number }
   | { k: 'event'; ev: EventDef }

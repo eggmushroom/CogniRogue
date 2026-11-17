@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { BAL, FOES, MODES, POWERS, STAGES, STAGE_ROWS, effSummaryOf } from '../src/core/model';
 import type { MapNode, PowerId } from '../src/core/model';
 import {
-  EVENTS, G, answer, askCard, canAsk, canPay, canPayHp, cancelPanel, chooseEventOption, clearRun, defOf,
+  EVENTS, G, answer, askCard, canAsk, canPay, canPayHp, cancelPanel, ackCardGet, chooseEventOption, clearRun, defOf,
   dismissFeedback, endTurn, forgetCard, intentText, playBasic,
   runSaveInfo, skipReward, takeCard, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
   loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf, LEGACY_CARD_IDS,
@@ -501,6 +501,37 @@ function missGain(eff: string) {
   ok(G.hp === 42, `索引卡：拿卡付 8 点生命（${G.hp}）`);
   ok(G.deck.length === before + 1 && isUpgraded(G.deck[G.deck.length - 1]),
     '索引卡：多一张已精炼的知识卡');
+}
+
+{
+  // 6y. 事件白送的卡要看得见：只报一个名字，玩家仍然不知道它打出来是几点。
+  // 断言按消费者写 —— 验面板里摆的**就是刚进牌组的那一张**，不是验某个字段被赋过值。
+  startRun();
+  G.hp = 50;
+  G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'index-cards')! };
+  chooseEventOption(0);
+  const got = G.deck[G.deck.length - 1];
+  // 走 `panelOf()` 读：直接比 `G.panel.k` 会被上面那次赋值的 narrowing 判成"还是 event"。
+  const cp = panelOf('cardget');
+  ok(cp !== null, `拿卡后先把牌面摆出来（面板 ${G.panel.k}）`);
+  ok(cp !== null && cp.id === got,
+    `摆出来的正是刚进牌组的那一张（${got}）`);
+  ok(cp !== null && !!cp.note && cp.note.includes(defOf(got).name),
+    '结算话术挂在面板里，不飘在卡上面');
+  // 卡在这一步已经进牌组了：这一屏只是让人看清，不是"要不要"。
+  ackCardGet();
+  ok(panelOf('none') !== null, `看过之后面板收起（${G.panel.k}）`);
+
+  // 复印机挑的是牌组里已有的某一张，玩家同样不知道挑中了谁。
+  startRun();
+  G.hp = 50;
+  const deckBefore = G.deck.length;
+  G.panel = { k: 'event', ev: EVENTS.find((e) => e.id === 'copier')! };
+  chooseEventOption(0);
+  ok(G.deck.length === deckBefore + 1 && panelOf('cardget') !== null,
+    `复印机：多一张并把牌面摆出来（牌组 ${G.deck.length} 张）`);
+  ackCardGet();
+  ok(panelOf('none') !== null, '复印机：看过之后面板收起');
 }
 
 // ── 6z. 付不起的代价不许变成免费 ──

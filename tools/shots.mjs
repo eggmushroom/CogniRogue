@@ -172,6 +172,17 @@ const SHOTS = [
     if (i >= 0) cog.state.panel = { ...cog.state.panel, pick: i };
     await new Promise((r) => setTimeout(r, 200));
   })()`, 600],
+  // 事件白送的卡：选项上只能写「获得一张随机知识卡」，卡名要到选完才知道。
+  // 截图同样不模拟鼠标：面板读的是 `G.panel`，直接摆进同一个态。
+  ['cardget', '?dev=event&ev=index-cards', `(async () => {
+    const s = cog.state;
+    // 事件给的是随机**知识卡**，所以取 PACK 里的一张（基础牌不在这个池里）。
+    const c = cog.pack.cards[3];
+    const id = c.id + '+';
+    s.deck.push(id);
+    s.panel = { k: 'cardget', id, note: '你把「' + c.name + '」那张卡收进了牌组（已精炼），代价是 8 点生命。' };
+    await new Promise((r) => setTimeout(r, 200));
+  })()`, 600],
   ['reward', '?dev=reward', null, 500],
   ['rest', '?dev=rest', null, 400],
   ['event', '?dev=event', null, 400],
