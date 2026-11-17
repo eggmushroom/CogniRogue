@@ -1,6 +1,7 @@
 import { CATALOG } from '../cards/catalog';
+import { readStore, writeStore } from '../infra/storage';
 import type { Question, QuestionBank } from '../model/types';
-import { QUESTION_FORMAT, parseAnyQuestionBank } from './parse';
+import { QUESTION_FORMAT, hash32, parseAnyQuestionBank } from './parse';
 
 /**
  * 载入的题库，也是唯一允许外部替换的东西。
@@ -98,4 +99,147 @@ export function loadQuestionBank(text: string): { ok: boolean; msg: string } {
     msg: `载入「${next.name}」：${total} 道题 / ${pools} 个题池。`
       + `卡池仍是内置的 ${CATALOG.length} 张卡；下一局开局会按主题从这里取题。`,
   };
+}
+
+/* ── 题库档案：内置一份 + 玩家导入的若干份 ───────────────────────── */
+
+/**
+ * 玩家可以有好几份题库，切来切去。内置那份随程序走，导入的那些存在这台浏览器里。
+ *
+ * **存原文，不存解析结果。** 解析器（`parse.ts`）是「什么叫一道合法的题」的唯一真相，
+ * 存解析结果等于把它抄第二遍，改判据时两份必然分叉。原文几十到几百 KB，
+ * 切换时重解析一遍是毫秒级的事。
+ */
+const BANKS_KEY = 'cognirogue.banks.v1';
+const ACTIVE_KEY = 'cognirogue.bank.active.v1';
+/** 浏览器配额约 5 MB，留足余量；超了明说，不静默丢掉刚导入的那份。 */
+const MAX_STORED = 8;
+const MAX_CHARS = 1_500_000;
+
+interface StoredBank {
+  id: string;
+  name: string;
+  text: string;
+  total: number;
+  topics: number;
+}
+
+/** 内置那份的档案。`text` 由 `initBanks()` 在启动时灌进来。 */
+let builtin: { name: string; text: string; total: number; topics: number } =
+  { name: '内置题库', text: '', total: 0, topics: 0 };
+
+const shapeOf = (b: QuestionBank) => ({
+  total: countQuestions(b),
+  topics: Object.keys(b.byTopic).length,
+});
+
+function stored(): StoredBank[] {
+  const raw = readStore(BANKS_KEY);
+  if (!raw) return [];
+  try {
+    const list = JSON.parse(raw) as unknown;
+    if (!Array.isArray(list)) return [];
+    return list.filter((b): b is StoredBank =>
+      !!b && typeof b.id === 'string' && typeof b.name === 'string' && typeof b.text === 'string');
+  } catch {
+    // 坏掉的档案当空的处理：宁可少几份题库，也不要让标题页起不来
+    return [];
+  }
+}
+
+const saveStored = (list: StoredBank[]) => writeStore(BANKS_KEY, JSON.stringify(list));
+
+/** 现在用的是哪份：`'builtin'` 或某个导入题库的 id。 */
+export const activeBankId = (): string => readStore(ACTIVE_KEY) ?? 'builtin';
+
+export interface BankRow {
+  id: string;
+  name: string;
+  total: number;
+  topics: number;
+  on: boolean;
+  /** 内置那份删不掉。 */
+  builtin: boolean;
+}
+
+export function listBanks(): BankRow[] {
+  const on = activeBankId();
+  const rows: BankRow[] = [
+    { id: 'builtin', name: builtin.name, total: builtin.total, topics: builtin.topics, on: on === 'builtin', builtin: true },
+  ];
+  for (const b of stored()) {
+    rows.push({ id: b.id, name: b.name, total: b.total, topics: b.topics, on: on === b.id, builtin: false });
+  }
+  return rows;
+}
+
+/**
+ * 启动：先把内置那份挂上，再恢复上次用的那份（不在了就回落内置）。
+ * 顺序不能反 —— 恢复失败时 `BANK` 必须是可用的，标题页会直接读它。
+ */
+export function initBanks(md: string): void {
+  builtin = { name: '内置题库', text: md, total: 0, topics: 0 };
+  const r = loadQuestionBank(md);
+  if (r.ok) builtin = { ...builtin, name: BANK.name, ...shapeOf(BANK) };
+  const id = activeBankId();
+  if (id !== 'builtin' && stored().some((b) => b.id === id)) useBank(id);
+}
+
+/** 切到某一份。切完立刻生效（面板与标题页都读 `BANK`），已经开局的那一局不受影响。 */
+export function useBank(id: string): { ok: boolean; msg: string } {
+  if (id === 'builtin') {
+    const r = loadQuestionBank(builtin.text);
+    if (r.ok) writeStore(ACTIVE_KEY, 'builtin');
+    return r;
+  }
+  const rec = stored().find((b) => b.id === id);
+  if (!rec) return { ok: false, msg: '这份题库不在了 —— 可能已经被删掉。' };
+  const r = loadQuestionBank(rec.text);
+  if (r.ok) writeStore(ACTIVE_KEY, id);
+  return r;
+}
+
+/**
+ * 导入一份题库：先过解析器，通过才存盘并切过去。
+ * 同一份内容再导入一次是替换而不是多出一份 —— 否则反复导入同一个文件会塞满配额。
+ */
+export function importBank(text: string): { ok: boolean; msg: string } {
+  const list = stored();
+  const id = 'b_' + hash32(text);
+  const at = list.findIndex((b) => b.id === id);
+  if (at < 0 && list.length >= MAX_STORED) {
+    return { ok: false, msg: `这台浏览器里已经存了 ${MAX_STORED} 份。先在面板里删掉一份，再导入 —— 本次没有载入。` };
+  }
+  if (at < 0 && text.length > MAX_CHARS) {
+    return { ok: false, msg: '这份题库太大了（浏览器存不下）。先拆成两份小的 —— 本次没有载入。' };
+  }
+
+  const r = loadQuestionBank(text);
+  if (!r.ok) return r;
+
+  const rec: StoredBank = { id, name: BANK.name, text, ...shapeOf(BANK) };
+  if (at >= 0) list[at] = rec;
+  else list.push(rec);
+  saveStored(list);
+
+  // 写不进去（配额满、隐私模式）时不能假装存好了：读回来比一比
+  if (stored().length !== list.length) {
+    return { ok: true, msg: `${r.msg}但这台浏览器存不下（配额满了），刷新就回到内置题库。` };
+  }
+  writeStore(ACTIVE_KEY, id);
+  return { ok: true, msg: `${r.msg}已经存在这台浏览器里，下次打开还是它。` };
+}
+
+/** 删掉一份导入的题库；删的正好是正在用的那份就回落内置。 */
+export function removeBank(id: string): { ok: boolean; msg: string } {
+  const list = stored();
+  const name = list.find((b) => b.id === id)?.name ?? '';
+  const left = list.filter((b) => b.id !== id);
+  if (left.length === list.length) return { ok: false, msg: '没有这份题库。' };
+  saveStored(left);
+  if (activeBankId() === id) {
+    const r = useBank('builtin');
+    return { ok: true, msg: `删掉了「${name}」，换回${r.ok ? '内置题库' : '空题库'}。` };
+  }
+  return { ok: true, msg: `删掉了「${name}」。` };
 }

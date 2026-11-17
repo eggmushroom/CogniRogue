@@ -6,10 +6,10 @@ import { easeOut } from '../gfx/geom';
 import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
 import { clamp, G, shuffle } from '../core/infra';
 import { curFloor } from '../core/map';
-import { countQuestions, isRetired, sourceBank } from '../core/library';
+import { countQuestions, isRetired, listBanks, sourceBank } from '../core/library';
 import {
   BASICS, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded, upgradedId,
-  isXCost, PACK, rulesStatic, UP_MARK,
+  isXCost, rulesStatic, UP_MARK,
 } from '../core/cards';
 import { answer, cancelPanel, MAX_PICK_PER_RUN } from '../core/combat';
 import { liveStatOf } from '../core/combat/link';
@@ -21,7 +21,7 @@ import {
 } from '../core/journey';
 import type { Feedback, ModeId, PowerDef, Question, QView } from '../core/model';
 import { drawReport } from './report';
-import { requestPackFile, pastePack } from './packio';
+import { dropBank, pastePack, requestPackFile, switchBank } from './packio';
 
 /* ── 通用外壳 ─────────────────────────────────────────────── */
 
@@ -1348,45 +1348,87 @@ function drawPack() {
   const p = G.panel;
   if (p.k !== 'pack') return;
   dim();
-  const w = 900;
-  const h = 520;
+  const w = 940;
+  const pad = 44;
+  const rowH = 64;
+  const gap = 12;
+  const listW = w - pad * 2;
+  const rows = listBanks();
+  const contentH = Math.max(rowH, rows.length * (rowH + gap) - gap);
+  // 高度跟着条目走：只有两三份题库时不要留出一大片空面板
+  const listH = Math.min(contentH, 336);
+  const h = 268 + listH;
   const x = (VW - w) / 2;
-  const y = 190;
+  const y = (VH - h) / 2;
   box(x, y, w, h, withAlpha(C.cyan, 0.4));
 
-  heading('载入自己的题库', x + 44, y + 66,
-    '主题不限。只换题目，卡池不变；md / JSON 都行，样例见 packs/algorithms.md。');
+  heading('题库', x + 44, y + 62,
+    '切到哪份，下一局开局生效。导入的题库存在这台浏览器里，刷新还在。');
 
-  const lines = [
-    '## 主题                → 可选，名字随便写，不写就进「未分类」',
-    '### 题干  /  ? 题干    → 一道题',
-    'A) 选项 / B) 选项 …    → 2–4 个',
-    '= B                   → 正确答案字母（不能越过选项数）',
-    '+ 解析（可选，答完会显示）',
-    '! 固定顺序            → 有「以上都对」这类选项时必写',
-    '点开一张牌 → 从本局选中主题的题里抽',
-    `卡面（${PACK.cards.length} 张 / 攻挡 / 效果）内置，md 换不掉`,
-  ];
-  roundRect(x + 44, y + 120, w - 88, 216, 10);
-  g.fillStyle = 'rgba(255,255,255,.035)';
-  g.fill();
-  g.font = font(15, 400, '"SF Mono",ui-monospace,Consolas,monospace');
-  g.fillStyle = C.cyan;
-  lines.forEach((ln, i) => g.fillText(ln, x + 64, y + 148 + i * 24));
+  const view = scrollArea(x + pad, y + 112, listW, listH, contentH, 'pack');
 
-  action(x + 44, y + 358, 260, 56, '选一个 .md 文件', () => requestPackFile());
-  action(x + 328, y + 358, 260, 56, '从剪贴板粘贴', () => pastePack());
+  rows.forEach((row, i) => {
+    const cy = view.y + i * (rowH + gap);
+    // 滚出去的牌子必须一起失去热区，否则它会盖住下面那张的点击
+    const shown = cy >= view.y0 - 1 && cy + rowH <= view.y0 + view.h + 1;
+    const hv = shown && hover(view.x, cy, listW, rowH);
+    // 右侧留一格给「删掉」：和"点整行切换"分开，免得一次点击改两件事
+    const mainW = listW - 88;
+
+    roundRect(view.x, cy, listW, rowH, 10);
+    g.fillStyle = row.on ? withAlpha(C.gold, 0.12) : hv ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.022)';
+    g.fill();
+    g.strokeStyle = row.on ? withAlpha(C.gold, 0.9) : (hv ? withAlpha(C.lineHi, 0.8) : C.line);
+    g.lineWidth = row.on ? 1.8 : 1.2;
+    g.stroke();
+
+    // 正在用的那份用左侧色条标出来：和卡面、主题牌子是同一套视觉
+    if (row.on) {
+      roundRect(view.x + 12, cy + 14, 4, rowH - 28, 2);
+      g.fillStyle = C.gold;
+      g.fill();
+    }
+
+    text(row.name, view.x + 26, cy + 28,
+      { size: 17, weight: 700, color: row.on ? C.ink : C.ink2, maxW: mainW - 34 });
+    text(`${row.total} 道题 / ${row.topics} 个主题`, view.x + 26, cy + 50, { size: 12, color: C.dim });
+
+    if (!row.builtin) {
+      const dx = view.x + mainW;
+      const dy = cy + (rowH - 34) / 2;
+      const dh = shown && hover(dx, dy, 64, 34);
+      roundRect(dx, dy, 64, 34, 8);
+      g.fillStyle = dh ? withAlpha(C.red, 0.18) : 'rgba(255,255,255,.03)';
+      g.fill();
+      g.strokeStyle = dh ? withAlpha(C.red, 0.8) : C.line;
+      g.lineWidth = 1.2;
+      g.stroke();
+      text('删掉', dx + 32, dy + 22, { size: 13, color: dh ? C.red : C.dim, align: 'center' });
+      if (shown) onClick(dx, dy, 64, 34, () => dropBank(row.id), `bank-del:${row.id}`);
+    }
+
+    if (shown) {
+      onClick(view.x, cy, mainW, rowH, () => { if (!row.on) switchBank(row.id); }, `bank:${row.id}`);
+    }
+  });
+  view.restore();
+  overflowAffordance(view, x + pad, listW);
+
+  const fy = y + h - 118;
+  action(x + pad, fy, 240, 52, '选一个 .md 文件', () => requestPackFile());
+  action(x + pad + 254, fy, 240, 52, '从剪贴板粘贴', () => pastePack());
+
+  const src = sourceBank();
+  text(`当前：${src.name} · ${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个主题`,
+    x + w - pad, fy + 32, { size: 13, color: C.dim, align: 'right' });
 
   if (p.msg) {
     g.font = font(14, 500, FONT_UI);
     g.fillStyle = p.ok ? C.green : C.red;
-    wrapText(p.msg, w - 88).slice(0, 4).forEach((ln, i) => g.fillText(ln, x + 44, y + 428 + i * 21));
+    wrapText(p.msg, w - pad * 2).slice(0, 3).forEach((ln, i) => g.fillText(ln, x + pad, y + h - 52 + i * 21));
   } else {
-    const src = sourceBank();
-    text(`当前题库：${src.name} · ${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个题池`,
-      x + 44, y + 430, { size: 13, color: C.dim });
-    text('校验题干、2–4 个选项、= 答案字母，以及「以上都对」这类选项有没有写「! 固定顺序」；写错会指出位置。复习进度按内置卡片 id 保存。',
-      x + 44, y + 454, { size: 13, color: C.faint });
+    text('格式：## 主题 / ### 题干（或 ? 题干）/ A) 选项 / = 答案字母；样例见 packs/algorithms.md',
+      x + pad, y + h - 52, { size: 13, color: C.faint, maxW: w - pad * 2 });
   }
 }
 

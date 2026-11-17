@@ -58,13 +58,13 @@ export function drawTitle(t: number, openHelp: () => void, openPack: () => void)
     by = 526;
     action(bx, by, bw, 50, '开始新的一局', () => { G.panel = { k: 'boon' }; }); by += 62;
     action(bx, by, bw, 50, '这游戏怎么玩', openHelp); by += 62;
-    action(bx, by, bw, 50, '载入自己的题库', openPack);
+    action(bx, by, bw, 50, '题库', openPack);
   } else {
     action(bx, by, bw, 60, '开始新的一局', () => { G.panel = { k: 'boon' }; }, 'primary', { size: 22 });
     by += 76;
     action(bx, by, bw, 56, '这游戏怎么玩', openHelp);
     by += 70;
-    action(bx, by, bw, 56, '载入自己的题库', openPack);
+    action(bx, by, bw, 56, '题库', openPack);
   }
 
   // 卡池是内置的、题库是可换的，两行分开写才不会让人以为导入会换牌。

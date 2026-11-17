@@ -42,7 +42,7 @@ const POSITIONAL_HINT = /^(以上|下述|前面|全都|全部都是|以上皆|�
 /**
  * FNV-1a。题号只要「同题同号、异题不同号」，不需要加密强度。
  */
-function hash32(s: string): string {
+export function hash32(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);

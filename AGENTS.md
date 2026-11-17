@@ -107,6 +107,7 @@
 | 多选一卡片的视觉 | `gfx/ui.ts` 的 `choiceCard()`：序号、徽记、标题、说明槽位、底部事实行都在这里；场景只给数据和命中矩形 |
 | 平台适配（DOM / localStorage） | `core/infra/storage.ts` |
 | 题库的位置依赖 | 数据属性 `Question.noShuffle`，`core/library/parse.ts` 解析期校验 |
+| **题库档案（内置 + 导入的若干份）** | `core/library/bank.ts` 的 `initBanks` / `listBanks` / `useBank` / `importBank` / `removeBank`：档案里存的是**原文**，解析只经 `parse.ts`；别处不许自己读写 `cognirogue.banks.v1` |
 | **本局临时题库** | `core/library/stage.ts` 的 `buildRunPool()`：开局从选中的 2–5 个主题里各取一批，按主题连续排成一条队列；抽题只许经 `nextQuestions()` 往前走，别处不许自己从题库里挑题 |
 | 局内发牌的取舍 | `core/combat/questions.ts`：本局已答对的不发（答对即出局），本局抽满 `MAX_PICK_PER_RUN` 次的不发（一道答不对的题不许占光位置）；队列走完才复用，不锁牌 |
 | 题号 / 学习历史挂在谁身上 | `core/library/parse.ts` 的 `questionId(topic, concept)`：概念缺省回落到题干，所以老题库的号不变；改题干不改概念 = 同一个概念 |

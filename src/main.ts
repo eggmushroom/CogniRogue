@@ -8,7 +8,7 @@ import { bindInput, beginInput, clearWheel, endInput, hover, keyHandler, setInpu
 import { C } from './gfx/theme';
 import { G, onFx } from './core/infra';
 import { after } from './core/infra/schedule';
-import { loadQuestionBank } from './core/library';
+import { initBanks } from './core/library';
 import { answer, cancelPanel, endTurn } from './core/combat';
 import { ackCardGet, ackPower, cancelPreview, dismissFeedback } from './core/journey';
 import {
@@ -296,8 +296,8 @@ function frame(now: number) {
 }
 
 async function boot() {
-  // 卡面在 cards/catalog.ts 里，启动时只把内置题库灌进 BANK
-  loadQuestionBank(BUILTIN_MD);
+  // 卡面在 cards/catalog.ts 里，启动时只把题库灌进 BANK（内置那份 + 上次用的那份）
+  initBanks(BUILTIN_MD);
   if (import.meta.env.DEV) {
     // 开发 / 截图入口：生产构建不会执行这个分支。
     const { devJump } = await import('./dev/jump');
