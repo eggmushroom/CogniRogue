@@ -183,6 +183,12 @@ const SHOTS = [
     s.panel = { k: 'cardget', id, note: '你把「' + c.name + '」那张卡收进了牌组（已精炼），代价是 8 点生命。' };
     await new Promise((r) => setTimeout(r, 200));
   })()`, 600],
+  // 藏书：一次两张，关掉增益面板之后才轮到牌面（真实流程里这一屏没有注脚）。
+  ['cardget2', '?dev=powerdrop&id=exlibris', `(async () => {
+    const s = cog.state;
+    s.panel = { k: 'cardget', ids: s.panel.cards };
+    await new Promise((r) => setTimeout(r, 200));
+  })()`, 600],
   ['reward', '?dev=reward', null, 500],
   ['rest', '?dev=rest', null, 400],
   ['event', '?dev=event', null, 400],

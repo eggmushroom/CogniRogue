@@ -61,7 +61,7 @@ function grantCard(up: boolean): CardDef | null {
   const id = up ? upgradedId(c.id) : c.id;
   G.deck.push(id);
   // 卡已经进牌组了，但玩家还不知道它长什么样：把牌面摆出来再走。
-  G.panel = { k: 'cardget', id };
+  G.panel = { k: 'cardget', ids: [id] };
   return c;
 }
 
@@ -83,7 +83,7 @@ function copyCard(): CardDef | null {
   if (d.kind !== 'basic' && same >= rulesStatic().maxCopies) return null;
   G.deck.push(id);
   // 复印出来的是牌组里已有的某一张，玩家同样不知道随机挑中了谁。
-  G.panel = { k: 'cardget', id };
+  G.panel = { k: 'cardget', ids: [id] };
   return d;
 }
 

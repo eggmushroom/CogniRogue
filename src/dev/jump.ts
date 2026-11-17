@@ -5,6 +5,7 @@ import { G } from '../core/infra';
 import {
   EVENTS, dismissFeedback, endRun, enterNode, openCardPick, startRun,
 } from '../core/journey';
+import { applyInstant } from '../core/cards';
 import { answer, askCard, canAsk } from '../core/combat';
 import { genStage } from '../core/map';
 import { enterStage, stageMemOf } from '../core/library';
@@ -89,7 +90,10 @@ export function devJump() {
     // 两种高度都得能拍到，否则这条分支只有等玩家抽到才第一次被看见。
     const want = (new URLSearchParams(location.search).get('id') ?? 'lamp') as PowerId;
     G.powers.push('hourglass', want);
-    G.panel = { k: 'powerdrop', id: want };
+    // 拾取即结算的增益要真的落地，否则藏书那一屏永远拍不到它该带的卡。
+    // 对非 instant 的增益 `applyInstant` 是空操作，所以这里不必再判 scope。
+    const out = applyInstant(want);
+    G.panel = { k: 'powerdrop', id: want, cards: out.cards };
     return;
   }
   if (d === 'power') {

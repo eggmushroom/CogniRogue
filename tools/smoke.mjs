@@ -544,6 +544,27 @@ await step('掉落面板 → 一张、只有"知道了"、掉落即已生效', a
   return true;
 });
 
+// 藏书：一次往牌组里塞几张随机知识卡。只飘一句「藏书 生效」的话，
+// 玩家永远不知道是哪几张 —— 关掉增益面板之后必须把牌面摆出来。
+await boot(URL_ + '?dev=powerdrop&id=exlibris');
+await step('藏书 → 关掉增益后摆出拿到的牌', async () => {
+  await clickLabel('知道了');
+  const st = await S(`({
+    k: cog.state.panel.k, ids: cog.state.panel.ids, deck: cog.state.deck,
+  })`);
+  if (st.k !== 'cardget') throw new Error('没有转到牌面，面板是 ' + st.k);
+  // 张数由 stage 的 6y 按 BAL.exlibrisCards 钉住；这里只管"摆出来的都真的在牌组里"。
+  if (!st.ids.length) throw new Error('面板上一张卡都没有');
+  if (!st.ids.every((id) => st.deck.includes(id))) {
+    throw new Error('摆出来的卡不在牌组里：' + JSON.stringify(st));
+  }
+  await clickLabel('知道了');
+}, async () => {
+  const st = await S('({ k: cog.state.panel.k })');
+  if (st.k !== 'none') throw new Error('看过之后面板没收起：' + st.k);
+  return true;
+});
+
 // 答错的规则：这一手作废、不扣行动力；不补格挡、不补抽，牌进弃牌堆。
 // 题不是答错才扣的：点开牌时 `takeQuestion` 就扣了，答对答错都一样，
 // 所以下面那条 `q -1` 断言验的是"点开时扣过"，不是"答错扣一道"。
@@ -1127,14 +1148,14 @@ await step('事件拿卡 → 摆出牌面，看过才回地图', async () => {
   globalThis.__deckBefore = await S('cog.state.deck.length');
   await clickLabel('eventopt', 0);
   const st = await S(`({
-    k: cog.state.panel.k, id: cog.state.panel.id, deck: cog.state.deck,
+    k: cog.state.panel.k, ids: cog.state.panel.ids, deck: cog.state.deck,
   })`);
   if (st.k !== 'cardget') throw new Error('没有摆出卡面，面板是 ' + st.k);
   if (st.deck.length !== globalThis.__deckBefore + 1) {
     throw new Error('卡没进牌组：' + st.deck.length);
   }
   // 摆出来的必须就是刚进牌组的那一张 —— 不是"某一张长得差不多的"。
-  if (st.id !== st.deck[st.deck.length - 1]) {
+  if (st.ids.length !== 1 || st.ids[0] !== st.deck[st.deck.length - 1]) {
     throw new Error('摆出来的不是刚进牌组的那一张：' + JSON.stringify(st));
   }
   await clickLabel('知道了');

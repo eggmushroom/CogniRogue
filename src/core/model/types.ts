@@ -455,15 +455,20 @@ export type Panel =
   | { k: 'question'; idx: number; qid: string; topic: string; q: Question; view: QView }
   | { k: 'feedback'; fb: Feedback }
   | { k: 'reward'; cards: CardDef[]; ledger?: boolean }
-  /** 精英 / Boss 掉落；只有一个 id，没有"要不要拿"。 */
-  | { k: 'powerdrop'; id: PowerId }
   /**
-   * 事件白送进牌组的卡。
+   * 精英 / Boss 掉落；只有一个 id，没有"要不要拿"。
+   *
+   * `cards` 是这张增益当场塞进牌组的卡（藏书那种）：这一屏先讲增益本身，
+   * 关掉之后再把那几张牌的牌面摆出来，否则玩家只知道「藏书 生效」。
+   */
+  | { k: 'powerdrop'; id: PowerId; cards?: CardId[] }
+  /**
+   * 白送进牌组的卡。
    *
    * 早先只把卡名塞进一句会飘走的提示里，玩家读完也不知道那张牌打出来是几点 ——
    * 名字不等于牌面。这一屏把卡本身摆出来，看过才回到节点。
    */
-  | { k: 'cardget'; id: CardId; note?: string }
+  | { k: 'cardget'; ids: CardId[]; note?: string }
   | { k: 'rest' }
   | { k: 'cardpick'; mode: 'up' | 'rm'; from?: CardPickFrom; pick?: number }
   | { k: 'event'; ev: EventDef }

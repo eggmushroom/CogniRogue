@@ -1,5 +1,5 @@
 import { BAL, POWERS } from '../model/data';
-import type { CardDef, PowerId } from '../model/types';
+import type { CardDef, CardId, PowerId } from '../model/types';
 import { G } from '../infra/state';
 import { emit } from '../infra/events';
 import { shuffle } from '../infra/util';
@@ -62,19 +62,25 @@ export function skipReward() {
  * 这是精英 / 幕 Boss 掉落与调试发放的唯一入口；开局模式带的增益由 `startRun`
  * 直接写进 `G.powers`，不走这里（它没有“掉落”这件事）。
  */
-export function grantPower(): PowerId | null {
+export function grantPower(): { id: PowerId; cards?: CardId[] } | null {
   const p = shuffle(POWERS.filter((q) => !G.powers.includes(q.id)))[0];
   if (!p) return null;
   G.powers.push(p.id);
   // 拾取即结算的那一类不等下一场，在这里就落到这一局上。
-  if (p.scope === 'instant') applyInstant(p.id);
+  const out = p.scope === 'instant' ? applyInstant(p.id) : null;
   emit({ t: 'power', id: p.id });
-  return p.id;
+  // 有卡要摆的时候，牌面自己会说话；没有卡，那句话术就是玩家唯一的信息 ——
+  // 它早先被整个丢掉，于是「树脂」只留下一个「树脂 生效」。
+  if (out?.note && !out.cards?.length) emit({ t: 'note', text: out.note });
+  return { id: p.id, cards: out?.cards };
 }
 
 /** 关掉掉落面板，回到地图。没有"不要"这个选项。 */
 export function ackPower() {
-  if (G.panel.k !== 'powerdrop') return;
+  const p = G.panel;
+  if (p.k !== 'powerdrop') return;
+  // 藏书那类增益当场往牌组里塞了牌：先让玩家看清是哪几张，再回地图。
+  if (p.cards?.length) { G.panel = { k: 'cardget', ids: p.cards }; return; }
   finishNode();
 }
 
@@ -82,8 +88,8 @@ export function ackPower() {
 function afterReward() {
   const t = G.node?.type;
   if (t === 'elite' || t === 'boss') {
-    const id = grantPower();
-    if (id) { G.panel = { k: 'powerdrop', id }; return; }
+    const got = grantPower();
+    if (got) { G.panel = { k: 'powerdrop', id: got.id, cards: got.cards }; return; }
     // 池子空了：精英这一场只剩刚才那张知识卡，别开一个空面板
   }
   finishNode();
@@ -91,6 +97,6 @@ function afterReward() {
 
 /** 幕间掉落。过幕时节点已经没了，所以单独一个入口。 */
 export function openPowerDrop() {
-  const id = grantPower();
-  if (id) G.panel = { k: 'powerdrop', id };
+  const got = grantPower();
+  if (got) G.panel = { k: 'powerdrop', id: got.id, cards: got.cards };
 }

@@ -12,7 +12,8 @@ import {
   allQuestions, stageMemOf, resetStageMemory, cardKind, enterStage, BASICS, drawBattleQuestions,
   askOf, costOf, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight, restHeal,
-  rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,  grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
+  rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
+  grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
   lastFeedback, onFx, effFace, planStrike, setScheduler, panelOf, buildSettlement,
   parseQuestionBank, shuffleOptions, SNAP_V, SAVE_KEY, drawEvent, MAP_COLS,
   isBasicId, baseIdOf, mechAmt, mechNote,
@@ -514,7 +515,7 @@ function missGain(eff: string) {
   // 走 `panelOf()` 读：直接比 `G.panel.k` 会被上面那次赋值的 narrowing 判成"还是 event"。
   const cp = panelOf('cardget');
   ok(cp !== null, `拿卡后先把牌面摆出来（面板 ${G.panel.k}）`);
-  ok(cp !== null && cp.id === got,
+  ok(cp !== null && cp.ids.length === 1 && cp.ids[0] === got,
     `摆出来的正是刚进牌组的那一张（${got}）`);
   ok(cp !== null && !!cp.note && cp.note.includes(defOf(got).name),
     '结算话术挂在面板里，不飘在卡上面');
@@ -532,6 +533,29 @@ function missGain(eff: string) {
     `复印机：多一张并把牌面摆出来（牌组 ${G.deck.length} 张）`);
   ackCardGet();
   ok(panelOf('none') !== null, '复印机：看过之后面板收起');
+
+  // 藏书：一次塞几张，玩家同样只被告知「藏书 生效」。
+  // 走真实的幕间掉落入口（它会自己把面板摆上），不是直接调 grantPower。
+  startRun();
+  G.hp = 50;
+  G.powers = POWERS.filter((p) => p.id !== 'exlibris').map((p) => p.id);
+  const deck0 = G.deck.length;
+  openPowerDrop();
+  const dp = panelOf('powerdrop');
+  ok(dp?.id === 'exlibris', `掉落只剩藏书时抽到的就是它（${dp?.id}）`);
+  ok((dp?.cards?.length ?? 0) === BAL.exlibrisCards,
+    `藏书：掉面板上带着 ${BAL.exlibrisCards} 张卡的账（${dp?.cards?.length ?? 0} 张）`);
+  ok(G.deck.length === deck0 + BAL.exlibrisCards,
+    `藏书：牌真的进了牌组（${deck0} → ${G.deck.length}）`);
+  // 关掉增益面板之后才轮到牌面：玩家得先看见"掉了什么"，再看"拿到什么"。
+  ackPower();
+  const cg = panelOf('cardget');
+  ok(cg !== null && cg.ids.length === BAL.exlibrisCards,
+    `藏书：关掉增益后摆出这 ${BAL.exlibrisCards} 张卡（${cg?.ids.length ?? 0} 张）`);
+  ok(cg !== null && cg.ids.every((id) => G.deck.includes(id)),
+    '藏书：摆出来的每一张都真的在牌组里');
+  ackCardGet();
+  ok(panelOf('none') !== null, '藏书：看过之后面板收起');
 }
 
 // ── 6z. 付不起的代价不许变成免费 ──

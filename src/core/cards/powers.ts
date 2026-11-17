@@ -6,7 +6,7 @@ import { healHp, raiseMaxHp, reviveHp } from '../infra/write';
 import { shuffle } from '../infra/util';
 import { PACK } from './pack';
 import { isBasicId } from './basics';
-import { baseIdOf, deckCopies, hasPower, isUpgraded, upgradedId } from './registry';
+import { baseIdOf, deckCopies, defOf, hasPower, isUpgraded, upgradedId } from './registry';
 
 /**
  * 增益的唯一读取入口：always 由 `rulesOf()` 折成数字，fight / stage / run
@@ -169,49 +169,62 @@ export function clearRunOnce() {
   G.onceRun = {};
 }
 
+/**
+ * 拾取即结算的结果。
+ *
+ * `cards` 是「这一下往牌组里塞了哪些牌」—— 表现层要把它们的牌面摆出来，
+ * 只报一句名字玩家仍然不知道那张牌打出来是几点。`note` 是给人看的一句话。
+ */
+export interface InstantOut {
+  note: string;
+  cards?: CardId[];
+}
+
 /** 拾取即结算：拿到时把效果落到这一局，之后不挂时机。 */
-export function applyInstant(id: PowerId): string {
-  if (!hasPower(id)) return '';
+export function applyInstant(id: PowerId): InstantOut {
+  if (!hasPower(id)) return { note: '' };
   switch (id) {
     case 'spine': {
       // 上限和当前值一起抬，只加上限要等回血才看得见。
       raiseMaxHp(BAL.spineHp);
       const got = healHp(BAL.spineHp);
-      return `最大生命 +${BAL.spineHp}，回复 ${got} 点（现在 ${G.hp}/${G.maxHp}）`;
+      return { note: `最大生命 +${BAL.spineHp}，回复 ${got} 点（现在 ${G.hp}/${G.maxHp}）` };
     }
     case 'exlibris': {
       const got = grantKnowledge(BAL.exlibrisCards);
-      return got ? `「${got.join('、')}」进了牌组` : '牌组里每种卡都到上限了，没有新的可加';
+      return got.length
+        ? { note: `「${got.map((c) => defOf(c).name).join('、')}」进了牌组`, cards: got }
+        : { note: '牌组里每种卡都到上限了，没有新的可加' };
     }
     case 'slim': {
       const got = removeBasics(BAL.slimRemove);
-      return got ? `卸下了 ${got} 张基础牌（牌组 ${G.deck.length} 张）` : '牌组里没有可卸的基础牌';
+      return { note: got ? `卸下了 ${got} 张基础牌（牌组 ${G.deck.length} 张）` : '牌组里没有可卸的基础牌' };
     }
     case 'resin': {
       const n = upgradeBasics();
-      return n ? `${n} 张基础牌全部精炼` : '牌组里的基础牌已经全是精炼版';
+      return { note: n ? `${n} 张基础牌全部精炼` : '牌组里的基础牌已经全是精炼版' };
     }
     case 'polish': {
       // 抛光布抬的是「每张牌已经声明要加的那几格」：声明了 atk 就 atk 多给，
       // 声明了 blk 就 blk 多给。`applyUp()` 读 `G.upGrade` 折进去。
       G.upGrade = BAL.polishUp;
-      return `以后每次精炼，攻 / 挡再多 +${BAL.polishUp}`;
+      return { note: `以后每次精炼，攻 / 挡再多 +${BAL.polishUp}` };
     }
     default:
-      return '';
+      return { note: '' };
   }
 }
 
 /** 塞 n 张不重复的随机知识卡，每种受 `rulesOf().maxCopies` 限制。 */
-function grantKnowledge(n: number): string[] {
+function grantKnowledge(n: number): CardId[] {
   const cap = rulesOf().maxCopies;
   const copies = deckCopies();
   const pool = shuffle(PACK.cards.filter((c) => (copies[c.id] || 0) < cap));
-  const got: string[] = [];
+  const got: CardId[] = [];
   for (const c of pool) {
     if (got.length >= n) break;
     G.deck.push(c.id);
-    got.push(c.name);
+    got.push(c.id);
   }
   return got;
 }

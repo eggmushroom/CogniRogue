@@ -663,40 +663,48 @@ function drawPowerDrop() {
   action(x + w / 2 - 110, y + h - 80, 220, 50, '知道了', () => ackPower());
 }
 
-/* ── 事件白送的卡 ─────────────────────────────────────────── */
+/* ── 白送的卡 ─────────────────────────────────────────────── */
 
 /**
- * 把刚进牌组的那张牌摆出来。
+ * 把刚进牌组的那几张牌摆出来。
  *
- * 事件给的是随机卡，选项上只能写「获得一张随机知识卡」—— 卡名要到选完才知道，
- * 而只报一个名字，玩家仍然不知道它打出来是几点。这一屏让他看见牌面本身。
- * 没有"要不要"：卡在 `grantCard()` 里已经进牌组了，按哪里都是同一个结果。
+ * 事件给的是随机卡，选项上只能写「获得一张随机知识卡」—— 卡名要到选完才知道；
+ * 增益「藏书」更是一次塞三张。只报名字，玩家仍然不知道那张牌打出来是几点。
+ * 这一屏让他看见牌面本身。
+ *
+ * 没有"要不要"：卡在发的时候就进牌组了，按哪里都是同一个结果。
  */
 function drawCardGet() {
   const p = G.panel;
   if (p.k !== 'cardget') return;
   dim();
 
+  const n = p.ids.length;
   const cw = 300;
   const chh = 372;
-  const w = 700;
+  const gap = 44;
+  const rowW = n * cw + (n - 1) * gap;
+  const w = Math.max(700, rowW + 160);
   const lines = p.note ? wrapText(p.note, w - 120).slice(0, 3) : [];
-  // 高度按内容推：注脚是可选的，写死会让这一屏留出半屏空白。
+  // 高度按内容推：注脚是可选的，写死会让只有一张卡的屏留出半屏空白。
   const top = 118;
   const h = top + chh + (lines.length ? 34 + lines.length * 24 : 0) + 134;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
   box(x, y, w, h, C.gold, null);
 
-  heading('拿到一张卡', x + 44, y + 66);
+  heading(n === 1 ? '拿到一张卡' : `拿到 ${n} 张卡`, x + 44, y + 66);
 
-  const cx = x + (w - cw) / 2;
-  const cy = y + top;
-  const hv = hover(cx, cy, cw, chh);
-  drawCard(cx, cy, cw, chh, defOf(p.id), planStrike(p.id, { noBoost: true }), {
-    up: isUpgraded(p.id), glow: hv,
+  const x0 = x + (w - rowW) / 2;
+  p.ids.forEach((id, i) => {
+    const cx = x0 + i * (cw + gap);
+    const cy = y + top;
+    const hv = hover(cx, cy, cw, chh);
+    drawCard(cx, cy, cw, chh, defOf(id), planStrike(id, { noBoost: true }), {
+      up: isUpgraded(id), glow: hv,
+    });
+    onClick(cx, cy, cw, chh, () => ackCardGet(), `cardget:${i}`);
   });
-  onClick(cx, cy, cw, chh, () => ackCardGet(), 'cardget');
 
   g.font = font(14, 400, FONT_UI);
   lines.forEach((ln, i) => {
