@@ -17,6 +17,7 @@ import {
 } from './scenes/battle';
 import { drawOverlay, quizFrame } from './scenes/overlay';
 import { drawSceneBackdrop, drawSceneWorld, worldLayer } from './scenes/layers';
+import { settingsKey } from './scenes/settings';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game');
 if (!canvas) throw new Error('#game 不存在');
@@ -197,7 +198,8 @@ keyHandler((k) => {
     const card = G.hand[p.idx];
     if (card) answer(i);
   }
-});
+  // 输入框拿着焦点时，按键先过它 —— 见 scenes/settings.ts 的 settingsKey
+}, settingsKey);
 
 let t = 0;
 let last = performance.now();

@@ -200,8 +200,22 @@ export function bindInput(el: HTMLCanvasElement, toLogic: (cx: number, cy: numbe
   );
 }
 
-export function keyHandler(fn: (k: string) => void) {
+/** 一个按键，外加修饰键状态。画布里的输入框要靠它区分 `v` 和 `Ctrl+V`。 */
+export interface KeyIn {
+  key: string;
+  ctrl: boolean;
+}
+
+/**
+ * `edit` 是输入框的优先通道：它先拿到每一个按键，返回 true 就表示吃掉了 ——
+ * 这一下不再当快捷键。否则 `Escape` / 空格会被输入框和游戏同时响应。
+ */
+export function keyHandler(fn: (k: string) => void, edit?: (k: KeyIn) => boolean) {
   window.addEventListener('keydown', (e) => {
+    if (edit?.({ key: e.key, ctrl: e.ctrlKey || e.metaKey })) {
+      e.preventDefault();
+      return;
+    }
     if (e.key === 'Escape') fn('escape');
     else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); fn('confirm'); }
     else if (/^[1-9]$/.test(e.key)) fn(e.key);

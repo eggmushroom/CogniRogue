@@ -159,14 +159,18 @@ const genConfigFile = join(STORE, 'gen.json');
 const jobs = new Map();
 let jobSeq = 0;
 
-/** 模型配置：`data/service/gen.json` 写在本地，环境变量优先（CI / 一次性跑用环境变量）。 */
-async function genConfig() {
-  let file = {};
+/** 落盘的那份配置本身（环境变量不掺进来）。 */
+async function genFile() {
   try {
-    file = JSON.parse(await readFile(genConfigFile, 'utf8'));
+    return JSON.parse(await readFile(genConfigFile, 'utf8'));
   } catch {
-    file = {};
+    return {};
   }
+}
+
+/** 生效的模型配置：`data/service/gen.json` 写在本地，环境变量优先（CI / 一次性跑用环境变量）。 */
+async function genConfig() {
+  const file = await genFile();
   return {
     baseUrl: process.env.GEN_BASE_URL || file.baseUrl || '',
     key: process.env.GEN_API_KEY || file.key || '',
@@ -213,6 +217,8 @@ const server = createServer(async (req, res) => {
         // 只有"能不能生成"这件事需要告诉前端，key 本身永远不出这个进程
         canGenerate: !!cfg.key,
         model: cfg.model,
+        // 地址不是秘密：设置页拿它给输入框当默认值，否则每次都要手打一遍
+        baseUrl: cfg.baseUrl,
       });
     }
 
@@ -231,17 +237,24 @@ const server = createServer(async (req, res) => {
       return text(res, 200, await readFile(hit.file, 'utf8'), 'text/markdown; charset=utf-8');
     }
 
-    /** 模型配置：前端把 { baseUrl, key, model } POST 进来，服务存本地。 */
+    /**
+     * 模型配置：前端把 { baseUrl, key, model } POST 进来，服务存本地。
+     *
+     * `key` 传空串表示**不改**：前端从来拿不到旧 key（它不下发），所以它只能
+     * 新增或覆盖，没法"把原来的再交回来"。这里照这个语义合并，不然改一下地址
+     * 就会顺手把 key 清空 —— 而界面上看不出发生了这件事。
+     */
     if (req.method === 'POST' && path === '/api/config') {
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+      const old = await genFile();
       const cfg = {
         baseUrl: String(body.baseUrl ?? '').trim(),
-        key: String(body.key ?? '').trim(),
+        key: String(body.key ?? '').trim() || old.key || '',
         model: String(body.model ?? '').trim(),
       };
       await mkdir(STORE, { recursive: true });
       await writeFile(genConfigFile, JSON.stringify(cfg, null, 2));
-      return json(res, 200, { ok: true, canGenerate: !!cfg.key, model: cfg.model });
+      return json(res, 200, { ok: true, canGenerate: !!cfg.key, model: cfg.model, baseUrl: cfg.baseUrl });
     }
 
     /**
@@ -290,7 +303,7 @@ const server = createServer(async (req, res) => {
       if (!cfg.key) {
         return json(res, 400, {
           ok: false,
-          error: '服务还没有模型配置。用 GEN_BASE_URL / GEN_API_KEY / GEN_MODEL 起服务，或者把配置 POST 到 /api/config。',
+          error: '服务还没有模型配置。在游戏的「设置 › 出题模型」里填，或者用 GEN_BASE_URL / GEN_API_KEY / GEN_MODEL 起服务。',
         });
       }
 

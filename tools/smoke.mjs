@@ -184,6 +184,15 @@ async function pressKey(key, code, vk) {
   await sleep(120);
 }
 
+/** 往当前焦点里敲字。单字符要带 `text`，浏览器才把它当字符而不是快捷键。 */
+async function typeText(s) {
+  for (const ch of s) {
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, unmodifiedText: ch });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
+  }
+  await sleep(120);
+}
+
 /** 等手牌全部飞完并停稳。抽牌是按 dt 推的，慢机器上固定 sleep 一定不够。 */
 async function waitHand(ms = 15000) {
   const t0 = Date.now();
@@ -431,6 +440,28 @@ await step('首页三个入口，设置能开能关', async () => {
   await pressKey('Escape', 'Escape', 27);
   if (await waitFor('打开 ›', 800)) throw new Error('Esc 关不掉设置面板');
 }, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
+/**
+ * 模型参数是画布里的输入框，按键必须先归它 —— 否则 Tab/空格会被当成快捷键，
+ * 或者打进去的字落不到字段上。这一段用真按键驱动，断言"值确实变了"。
+ */
+await step('设置 › 出题模型：能打字、Esc 退一层', async () => {
+  await clickLabel('设置');
+  if (!await waitFor('打开 ›')) throw new Error('设置面板没打开');
+  await clickLabel('修改 ›');
+  if (!await waitFor('保存')) throw new Error('模型表单没打开');
+  const before = await evalJs('cog.state.panel.form.base.value');
+  await typeText('abc');
+  const after = await evalJs('cog.state.panel.form.base.value');
+  if (after !== before + 'abc') throw new Error(`输入框没收到按键：${JSON.stringify(before)} → ${JSON.stringify(after)}`);
+  await pressKey('Tab', 'Tab', 9);
+  if (await evalJs('cog.state.panel.form.field') !== 1) throw new Error('Tab 没换到下一格');
+  await pressKey('Escape', 'Escape', 27);
+  if (await waitFor('保存', 800)) throw new Error('Esc 退不出模型表单');
+  if (!await waitFor('打开 ›')) throw new Error('Esc 之后没回到设置列表');
+  await pressKey('Escape', 'Escape', 27);
+  if (await waitFor('打开 ›', 800)) throw new Error('Esc 关不掉设置面板');
+}, async () => !(await evalJs('!!cog.state.panel.form')));
 
 await step('标题 → 选模式 → 选两个主题 → 开局', async () => {
   await clickLabel('开始游戏');

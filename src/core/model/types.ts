@@ -428,6 +428,28 @@ export interface ReportData {
 /** 选牌面板取消后回到哪里；不写表示直接关闭（调试入口 / 没有来源）。 */
 export type CardPickFrom = { k: 'rest' } | { k: 'event'; ev: EventDef };
 
+/** 一个可编辑的单行字段：值和光标位置。表现层（`scenes/textfield.ts`）照这个形状画。 */
+export interface EditField {
+  value: string;
+  caret: number;
+}
+
+/**
+ * 设置面板里的模型参数编辑器。
+ *
+ * 它住在面板上而不是某个模块的局部变量里：`G` 是唯一真相，输入中的半截值也是状态 ——
+ * 否则重绘时要么丢字，要么得另开一处"第二份真相"。
+ */
+export interface ModelForm {
+  base: EditField;
+  model: EditField;
+  key: EditField;
+  /** 焦点字段：0 接口地址 / 1 模型 / 2 密钥。 */
+  field: number;
+  /** 密钥是否明文。 */
+  reveal: boolean;
+}
+
 export type Panel =
   | { k: 'none' }
   /** 开局选模式：学习 2 / 复习 1 / 测试 0 个初始增益，其余规则不变。 */
@@ -462,7 +484,7 @@ export type Panel =
   | { k: 'pile'; kind: 'draw' | 'discard' }
   | { k: 'help' }
   | { k: 'pack'; msg: string; ok: boolean }
-| { k: 'settings'; msg: string; ok: boolean }
+| { k: 'settings'; msg: string; ok: boolean; form?: ModelForm }
   | { k: 'report'; data: ReportData };
 
 export interface GameState {

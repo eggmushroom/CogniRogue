@@ -118,6 +118,7 @@
 | 图形符号（卡面效果、地图节点、图例） | `gfx/art/icons.ts` 的 `ART_ICONS`：24×24 描边、颜色由调用方给。地图的 `NODE_ICON` 只是类型到图标的映射，不许另画一套 |
 | 多选一卡片的视觉 | `gfx/ui.ts` 的 `choiceCard()`：序号、徽记、标题、说明槽位、底部事实行都在这里；场景只给数据和命中矩形 |
 | 平台适配（DOM / localStorage） | `core/infra/storage.ts` |
+| **画布里的文本输入** | `scenes/textfield.ts` 的 `drawField` / `editField` / `pasteInto`：光标、遮罩、左滚、粘贴只在这儿。按键入口也只有一条 —— `input.ts` 的 `keyHandler` 第二个参数，由 `scenes/settings.ts` 的 `settingsKey` 接管；别处不许自己 `addEventListener('keydown')` |
 | 题库的位置依赖 | 数据属性 `Question.noShuffle`，`core/library/parse.ts` 解析期校验 |
 | **题库档案（内置 + 导入的若干份）** | `core/library/bank.ts` 的 `initBanks` / `listBanks` / `useBank` / `importBank` / `removeBank`：档案里存的是**原文**，解析只经 `parse.ts`；别处不许自己读写 `cognirogue.banks.v1` |
 | **本局临时题库** | `core/library/stage.ts` 的 `buildRunPool()`：开局从选中的 2–5 个主题里各取一批，按主题连续排成一条队列；抽题只许经 `nextQuestions()` 往前走，别处不许自己从题库里挑题 |

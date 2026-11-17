@@ -2,7 +2,7 @@ import { CATALOG } from '../cards/catalog';
 import { readStore, writeStore } from '../infra/storage';
 import type { Question, QuestionBank } from '../model/types';
 import { QUESTION_FORMAT, hash32, parseAnyQuestionBank } from './parse';
-import { remoteBankText, remoteBanks, serviceInfo } from './remote';
+import { remoteBankText, remoteBanks, serviceInfo, type ServiceInfo } from './remote';
 
 /**
  * 载入的题库，也是唯一允许外部替换的东西。
@@ -138,15 +138,13 @@ let shipped: ShippedBank[] = [];
 
 /** 服务端还有哪些题库（随程序的那几份不重复列）。 */
 let remoteRows: Array<{ id: string; name: string; total: number; topics: number }> = [];
-/** 服务在不在。**它不是必需项**：不在的时候玩家照样有完整的内置题库。 */
-let serviceUp = false;
-/** 服务能不能出题（它那侧有没有模型 key；key 不下发到浏览器）。 */
-let serviceCanGen = false;
-/** 服务在用的模型名，只为了在设置里显示"配的是哪个"。 */
-let serviceModel = '';
-export const serviceOnline = (): boolean => serviceUp;
-export const serviceReady = (): boolean => serviceCanGen;
-export const serviceModelName = (): string => serviceModel;
+/** 服务在不在 / 能不能出题 / 配的是哪个模型。**它不是必需项**：不在的时候玩家照样有完整的内置题库。 */
+let serviceInfoNow: ServiceInfo | null = null;
+export const serviceOnline = (): boolean => !!serviceInfoNow;
+export const serviceReady = (): boolean => !!serviceInfoNow?.canGenerate;
+export const serviceModelName = (): string => serviceInfoNow?.model ?? '';
+/** 模型接口地址，给设置页的输入框当默认值（key 不在此列，它永远不下发）。 */
+export const serviceModelBase = (): string => serviceInfoNow?.baseUrl ?? '';
 
 const shapeOf = (b: QuestionBank) => ({
   total: countQuestions(b),
@@ -252,12 +250,9 @@ export async function useRemoteBank(id: string): Promise<{ ok: boolean; msg: str
  * 问一次服务的状态：在不在、能不能出题。**不问题库清单**，很便宜，面板可以常调。
  */
 export async function refreshServiceInfo(): Promise<boolean> {
-  const info = await serviceInfo();
-  serviceUp = !!info;
-  serviceCanGen = !!info?.canGenerate;
-  serviceModel = info?.model ?? '';
-  if (!serviceUp) remoteRows = [];
-  return serviceUp;
+  serviceInfoNow = await serviceInfo();
+  if (!serviceInfoNow) remoteRows = [];
+  return !!serviceInfoNow;
 }
 
 /**

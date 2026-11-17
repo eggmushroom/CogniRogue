@@ -92,6 +92,8 @@ export interface ServiceInfo {
   /** 服务有没有配置模型 key。**key 本身永远不下发到浏览器**。 */
   canGenerate: boolean;
   model: string;
+  /** 模型接口地址。不是秘密，设置页要拿它当默认值填进输入框。 */
+  baseUrl: string;
 }
 
 export async function serviceInfo(ms = 1200): Promise<ServiceInfo | null> {
@@ -162,7 +164,12 @@ export async function jobState(id: string, ms = 8000): Promise<JobState | null> 
   }
 }
 
-/** 把模型配置交给服务（存在服务那侧，浏览器只过一手）。 */
+/**
+ * 把模型配置交给服务（存在服务那侧，浏览器只过一手）。
+ *
+ * `key` 传空串表示**不改**：设置页的密钥框平时是空的 —— 服务从不下发 key，
+ * 前端也就没有"把原来的 key 再提交一遍"的可能。
+ */
 export async function setGenConfig(cfg: { baseUrl: string; key: string; model: string }): Promise<boolean> {
   return !!(await post('/api/config', cfg, 5000));
 }

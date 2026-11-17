@@ -19,10 +19,11 @@ import {
   openCardPick, previewUpgrade,
   restHeal, restWanted, startRun, skipReward, takeCard, upgradeCard,
 } from '../core/journey';
-import type { Feedback, ModeId, PowerDef, Question, QView } from '../core/model';
+import type { Feedback, ModeId, ModelForm, PowerDef, Question, QView } from '../core/model';
 import { drawReport } from './report';
 import { dropBank, generateFromDoc, pastePack, requestPackFile, switchBank } from './packio';
-import { pasteModelConfig, reconnectService } from './settings';
+import { closeModelForm, focusModelField, modelFields, openModelForm, reconnectService, saveModelForm, toggleReveal } from './settings';
+import { drawField } from './textfield';
 
 /* ── 通用外壳 ─────────────────────────────────────────────── */
 
@@ -155,7 +156,7 @@ export function drawOverlay(t: number, quiz: QuizState = IDLE_QUIZ) {
       p.kind === 'draw' ? G.draw.slice().reverse() : G.discard);
     case 'help': return drawHelp();
     case 'pack': return drawPack();
-    case 'settings': return drawSettings();
+    case 'settings': return drawSettings(t);
     case 'report': return drawReport(p.data);
     default: return;
   }
@@ -1368,7 +1369,7 @@ function drawPack() {
   box(x, y, w, h, withAlpha(C.cyan, 0.4));
 
   heading('题库', x + 44, y + 62,
-    `切到哪份，下一局开局生效 · 导入的存这台浏览器里 · 本机服务${serviceOnline() ? '已连接' : '未连接（npm run serve）'}`);
+    `切到哪份，下一局开局生效 · 导入的存这台浏览器里 · 本机服务${serviceOnline() ? '已连接' : '未连接（npm run dev）'}`);
 
   const view = scrollArea(x + pad, y + 112, listW, listH, contentH, 'pack');
 
@@ -1442,17 +1443,21 @@ function drawPack() {
   text('格式：## 主题 / ### 题干 / A) 选项 / = 答案字母（样例 packs/algorithms.md）',
     x + pad, ly, { size: 12, color: C.faint, maxW: w - pad * 2 - 240 });
   if (!online) {
-    text('从文档建题库要先跑 npm run serve', x + w - pad, ly, { size: 12, color: C.faint, align: 'right' });
+    text('从文档建题库要先跑 npm run dev', x + w - pad, ly, { size: 12, color: C.faint, align: 'right' });
   }
 }
 
 /**
  * 设置：说明、本机服务、出题模型。三行都是"看一眼状态、按一下就走"，
- * 没有开关，也没有输入框 —— 需要输入一长串字符的只有模型配置，那条走剪贴板。
+ * 需要输入长串字符的只有模型参数 —— 那一项单独画一页，见 `drawModelForm`。
  */
-function drawSettings() {
+function drawSettings(t: number) {
   const p = G.panel;
   if (p.k !== 'settings') return;
+  if (p.form) {
+    drawModelForm(p.form, p.msg, p.ok, t);
+    return;
+  }
   dim();
   const w = 760;
   const rowH = 100;
@@ -1480,7 +1485,7 @@ function drawSettings() {
       // 地址只在连不上时有用 —— 那才是需要你去核对的时刻。
       desc: online
         ? (remote ? `已连接 · 另有 ${remote} 份服务端题库` : '已连接 · 服务端还没有自己的题库')
-        : '未连接 · 起 npm run serve（127.0.0.1:7777）',
+        : '未连接 · 起 npm run dev（127.0.0.1:7777）',
       btn: online ? '重新连接' : '试着连接',
       color: online ? C.green : C.dim,
       run: () => { void reconnectService(); },
@@ -1490,9 +1495,9 @@ function drawSettings() {
       desc: ready
         ? `已配置（${serviceModelName() || '默认模型'}）· 用来从文档生成题库`
         : '未配置 —— 「从文档建题库」要先配它',
-      btn: '粘贴配置',
+      btn: '修改 ›',
       color: ready ? C.green : C.dim,
-      run: () => { void pasteModelConfig(); },
+      run: openModelForm,
     },
   ];
 
@@ -1517,4 +1522,56 @@ function drawSettings() {
     text('Esc 关闭', x + 44, fy, { size: 12, color: C.faint });
   }
 }
+/**
+ * 模型参数的编辑页：接口地址、模型、密钥。
+ *
+ * 地址和模型名带服务报上来的当前值；密钥永远是空框 —— 服务从不下发 key，
+ * 所以这里能"改"不能"看"，留空就是不改。
+ *
+ * 画布没有 DOM 输入框，字段由 `textfield.ts` 画、按键由 `settings.ts` 的
+ * `settingsKey` 收拢 —— 这一页只负责排版和命中矩形。
+ */
+function drawModelForm(f: ModelForm, msg: string, ok: boolean, t: number) {
+  dim();
+  const w = 760;
+  const h = 520;
+  const x = (VW - w) / 2;
+  const y = (VH - h) / 2;
+  box(x, y, w, h, withAlpha(C.gold, 0.35));
+  heading('设置 › 出题模型', x + 44, y + 62, '服务拿这组参数从文档生成题库。存在它那侧，不留在浏览器里。');
 
+  const caretOn = Math.sin(t * 5) > -0.45; // 不闪的竖线看着像排版错误
+  const fw = w - 88 - 112;                 // 密钥那行右边要留出「显示」
+  const kinds = [
+    ['接口地址', 'https://api.deepseek.com/v1'],
+    ['模型', 'deepseek-chat'],
+    ['密钥', '留空 = 不改'],
+  ] as const;
+
+  modelFields(f).forEach((field, i) => {
+    const ry = y + 126 + i * 96;
+    const wide = i === 2 ? fw : w - 88;
+    text(kinds[i][0], x + 44, ry, { size: 12, color: C.dim });
+    drawField(x + 44, ry + 10, wide, 46, field, {
+      focused: f.field === i,
+      masked: i === 2 && !f.reveal,
+      placeholder: kinds[i][1],
+      caretOn,
+    });
+    onClick(x + 44, ry + 10, wide, 46, () => focusModelField(i));
+    if (i === 2) {
+      action(x + 44 + wide + 8, ry + 10, 104, 46, f.reveal ? '隐藏' : '显示', toggleReveal, 'ghost', { size: 13 });
+    }
+  });
+
+  text('Tab 换下一格 · Enter 保存 · Esc 返回', x + 44, y + 400, { size: 12, color: C.faint });
+  if (msg) {
+    g.save();
+    g.font = font(13, 500, FONT_UI);
+    g.fillStyle = ok ? C.green : C.red;
+    wrapText(msg, w - 88).slice(0, 1).forEach((ln, i) => g.fillText(ln, x + 44, y + 426 - i * 18));
+    g.restore();
+  }
+  action(x + w - 44 - 240, y + h - 72, 108, 44, '取消', closeModelForm, 'ghost', { size: 15 });
+  action(x + w - 44 - 120, y + h - 72, 120, 44, '保存', () => { void saveModelForm(); }, 'primary', { size: 15 });
+}
