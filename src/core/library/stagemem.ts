@@ -91,6 +91,15 @@ export function rightCount(topic: string, qid: string): number {
   return STAGE_MEM[topic]?.q[qid]?.ok ?? 0;
 }
 
+/**
+ * 一道题累计答错过几次。只给题库面板看「这道题我栽过」用 —— 判据不读它：
+ * 寿命只由答对次数决定，答错不扣也不加（没学会的题本来就会回来）。
+ * 同样走只读路径，不建空条目。
+ */
+export function wrongCount(topic: string, qid: string): number {
+  return STAGE_MEM[topic]?.q[qid]?.bad ?? 0;
+}
+
 /** 一章的摘要：只报正确率，结算页读它。 */
 export function stageDigest(topic: string): StageDigest {
   const e = stageMemOf(topic);

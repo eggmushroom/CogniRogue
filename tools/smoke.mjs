@@ -463,6 +463,42 @@ await step('设置 › 出题模型：能打字、Esc 退一层', async () => {
   if (await waitFor('打开 ›', 800)) throw new Error('Esc 关不掉设置面板');
 }, async () => !(await evalJs('!!cog.state.panel.form')));
 
+/**
+ * 题库面板要能真的翻到题：切主题换一列题、点开一条看选项。
+ * 断言只读界面上的热区（标签与行高），不读面板内部变量 —— 内部怎么改都不该让这条红。
+ */
+await step('题库：切主题换题、点开看选项', async () => {
+  await clickLabel('题库');
+  const firstQ = () => evalJs(
+    '(cog.hots().filter((h) => h.label.startsWith("q:"))[0] || {}).label || ""',
+  );
+  let a = '';
+  for (let i = 0; i < 80 && !a; i++) { a = await firstQ(); if (!a) await sleep(80); }
+  if (!a) throw new Error('题库面板里一道题都没画出来');
+
+  const topics = await evalJs('cog.hots().map((h) => h.label).filter((l) => l.startsWith("topic:"))');
+  if (topics.length < 2) throw new Error(`主题列只有 ${topics.length} 个，切不动`);
+  await clickLabel(topics[1]);
+
+  let b = a;
+  for (let i = 0; i < 60 && b === a; i++) { await sleep(80); b = await firstQ(); }
+  if (b === a) throw new Error(`换了主题，题目列还是同一道：${a}`);
+
+  const height = (label) => evalJs(
+    `(() => { const h = cog.hots().find((q) => q.label === ${JSON.stringify(label)}); return h ? h.h : 0; })()`,
+  );
+  const h0 = await height(b);
+  await clickLabel(b);
+  let h1 = h0;
+  for (let i = 0; i < 60 && h1 <= h0; i++) { await sleep(80); h1 = await height(b); }
+  if (h1 <= h0) throw new Error(`点开题目之后这一行没变高：${h0} → ${h1}`);
+
+  await pressKey('Escape', 'Escape', 27);
+  if (!await waitFor('开始游戏', 3000) && !await waitFor('继续这一局', 3000)) {
+    throw new Error('Esc 关不掉题库面板');
+  }
+}, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
 await step('标题 → 选模式 → 选两个主题 → 开局', async () => {
   await clickLabel('开始游戏');
   const label = await waitBoon();

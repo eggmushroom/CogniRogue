@@ -6,7 +6,10 @@ import { easeOut } from '../gfx/geom';
 import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
 import { clamp, G, shuffle } from '../core/infra';
 import { curFloor } from '../core/map';
-import { bankProgress, isRetired, listBanks, serviceModelName, serviceOnline, serviceReady, sourceBank } from '../core/library';
+import {
+  bankProgress, isRetired, listBanks, rightCount, serviceModelName, serviceOnline, serviceReady,
+  sourceBank, wrongCount, type BankRow,
+} from '../core/library';
 import {
   BASICS, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded, upgradedId,
   isXCost, rulesStatic, UP_MARK,
@@ -90,18 +93,23 @@ function heading(s: string, x: number, y: number, sub?: string) {
   if (sub) text(sub, x, y + 34, { size: 14, color: C.dim });
 }
 
-let scroll = 0;
-let scrollKey = '';
-function scrollArea(x: number, y: number, w: number, h: number, contentH: number, key = '') {
-  // scroll 是模块级的；换列表必须归零，否则会从中间开始。
-  if (key !== scrollKey) { scrollKey = key; scroll = 0; }
+// 滚动位置按 key 各存一份。题库面板同屏有两个可滚列表（主题、题目），
+// 共用一个变量会让它们每帧把对方拨回原处。
+const scrolls = new Map<string, number>();
+function scrollArea(
+  x: number, y: number, w: number, h: number, contentH: number,
+  key = '', wheel?: number,
+) {
   const max = Math.max(0, contentH - h);
-  scroll = clamp(scroll + consumeWheel() * 0.7, 0, max);
+  // 多个列表同屏时滚轮由调用方分派：`consumeWheel()` 只能取一次，第一个列表
+  // 取完第二个就永远是 0，于是"滚不动"会变成看运气的事。
+  const cur = clamp((scrolls.get(key) ?? 0) + (wheel ?? consumeWheel()) * 0.7, 0, max);
+  scrolls.set(key, cur);
   g.save();
   roundRect(x, y, w, h, 10);
   g.clip();
   return {
-    x, y: y - scroll, restore: () => g.restore(), y0: y, h, max, cur: scroll,
+    x, y: y - cur, restore: () => g.restore(), y0: y, h, max, cur,
   };
 }
 
@@ -1347,12 +1355,24 @@ function drawHelp() {
 
 /* ── 题库 ─────────────────────────────────────────────────── */
 
+/**
+ * 题库面板：三列 —— 题库 / 主题 / 题目。
+ *
+ * 上一版只回答"有哪几份"，而玩家问的是"这份里到底有什么、我练到哪了"：
+ * 一份 400 道的题库在界面上只剩一个数字，答过的和没答过的长得一模一样。
+ * 现在按主题拆开、题目逐条列出来，答对几次、答错几次、掌没掌握都在行上；
+ * 点一条展开选项与答案 —— 不用真打一局就能核对题库本身。
+ */
+let packTopic = '';
+let packOpen = '';
+
 function drawPack() {
   const p = G.panel;
   if (p.k !== 'pack') return;
   dim();
-  const w = 980;
-  const pad = 44;
+  const w = 1360;
+  const pad = 40;
+  const cw = w - pad * 2;
   const x = (VW - w) / 2;
 
   const rows = listBanks();
@@ -1364,173 +1384,264 @@ function drawPack() {
     { label: '你导入的', list: rows.filter((r) => !r.builtin && !r.remote) },
   ].filter((gp) => gp.list.length);
 
-  const rowH = 52;
-  const rowGap = 6;
-  const headH = 30;
-  const need = groups.reduce((n, gp) => n + headH + gp.list.length * (rowH + rowGap), 0) - rowGap;
-  // 高度跟着条目走，上限按 6 行算 —— 随程序的就有 5 份，一行不留地被裁一半是最难看的
-  // 高度跟着条目走，上限按 6 行算 —— 随程序的就有 5 份，一行不留地被裁一半是最难看的。
-  // 下限 300 是右边那张卡的高度：卡里的数没法再挤，而列表短一点只是列表短一点
-  const bodyH = Math.min(420, Math.max(300, need));
-  const h = 120 + bodyH + 136;
+  const src = sourceBank();
+  const onRow = rows.find((r) => r.on);
+  const topics = Object.entries(src.byTopic).map(([name, list]) => ({ name, list }));
+  // 换了题库之后原来的主题名可能不在了：回落到第一个，省得每处都判空
+  if (!topics.some((t) => t.name === packTopic)) {
+    packTopic = topics[0]?.name ?? '';
+    packOpen = '';
+  }
+  const cur = topics.find((t) => t.name === packTopic);
+
+  const h = 712;
   const y = (VH - h) / 2;
   box(x, y, w, h, withAlpha(C.cyan, 0.4));
+  heading('题库', x + pad, y + 56, '切到哪份，下一局开局生效。点主题、点题目看内容。');
 
-  heading('题库', x + pad, y + 62, '切到哪份，下一局开局生效。');
+  drawPackStrip(x + pad, y + 104, cw, src.name, onRow, topics.length);
 
-  const leftW = 460;
-  const gapX = 24;
-  const rightX = x + pad + leftW + gapX;
-  const rightW = w - pad * 2 - leftW - gapX;
+  const bodyTop = y + 200;
+  const bodyH = 380;
+  const headH = 26;
+  const bankW = 300;
+  const topicW = 240;
+  const bankX = x + pad;
+  const topicX = bankX + bankW + 20;
+  const qX = topicX + topicW + 20;
+  const qW = cw - (qX - bankX);
 
-  const view = scrollArea(x + pad, y + 120, leftW, bodyH, need, 'pack');
-  let cy = view.y;
+  // 滚轮只给指针所在的那一列：`consumeWheel()` 一帧只能取一次，
+  // 三列各取一次的话，只有第一个列表滚得动。
+  const wheel = consumeWheel();
+  const overBank = hover(bankX, bodyTop, bankW, bodyH);
+  const overTopic = hover(topicX, bodyTop, topicW, bodyH);
+  const overQ = hover(qX, bodyTop, qW, bodyH);
+
+  /* ── 题库列 ── */
+  const rowH = 46;
+  const bankNeed = groups.reduce((n, gp) => n + headH + gp.list.length * (rowH + 6), 0);
+  text(`题库 · ${rows.length} 份`, bankX + 4, bodyTop + 14, { size: 11, color: C.faint });
+  const bView = scrollArea(bankX, bodyTop + headH, bankW, bodyH - headH, bankNeed,
+    'pack', overBank ? wheel : 0);
+  let by = bView.y;
   for (const gp of groups) {
-    text(`${gp.label} · ${gp.list.length} 份`, view.x + 4, cy + 18, { size: 11, color: C.faint });
-    cy += headH;
+    text(`${gp.label} · ${gp.list.length}`, bView.x + 4, by + 14, { size: 10, color: C.faint });
+    by += headH;
     for (const row of gp.list) {
       // 滚出去的行必须一起失去热区，否则它会盖住下面那行的点击
-      const shown = cy >= view.y0 - 1 && cy + rowH <= view.y0 + bodyH + 1;
-      const hv = shown && hover(view.x, cy, leftW, rowH);
-      roundRect(view.x, cy, leftW, rowH, 9);
+      const shown = by >= bView.y0 - 1 && by + rowH <= bView.y0 + (bodyH - headH) + 1;
+      const hv = shown && hover(bView.x, by, bankW, rowH);
+      roundRect(bView.x, by, bankW, rowH, 9);
       g.fillStyle = row.on ? withAlpha(C.gold, 0.1)
         : hv ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)';
       g.fill();
       if (row.on) {
-        // 在用的那份用一道金条 + 金边标出来：和卡面、主题牌子是同一套视觉
         g.fillStyle = C.gold;
-        roundRect(view.x + 10, cy + 11, 3, rowH - 22, 2);
+        roundRect(bView.x + 10, by + 10, 3, rowH - 20, 2);
         g.fill();
-        g.strokeStyle = withAlpha(C.gold, 0.55);
-        g.lineWidth = 1;
-        roundRect(view.x, cy, leftW, rowH, 9);
-        g.stroke();
-      } else if (hv) {
-        g.strokeStyle = withAlpha(C.lineHi, 0.7);
-        g.lineWidth = 1;
-        roundRect(view.x, cy, leftW, rowH, 9);
-        g.stroke();
       }
-
-      text(row.name, view.x + 24, cy + 31, {
-        size: 15, weight: row.on ? 700 : 500,
-        color: row.on ? C.ink : C.ink2, maxW: leftW - 224,
+      text(row.name, bView.x + 24, by + 28, {
+        size: 14, weight: row.on ? 700 : 500,
+        color: row.on ? C.ink : C.ink2, maxW: bankW - 96,
       });
-      // 题数右对齐：五份题库摆在一起时，这一列才是能上下比的
-      text(`${row.total} 道 · ${row.topics} 主题`, view.x + leftW - 18, cy + 31, {
-        size: 12, color: row.on ? C.gold : C.dim, align: 'right', family: FONT_NUM,
+      text(`${row.total} 道`, bView.x + bankW - 16, by + 28, {
+        size: 11, color: row.on ? C.gold : C.dim, align: 'right', family: FONT_NUM,
       });
-
       if (shown) {
-        onClick(view.x, cy, leftW, rowH, () => { if (!row.on) switchBank(row.id); }, `bank:${row.id}`);
+        onClick(bView.x, by, bankW, rowH, () => {
+          if (row.on) return;
+          packOpen = '';
+          switchBank(row.id);
+        }, `bank:${row.id}`);
       }
-      cy += rowH + rowGap;
+      by += rowH + 6;
     }
   }
-  view.restore();
-  overflowAffordance(view, x + pad, leftW);
+  bView.restore();
+  overflowAffordance(bView, bankX, bankW);
 
-  // 卡片固定 300：它是一个"信息块"，高度不该跟着左边有几行题库变 ——
-  // 跟着变的话，题库多的时候卡里会空出一大片（内容都贴在上下两端）
-  drawPackDetail(rightX, y + 120, rightW, Math.min(300, bodyH));
+  /* ── 主题列 ── */
+  const tRowH = 40;
+  const topicNeed = topics.length * (tRowH + 4);
+  text(`主题 · ${topics.length}`, topicX + 4, bodyTop + 14, { size: 11, color: C.faint });
+  const tView = scrollArea(topicX, bodyTop + headH, topicW, bodyH - headH, topicNeed,
+    `pack-t:${onRow?.id ?? ''}`, overTopic ? wheel : 0);
+  let ty = tView.y;
+  for (const t of topics) {
+    const shown = ty >= tView.y0 - 1 && ty + tRowH <= tView.y0 + (bodyH - headH) + 1;
+    const sel = t.name === packTopic;
+    const hv = shown && hover(tView.x, ty, topicW, tRowH);
+    const mastered = t.list.filter((q) => isRetired(q)).length;
+    roundRect(tView.x, ty, topicW, tRowH, 8);
+    g.fillStyle = sel ? withAlpha(C.cyan, 0.12)
+      : hv ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)';
+    g.fill();
+    if (sel) {
+      g.fillStyle = C.cyan;
+      roundRect(tView.x + 8, ty + 9, 3, tRowH - 18, 2);
+      g.fill();
+    }
+    text(t.name, tView.x + 20, ty + 25, {
+      size: 13, weight: sel ? 700 : 500, color: sel ? C.ink : C.ink2, maxW: topicW - 92,
+    });
+    // 「掌握几道 / 一共几道」：这一列横着比的是进度，不是题量
+    text(`${mastered}/${t.list.length}`, tView.x + topicW - 14, ty + 25, {
+      size: 11, align: 'right', family: FONT_NUM,
+      color: mastered === t.list.length ? C.green : C.dim,
+    });
+    if (shown) {
+      onClick(tView.x, ty, topicW, tRowH, () => {
+        if (sel) return;
+        packTopic = t.name;
+        packOpen = '';
+      }, `topic:${t.name}`);
+    }
+    ty += tRowH + 4;
+  }
+  tView.restore();
+  overflowAffordance(tView, topicX, topicW);
 
+  /* ── 题目列 ── */
+  const list = cur?.list ?? [];
+  let qNeed = 0;
+  for (const q of list) qNeed += qRowH(q) + 4;
+  text(`题目 · ${packTopic || '—'} · ${list.length} 道`,
+    qX + 4, bodyTop + 14, { size: 11, color: C.faint });
+  const qView = scrollArea(qX, bodyTop + headH, qW, bodyH - headH, qNeed,
+    `pack-q:${packTopic}`, overQ ? wheel : 0);
+  let qy = qView.y;
+  for (const q of list) qy += drawPackQuestion(qView, qX, qy, qW, q) + 4;
+  qView.restore();
+  overflowAffordance(qView, qX, qW);
+
+  /* ── 底栏 ── */
   g.fillStyle = 'rgba(255,255,255,.06)';
-  g.fillRect(x + pad, y + h - 136, w - pad * 2, 1);
+  g.fillRect(x + pad, y + 596, cw, 1);
 
-  const fy = y + h - 114;
+  const fy = y + 618;
   action(x + pad, fy, 224, 46, '从文档建题库', () => generateFromDoc(), 'primary');
   action(x + pad + 236, fy, 196, 46, '选一个 .md 文件', () => requestPackFile(), 'ghost', { size: 14 });
   action(x + pad + 444, fy, 196, 46, '从剪贴板粘贴', () => pastePack(), 'ghost', { size: 14 });
   if (!serviceOnline()) {
-    text('从文档建题库要先跑 npm run dev', x + w - pad, fy + 29, { size: 12, color: C.faint, align: 'right' });
+    text('从文档建题库要先跑 npm run dev', x + w - pad, fy + 29,
+      { size: 12, color: C.faint, align: 'right' });
   }
 
-  const ly = y + h - 40;
+  const ly = y + 688;
   if (p.msg) {
     g.font = font(13, 500, FONT_UI);
     g.fillStyle = p.ok ? C.green : C.red;
-    wrapText(p.msg, w - pad * 2).slice(0, 2).forEach((ln, i) => g.fillText(ln, x + pad, ly + i * 20));
+    wrapText(p.msg, cw).slice(0, 2).forEach((ln, i) => g.fillText(ln, x + pad, ly + i * 20));
   } else {
     // 没有消息时才占这行：格式速查是常态信息，不该和"刚发生了什么"抢位置
     text('格式：## 主题 / ### 题干 / A) 选项 / = 答案字母 —— 样例 packs/algorithms.md',
-      x + pad, ly, { size: 12, color: C.faint, maxW: w - pad * 2 });
+      x + pad, ly, { size: 12, color: C.faint, maxW: cw });
   }
 }
 
-/**
- * 右边那张卡：这一份题库的来路、题量、学到哪。
- *
- * 上一版这些信息要么是一行"当前：…"重复列表里已经写过的名字，要么干脆没有 ——
- * 玩家的进度只在首页那条进度条上出现，而那里看不出它属于哪一份题库。
- */
-function drawPackDetail(x: number, y: number, w: number, h: number) {
-  const src = sourceBank();
-  const row = listBanks().find((r) => r.on);
-  const prog = bankProgress();
-  const cw = w - 44;
-  const cx = x + 22;
+/** 题目行展开时占多高。画和量共用它，否则列表长度和滚动位置会各说各话。 */
+function qRowH(q: Question): number {
+  if (packOpen !== q.qid) return 44;
+  return 52 + q.options.length * 22 + 24 + (q.explain ? 18 : 0);
+}
 
-  roundRect(x, y, w, h, 12);
+/** 一道题的状态：颜色 + 一句话。判据只在这儿，别处不许自己比 `retireAt`。 */
+function qStatusOf(q: Question): { color: string; label: string } {
+  const ok = rightCount(q.topic, q.qid);
+  const bad = wrongCount(q.topic, q.qid);
+  if (ok >= BAL.retireAt) return { color: C.green, label: '已掌握' };
+  if (ok > 0) return { color: C.gold, label: `答对 ${ok}/${BAL.retireAt}` };
+  if (bad > 0) return { color: C.red, label: `答错 ${bad}` };
+  return { color: C.faint, label: '未答' };
+}
+
+/** 题目行。返回这一行的实际高度（必须和 `qRowH` 一致）。 */
+function drawPackQuestion(
+  view: { y0: number; h: number }, x: number, cy: number, w: number, q: Question,
+): number {
+  const open = packOpen === q.qid;
+  const rowH = qRowH(q);
+  const shown = cy >= view.y0 - 1 && cy + rowH <= view.y0 + view.h + 1;
+  const hv = shown && hover(x, cy, w, rowH);
+  const st = qStatusOf(q);
+
+  roundRect(x, cy, w, rowH, 9);
+  g.fillStyle = open ? 'rgba(255,255,255,.045)'
+    : hv ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)';
+  g.fill();
+  if (open) {
+    g.strokeStyle = withAlpha(C.lineHi, 0.8);
+    g.lineWidth = 1;
+    roundRect(x, cy, w, rowH, 9);
+    g.stroke();
+  }
+
+  // 状态点：答过的题一眼挑得出来。颜色和结算面板同一套 —— 绿=掌握、金=还差几次、红=错过、灰=没答
+  g.beginPath();
+  g.arc(x + 18, cy + 22, 3, 0, Math.PI * 2);
+  g.fillStyle = st.color;
+  g.fill();
+
+  text(q.q, x + 32, cy + 27, {
+    size: 14, color: open ? C.ink : C.ink2, weight: open ? 600 : 400, maxW: w - 32 - 96,
+  });
+  text(st.label, x + w - 16, cy + 27, { size: 11, color: st.color, align: 'right' });
+
+  if (open) {
+    let oy = cy + 52;
+    q.options.forEach((opt, i) => {
+      const right = i === q.answer;
+      text(`${'ABCDEF'[i] ?? '?'}) ${opt}`, x + 32, oy, {
+        size: 13, color: right ? C.green : C.dim, weight: right ? 600 : 400, maxW: w - 64,
+      });
+      oy += 22;
+    });
+    text(`答对 ${rightCount(q.topic, q.qid)} 次 · 答错 ${wrongCount(q.topic, q.qid)} 次`,
+      x + 32, oy + 2, { size: 11, color: C.faint });
+    if (q.explain) {
+      text(q.explain, x + 32, oy + 20, { size: 11, color: C.faint, maxW: w - 64 });
+    }
+  }
+
+  if (shown) {
+    onClick(x, cy, w, rowH, () => { packOpen = open ? '' : q.qid; }, `q:${q.qid}`);
+  }
+  return rowH;
+}
+
+/** 顶上那条：这份题库叫什么、从哪来、练到哪了。明细都在下面三列里。 */
+function drawPackStrip(
+  x: number, y: number, w: number, name: string, row: BankRow | undefined, topicCount: number,
+) {
+  const prog = bankProgress();
+  roundRect(x, y, w, 80, 12);
   g.fillStyle = 'rgba(255,255,255,.022)';
   g.fill();
   g.strokeStyle = 'rgba(255,255,255,.07)';
   g.lineWidth = 1;
-  roundRect(x, y, w, h, 12);
+  roundRect(x, y, w, 80, 12);
   g.stroke();
 
-  // 「正在用」是状态不是标题：做成小牌，名字才是这张卡的主语
-  roundRect(cx, y + 20, 76, 24, 12);
-  g.fillStyle = withAlpha(C.gold, 0.14);
-  g.fill();
-  text('正在用', cx + 38, y + 37, { size: 11, color: C.gold, align: 'center' });
+  const cx = x + 22;
+  const cw = w - 44;
+  text(name, cx, y + 34, { size: 18, weight: 700, color: C.ink, maxW: cw - 380 });
+  const kind = row?.builtin ? '随程序' : row?.remote ? '服务端' : '你导入的';
+  text(`${kind} · ${topicCount} 个主题 · ${prog.total} 道题`, cx, y + 58, { size: 12, color: C.dim });
+
+  const rate = prog.answers ? Math.round((prog.ok / prog.answers) * 100) : 0;
+  text(`已掌握 ${prog.mastered} / ${prog.total}${prog.answers ? ` · 正确率 ${rate}% · 累计 ${prog.answers} 次` : ' · 还没答过题'}`,
+    x + w - 22, y + 58, { size: 12, color: C.ink2, align: 'right' });
 
   // 删掉只对导入的那几份开放：随程序的在包里，服务端的在服务那侧
   if (row && !row.builtin && !row.remote) {
-    const dh = hover(x + w - 22 - 60, y + 18, 60, 26);
-    text('删掉', x + w - 22, y + 36, { size: 12, color: dh ? C.red : C.faint, align: 'right' });
-    onClick(x + w - 22 - 60, y + 18, 60, 26, () => dropBank(row.id), `bank-del:${row.id}`);
+    const dh = hover(x + w - 22 - 70, y + 16, 70, 28);
+    text('删掉', x + w - 22, y + 34, { size: 12, color: dh ? C.red : C.faint, align: 'right' });
+    onClick(x + w - 22 - 70, y + 16, 70, 28, () => dropBank(row.id), `bank-del:${row.id}`);
   }
 
-  text(src.name, cx, y + 84, { size: 20, weight: 700, color: C.ink, maxW: cw });
-  const kind = row?.builtin ? '随程序' : row?.remote ? '服务端' : '你导入的';
-  text(kind, cx, y + 110, { size: 12, color: C.dim });
-
-  // 两块数字：一份题库最先要知道的就是"多少题、铺开在几个主题上"。
-  // 数字用等宽大字，标题用不着再念一遍这两个数。
-  const tileW = (cw - 12) / 2;
-  const tiles: [string, string][] = [
-    [String(prog.total), '道题'],
-    [String(Object.keys(src.byTopic).length), '个主题'],
-  ];
-  tiles.forEach(([n, label], i) => {
-    const tx = cx + i * (tileW + 12);
-    const mid = tx + tileW / 2;
-    roundRect(tx, y + 130, tileW, 74, 9);
-    g.fillStyle = 'rgba(255,255,255,.035)';
-    g.fill();
-    text(n, mid, y + 166, { size: 24, weight: 700, family: FONT_NUM, color: C.ink, align: 'center' });
-    text(label, mid, y + 190, { size: 11, color: C.faint, align: 'center' });
-  });
-
-  // 进度贴卡片底：上面是"这是什么"，下面是"我学到哪了"，中间留白比把两段挤在一起稳。
-  // 数字给准数，条子只回答"大概到哪了"（和首页那条同一条规则）。
-  const py = y + h - 78;
-  text(`已掌握 ${prog.mastered} / ${prog.total} 题`, cx, py, { size: 12, weight: 600, color: C.ink2 });
-  if (prog.answers) {
-    text(`正确率 ${Math.round((prog.ok / prog.answers) * 100)}%`, cx + cw, py,
-      { size: 12, color: C.dim, align: 'right' });
-  }
-  roundRect(cx, py + 12, cw, 8, 4);
-  g.fillStyle = 'rgba(255,255,255,.09)';
-  g.fill();
-  if (prog.total && prog.mastered) {
-    // 一道题也是看得见的一点，别让"刚掌握 1 题"渲染成空条
-    roundRect(cx, py + 12, Math.max(8, (cw * prog.mastered) / prog.total), 8, 4);
-    g.fillStyle = C.gold;
-    g.fill();
-  }
-  text(prog.answers ? `累计 ${prog.answers} 次答题` : '还没答过题', cx, py + 42,
-    { size: 11, color: C.faint });
+  // 不放进度条：400 道里掌握 1 道时，填充只有几像素，"条"读起来像一条脏边。
+  // 掌握到哪了由左右两处数字回答 —— 这里一句话、主题列每行一个 `x/80`。
 }
 
 /**
