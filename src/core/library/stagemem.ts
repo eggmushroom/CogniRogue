@@ -68,6 +68,29 @@ export function resetStageMemory() {
   saveStageMem();
 }
 
+/** 一局的答题流水，只为「交回服务端」攒一份；判据一律不读它。 */
+export interface AnswerNote {
+  topic: string;
+  qid: string;
+  right: boolean;
+}
+
+/**
+ * 一局最多记这么多手。无头模拟（`npm run sim`）跑几千局、每局几百手，
+ * 不封顶就是一路往上涨的内存，而且没人会去读那么长的一份流水。
+ */
+const RUN_LOG_MAX = 600;
+let runLog: AnswerNote[] = [];
+
+/** 这一局答了哪些题。结算时由 `queueRunAnswers()` 打包，别处只读。 */
+export function runAnswers(): AnswerNote[] {
+  return runLog;
+}
+
+export function clearRunAnswers() {
+  runLog = [];
+}
+
 /** 答完一道题记一笔。按**章节**归档，题号只用于定位具体是哪道题。 */
 export function recordAnswer(a: { stageTopic: string; qid: string; right: boolean }) {
   const e = stageMemOf(a.stageTopic);
@@ -76,6 +99,10 @@ export function recordAnswer(a: { stageTopic: string; qid: string; right: boolea
   const s = (e.q[a.qid] ??= { ok: 0, bad: 0 });
   if (a.right) s.ok += 1;
   else s.bad += 1;
+  // 同一手顺手记进这一局的流水：局末要把它交回服务端。
+  // 放在这里而不是 `answer.ts`，是因为"答题记录"只有一个写入口。
+  if (runLog.length >= RUN_LOG_MAX) runLog.shift();
+  runLog.push({ topic: a.stageTopic, qid: a.qid, right: a.right });
 }
 
 /**

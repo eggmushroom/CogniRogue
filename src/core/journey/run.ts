@@ -8,7 +8,7 @@ import { startDeck } from '../cards/starter';
 import { applyInstant, clearStageOnce, rulesOf } from '../cards/powers';
 import { sourceBank } from '../library/bank';
 import { buildRunPool, runLabel } from '../library/stage';
-import { saveStageMem } from '../library/stagemem';
+import { saveStageMem, clearRunAnswers } from '../library/stagemem';
 import { availableNodes, genStage } from '../map/gen';
 import { setSettleHandler, startBattle } from '../combat';
 import { drawEvent } from './events';
@@ -31,8 +31,10 @@ function pickTopics(): string[] {
 /** 一局的编排：开局、进节点、结算后决定下一步。 */
 /** 幕 Boss 死掉是换图，只有第五幕的 Boss 结束一局。 */
 export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = [], topics?: string[]) {
-  // 开局前先把上一局的答题流水落盘
+  // 开局前先把上一局的答题流水落盘，并丢掉上一局没收尾的流水
+  // （调试跳转能直接 startRun，那条路上没有结算）
   saveStageMem();
+  clearRunAnswers();
   clearRun();
   const deck = basicDeck().concat(startDeck());
   const modeDef = mode ? MODE_BY_ID[mode] : null;

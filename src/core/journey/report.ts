@@ -2,6 +2,7 @@ import type { ReportRow } from '../model/types';
 import { MODE_BY_ID } from '../model/data';
 import { G } from '../infra/state';
 import { saveStageMem, stageDigest } from '../library/stagemem';
+import { queueRunAnswers } from '../library/answers';
 import { baseIdOf } from '../cards/registry';
 import { curFloor } from '../map/gen';
 import { clearRun } from './save';
@@ -22,6 +23,10 @@ export function endRun(win: boolean) {
   // rows 会把没打过的章节也补成空条目，所以章节记忆在算完 rows 之后再落盘，
   // 否则刚建的空条目要等下一次结算才写进去。
   saveStageMem();
+
+  // 这一局的答题流水在这里打包排队，交给表现层发回本机服务。
+  // 放在结算里而不是"发牌/答题时边发边传"：一局一次请求，中途掉线也不会丢半截。
+  queueRunAnswers(win);
 
   // 押注没了，结算页也就不再有"你押的档准不准"：现在只剩一个问题：
   // 这一局的伤害里，多少是你记住的，多少是你当时蒙对的那一下。
@@ -51,8 +56,8 @@ export function endRun(win: boolean) {
   }
 
   G.screen = 'report';
-  // 本章本局的答题数：直接读累计计数，不读 answers 环形缓冲。
-  // 环形缓冲只有最近 120 条，长局读到一半就会少算，而且读档后会被清零。
+  // 本章本局的答题数：直接读累计计数，不读 `runAnswers()` 那份流水。
+  // 流水只留最近 600 手、而且结算时就被交出去了，长局读到一半会少算。
   G.panel = {
     k: 'report',
     data: {

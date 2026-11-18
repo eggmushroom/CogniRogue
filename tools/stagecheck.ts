@@ -1,4 +1,4 @@
-/** 过幕与新机制的结构检查：`npm run stage`。 */
+﻿/** 过幕与新机制的结构检查：`npm run stage`。 */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -17,7 +17,7 @@ import {
   grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
   lastFeedback, onFx, effFace, planStrike, setScheduler, panelOf, buildSettlement,
   parseQuestionBank, questionId, shuffleOptions, SNAP_V, SAVE_KEY, drawEvent, MAP_COLS,
-  isBasicId, baseIdOf, mechAmt, mechNote,
+  isBasicId, baseIdOf, mechAmt, mechNote, endRun, takeAnswerUpload, runAnswers,
 } from '../src/core';
 
 // 结构检查用同步调度，core 的演出延时不会真的挂住测试。
@@ -3035,6 +3035,47 @@ C) 3
   G.qSolved[head.qid] = true;
   G.qLeft = [head];
   ok(takeQuestion()?.qid !== head.qid, '答对之后，同一道题不再发给玩家');
+}
+
+// ── 一局的答题记录要能交回服务端 ──
+{
+  // 前面的检查结算过几局，先把这个队列倒空，否则下面分不清是谁排的
+  takeAnswerUpload();
+
+  // 一局打完 = 结算时打包：答题 → endRun → 取包交给 main.ts
+  startRun(null, [], [Object.keys(sourceBank().byTopic)[0]]);
+  const topic = G.topics[0];
+  const qs = sourceBank().byTopic[topic];
+  ok(takeAnswerUpload() === null, '结算之前没有包可交');
+
+  recordAnswer({ stageTopic: topic, qid: qs[0].qid, right: true });
+  recordAnswer({ stageTopic: topic, qid: qs[1].qid, right: false });
+  recordAnswer({ stageTopic: topic, qid: qs[0].qid, right: true });
+  G.runOk = 2;
+  G.runBad = 1;
+  ok(runAnswers().length === 3, `一局记了 ${runAnswers().length} 手流水`);
+
+  endRun(false);
+  const up = takeAnswerUpload();
+  ok(!!up, '结算之后排出了要交给服务端的包');
+  ok(up?.answers.length === 3, `包里带上了这一局的 ${up?.answers.length} 手`);
+  ok(up?.answers[1].qid === qs[1].qid && up?.answers[1].right === false,
+    '包里那道答错的题，题号与对错都对得上');
+  ok(up?.ok === 2 && up?.bad === 1, `包里的对错合计是 ${up?.ok}/${up?.bad}`);
+  ok(up?.win === false && up?.stage === G.stage && up?.topics[0] === topic,
+    '包里带上了结果、幕数与本局主题');
+  ok(up?.bank === sourceBank().name, `包里带上了题库名「${up?.bank}」`);
+  ok(takeAnswerUpload() === null, '同一个包不会交两次');
+  ok(runAnswers().length === 0, '交出去之后流水清空，不会滚进下一局');
+
+  // 流水封顶：无头模拟跑几千局、每局几百手，不封顶就是一路涨的内存
+  for (let i = 0; i < 700; i += 1) recordAnswer({ stageTopic: topic, qid: qs[0].qid, right: true });
+  ok(runAnswers().length === 600, `流水封顶在 ${runAnswers().length} 手`);
+
+  // 一道题都没答的一局不排队：空记录不值得往服务端写一行
+  startRun(null, [], [topic]);
+  endRun(false);
+  ok(takeAnswerUpload() === null, '没答题的一局不排队');
 }
 
 console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 结构检查通过');

@@ -8,7 +8,7 @@ import { bindInput, beginInput, clearWheel, endInput, hover, keyHandler, setInpu
 import { C } from './gfx/theme';
 import { G, onFx } from './core/infra';
 import { after } from './core/infra/schedule';
-import { initBanks, refreshRemoteBanks, setServiceBase } from './core/library';
+import { initBanks, refreshRemoteBanks, sendAnswers, setServiceBase, takeAnswerUpload } from './core/library';
 import { answer, cancelPanel, endTurn } from './core/combat';
 import { ackCardGet, ackPower, cancelPreview, dismissFeedback } from './core/journey';
 import {
@@ -211,6 +211,11 @@ function frame(now: number) {
 
   beginFrame();
   beginInput();
+
+  // 一局打完：这一局的答题记录交回本机服务。取走即出队，所以每局只发一次；
+  // 服务不在（双击打开的单个文件就是）请求失败，这里不重试也不提示。
+  const upload = takeAnswerUpload();
+  if (upload) void sendAnswers(upload);
 
   // 面板刚关掉：把面板期间攒下的滚轮增量丢掉
   if (panelWasOpen && !modalOpen()) clearWheel();
