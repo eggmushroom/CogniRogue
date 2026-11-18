@@ -18,6 +18,7 @@ import {
 import { drawOverlay, quizFrame } from './scenes/overlay';
 import { drawSceneBackdrop, drawSceneWorld, worldLayer } from './scenes/layers';
 import { settingsKey } from './scenes/settings';
+import { closePlan } from './scenes/plangen';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game');
 if (!canvas) throw new Error('#game 不存在');
@@ -179,6 +180,8 @@ keyHandler((k) => {
     if (p.k === 'cardpick' && p.pick !== undefined) { cancelPreview(); return; }
     // 到手的那张卡没有"取消"可言：它已经进牌组了，Esc 就等于"知道了"。
     if (p.k === 'cardget') { ackCardGet(); return; }
+    // 划分计划是一条独立的路：Esc 退回题库面板，不会把玩家扔回标题
+    if (p.k === 'plan') { closePlan(); return; }
     // cardpick 也要能按 Esc 退出：取消后回到事件 / 复习面板，账一起清掉。
     if (p.k === 'question' || p.k === 'deck' || p.k === 'pile' || p.k === 'cardpick'
         || p.k === 'help' || p.k === 'pack' || p.k === 'settings' || p.k === 'boon' || p.k === 'topic') cancelPanel();

@@ -60,6 +60,80 @@ const headingOf = (line: string) => {
   return m ? { level: m[1].length, text: m[2] } : null;
 };
 
+/** 一行在切分眼里的身份。代码块里的 `#` 只是正文，**唯一**的判定在这儿。 */
+interface Tok {
+  line: number;
+  text: string;
+  kind: 'blank' | 'heading' | 'text';
+  level: number;
+}
+
+function scan(md: string): Tok[] {
+  const out: Tok[] = [];
+  let fence: string | null = null;
+  md.split(/\r?\n/).forEach((raw, line) => {
+    if (isFence(raw)) {
+      const mark = raw.trim().slice(0, 3);
+      if (!fence) fence = mark;
+      else if (mark === fence) fence = null;
+      out.push({ line, text: raw, kind: 'text', level: 0 });
+      return;
+    }
+    if (fence) {
+      out.push({ line, text: raw, kind: 'text', level: 0 });
+      return;
+    }
+    const h = headingOf(raw);
+    if (h) {
+      out.push({ line, text: raw, kind: 'heading', level: h.level });
+      return;
+    }
+    out.push({ line, text: raw, kind: raw.trim() ? 'text' : 'blank', level: 0 });
+  });
+  return out;
+}
+
+/** 文档里的标题，按出现顺序。切分、取数、分层都从这一份扫描出发。 */
+export function headingsOf(md: string): Array<{ level: number; text: string; line: number }> {
+  return scan(md)
+    .filter((t) => t.kind === 'heading')
+    .map((t) => ({ level: t.level, text: headingOf(t.text)?.text ?? t.text, line: t.line }));
+}
+
+/**
+ * 段落：按空行分组，**代码块不拆**，标题单独成段。
+ *
+ * 段落是「默认划分」和「模型划分」的最小单位：切点只能落在段落之间，
+ * 这样两种划分都不会把一句话、一个代码块劈成两半。
+ */
+export interface Para {
+  from: number;
+  to: number;
+  text: string;
+  chars: number;
+}
+
+export function paragraphsOf(md: string): Para[] {
+  const out: Para[] = [];
+  let cur: string[] = [];
+  let from = 0;
+  const flush = (end: number) => {
+    const text = cur.join('\n').trim();
+    if (text) out.push({ from, to: end, text, chars: text.length });
+    cur = [];
+  };
+  let lastLine = 0;
+  for (const t of scan(md)) {
+    lastLine = t.line + 1;
+    if (t.kind === 'blank') { flush(t.line); from = t.line + 1; continue; }
+    if (t.kind === 'heading' && cur.length) { flush(t.line); from = t.line; }
+    if (!cur.length) from = t.line;
+    cur.push(t.text);
+  }
+  flush(lastLine);
+  return out;
+}
+
 /**
  * 解析成标题树。**唯一**的解析实现：切分和按路径取数都从这里出发，
  * 免得两份解析器对「代码块里的 # 算不算标题」给出不同答案。
@@ -67,20 +141,16 @@ const headingOf = (line: string) => {
 function parseTree(md: string): { root: RawSection; title: string } {
   const root: RawSection = { path: [], lines: [], children: [] };
   const stack: RawSection[] = [root];
-  let fence: string | null = null;
   let title = '';
 
-  for (const raw of md.split(/\r?\n/)) {
-    if (isFence(raw)) {
-      const mark = raw.trim().slice(0, 3);
-      if (!fence) fence = mark;
-      else if (mark === fence) fence = null;
-      stack[stack.length - 1].lines.push(raw);
+  for (const t of scan(md)) {
+    if (t.kind !== 'heading') {
+      stack[stack.length - 1].lines.push(t.text);
       continue;
     }
-    const h = fence ? null : headingOf(raw);
+    const h = headingOf(t.text);
     if (!h) {
-      stack[stack.length - 1].lines.push(raw);
+      stack[stack.length - 1].lines.push(t.text);
       continue;
     }
     if (h.level === 1 && !title) title = h.text;
@@ -190,4 +260,64 @@ export function tocText(doc: Doc): string {
   return doc.toc
     .map((e) => `${'  '.repeat(e.path.length - 1)}${e.path[e.path.length - 1]} · ${e.size} 字${e.parts > 1 ? ` · ${e.parts} 块` : ''} · ${e.head}`)
     .join('\n');
+}
+
+/** 一段行号区间：计划、切分、取数都用它描述"这一节是哪几行"。 */
+export interface Block {
+  /** 起始行（含）。 */
+  from: number;
+  /** 结束行（不含）。 */
+  to: number;
+  /** 这一节的名字：有标题用标题，没有就用开头几个字。 */
+  title: string;
+  chars: number;
+}
+
+/** 按行号取原文。计划里的区间都经过这里，别处不许自己 split。 */
+export function sliceLines(md: string, from: number, to: number): string {
+  return md.split(/\r?\n/).slice(Math.max(0, from), Math.max(0, to)).join('\n');
+}
+
+/** 没有标题可用时，拿正文开头当名字：一条空标题比没有更糟。 */
+function titleFromText(text: string): string {
+  const flat = text
+    .split('\n')
+    .map((l) => l.replace(/^[#>\-*\s]+/, '').trim())
+    .find((l) => l && !l.startsWith('```'));
+  return (flat ?? '未命名').slice(0, 18);
+}
+
+/**
+ * 默认划分：段落装箱到 `size` 字左右。
+ *
+ * 这里 `size` 是**目标**而不是硬上限：单段就超过 size 时它自成一节，
+ * 绝不在段落中间下刀 —— 切一半的段落喂给模型，等于让它对着半句话出题。
+ * 真要在超长节里再切，是生成一侧按 `splitText` 分块的事，不属于划分。
+ */
+export function blocksOf(md: string, size: number): Block[] {
+  const paras = paragraphsOf(md);
+  const heads = headingsOf(md);
+  const out: Block[] = [];
+  let cur: Para[] = [];
+  let chars = 0;
+
+  const flush = () => {
+    if (!cur.length) return;
+    const from = cur[0].from;
+    const to = cur[cur.length - 1].to;
+    const head = heads.find((h) => h.line >= from && h.line < to);
+    out.push({ from, to, title: head?.text ?? titleFromText(cur[0].text), chars });
+    cur = [];
+    chars = 0;
+  };
+
+  for (const p of paras) {
+    // 标题另起一节：章节边界不该被装箱算法抹平；其余段落攒到目标大小再收
+    const isHead = p.text.startsWith('#');
+    if (cur.length && (isHead || chars + p.chars > size)) flush();
+    cur.push(p);
+    chars += p.chars;
+  }
+  flush();
+  return out;
 }

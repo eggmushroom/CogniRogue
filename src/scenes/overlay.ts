@@ -22,9 +22,10 @@ import {
   openCardPick, previewUpgrade,
   restHeal, restWanted, startRun, skipReward, takeCard, upgradeCard,
 } from '../core/journey';
-import type { Feedback, ModeId, ModelForm, PowerDef, Question, QView } from '../core/model';
+import type { Feedback, ModeId, ModelForm, PlanView, PowerDef, Question, QView } from '../core/model';
 import { drawReport } from './report';
-import { dropBank, generateFromDoc, pastePack, requestPackFile, switchBank } from './packio';
+import { dropBank, pastePack, requestPackFile, switchBank } from './packio';
+import { approvePlan, closePlan, replan, startDocFlow } from './plangen';
 import { closeModelForm, focusModelField, modelFields, openModelForm, reconnectService, saveModelForm, toggleReveal } from './settings';
 import { drawField } from './textfield';
 
@@ -165,6 +166,7 @@ export function drawOverlay(t: number, quiz: QuizState = IDLE_QUIZ) {
     case 'help': return drawHelp();
     case 'pack': return drawPack();
     case 'settings': return drawSettings(t);
+    case 'plan': return drawPlanView(p.data);
     case 'report': return drawReport(p.data);
     default: return;
   }
@@ -1520,7 +1522,7 @@ function drawPack() {
   g.fillRect(x + pad, y + 596, cw, 1);
 
   const fy = y + 618;
-  action(x + pad, fy, 224, 46, '从文档建题库', () => generateFromDoc(), 'primary');
+  action(x + pad, fy, 224, 46, '从文档建题库', () => void startDocFlow(), 'primary');
   action(x + pad + 236, fy, 196, 46, '选一个 .md 文件', () => requestPackFile(), 'ghost', { size: 14 });
   action(x + pad + 444, fy, 196, 46, '从剪贴板粘贴', () => pastePack(), 'ghost', { size: 14 });
   if (!serviceOnline()) {
@@ -1676,6 +1678,119 @@ function drawPackStrip(
 
   // 不放进度条：400 道里掌握 1 道时，填充只有几像素，"条"读起来像一条脏边。
   // 掌握到哪了由左右两处数字回答 —— 这里一句话、主题列每行一个 `x/80`。
+}
+
+/**
+ * 划分计划：出题之前先让玩家看见「会切成哪几节」。
+ *
+ * 这一屏存在的理由只有一个：切分决定整份题库的样子，而它没法在出题之后补救 ——
+ * 切错了只能重跑，重跑要花模型额度。所以这里只做三件事：说清怎么切的、
+ * 把每节摆出来、给一个「按这份出题」和一个「换一种切法」。
+ */
+function drawPlanView(v: PlanView) {
+  dim();
+  const w = 1180;
+  const pad = 40;
+  const cw = w - pad * 2;
+  const x = (VW - w) / 2;
+  const h = 700;
+  const y = (VH - h) / 2;
+  box(x, y, w, h, withAlpha(C.gold, 0.4), closePlan);
+
+  heading('划分计划', x + pad, y + 56, '确认之后按这份计划出题。');
+
+  const tier = v.tier === 'toc' ? '按目录'
+    : v.tier === 'agentic' ? '模型分章'
+      : v.tier === 'fixed' ? '按固定大小' : '尚未切分';
+  roundRect(x + pad, y + 96, cw, 64, 12);
+  g.fillStyle = 'rgba(255,255,255,.022)';
+  g.fill();
+  g.strokeStyle = 'rgba(255,255,255,.07)';
+  g.lineWidth = 1;
+  roundRect(x + pad, y + 96, cw, 64, 12);
+  g.stroke();
+
+  text(v.name, x + pad + 20, y + 124, { size: 16, weight: 700, color: C.ink, maxW: cw - 340 });
+  text(`${v.chars} 字 · ${tier} · ${v.topics.length} 节`, x + pad + 20, y + 146,
+    { size: 12, color: C.dim });
+  // 每一节出几道是一句规则，不是进度：放在角上，别和切法抢
+  text('每节最多 20 道', x + w - pad - 20, y + 146, { size: 12, color: C.faint, align: 'right' });
+
+  if (v.notes.length) {
+    text(v.notes.join('；'), x + pad + 4, y + 182, { size: 12, color: C.faint, maxW: cw - 8 });
+  }
+
+  const listTop = y + 198;
+  const listH = 372;
+  const rowH = 62;
+  const gap = 6;
+  const need = v.topics.length * (rowH + gap);
+  const view = scrollArea(x + pad, listTop, cw, listH, need, 'plan');
+
+  if (!v.topics.length) {
+    text(v.msg || '还没有切出任何一节。', x + pad + cw / 2, listTop + 90,
+      { size: 14, color: C.dim, align: 'center' });
+  }
+  let cy = view.y;
+  v.topics.forEach((t, i) => {
+    const hv = cy + rowH > view.y0 && cy < view.y0 + listH && hover(view.x, cy, cw, rowH);
+    roundRect(view.x, cy, cw, rowH, 9);
+    g.fillStyle = hv ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)';
+    g.fill();
+
+    text(String(i + 1), view.x + 16, cy + 26, {
+      size: 11, color: C.faint, family: FONT_NUM,
+    });
+    text(t.title, view.x + 44, cy + 26, {
+      size: 15, weight: 600, color: C.ink, maxW: cw - 44 - 120,
+    });
+    text(`${t.chars} 字`, view.x + cw - 16, cy + 26, {
+      size: 12, color: C.dim, align: 'right', family: FONT_NUM,
+    });
+    // 摘要来自模型还是首句，直接标在行上：没有模型时"摘要"只是开头第一句
+    const tag = t.summarized === 'model' ? '' : '（首句）';
+    text(`${t.summary}${tag}`, view.x + 44, cy + 48, {
+      size: 12, color: C.faint, maxW: cw - 44 - (t.merged ? 200 : 40),
+    });
+    if (t.merged && t.merged > 1) {
+      text(`并了 ${t.merged} 节 · 相似 ${t.sim ?? 0}%`, view.x + cw - 16, cy + 48,
+        { size: 11, color: C.gold, align: 'right' });
+    }
+    cy += rowH + gap;
+  });
+  view.restore();
+  overflowAffordance(view, x + pad, cw);
+
+  g.fillStyle = 'rgba(255,255,255,.06)';
+  g.fillRect(x + pad, y + 592, cw, 1);
+
+  if (v.busy) {
+    // 跑着的时候一个按钮都不给：这一屏的每一步都要调模型，重复点就是重复花钱
+    text(v.msg || '处理中…', x + pad, y + 630, { size: 14, color: C.gold });
+    text('这一步在服务里跑，别关页面。', x + w - pad, y + 630,
+      { size: 12, color: C.faint, align: 'right' });
+  } else {
+    const fy = y + 614;
+    action(x + pad, fy, 200, 46, '按这份出题', () => void approvePlan(), 'primary');
+    let bx = x + pad + 212;
+    if (v.canAgentic && v.tier !== 'agentic') {
+      // 授权就在按钮上：点它之前，玩家读到的是"这会调模型"，而不是一句免责声明
+      action(bx, fy, 168, 46, '让模型分章', () => void replan('agentic'), 'ghost', { size: 14 });
+      bx += 180;
+    }
+    if (v.tier && v.tier !== 'fixed') {
+      action(bx, fy, 168, 46, '按固定大小切', () => void replan('fixed'), 'ghost', { size: 14 });
+      bx += 180;
+    }
+    action(bx, fy, 168, 46, '换一份文档', () => void startDocFlow(), 'ghost', { size: 14 });
+  }
+
+  // 这一行只在"刚发生了什么"的时候占位：没有消息就空着，不拿它讲设计
+  if (v.msg && !v.busy) {
+    g.font = font(13, 500, FONT_UI);
+    g.fillStyle = v.ok ? C.green : C.red;
+    wrapText(v.msg, cw).slice(0, 2).forEach((ln, i) => g.fillText(ln, x + pad, y + 682 + i * 20));
+  }
 }
 
 /**

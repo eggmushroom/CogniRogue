@@ -5,7 +5,14 @@
  * 模型那一段验不了"生成得好不好"，但"切得对不对"必须验 —— 切错了，
  * 再好的模型也只是在错误的上下文里编题。
  */
-import { DEFAULT_BUDGET, chunkMarkdown, readSection, splitText, tocText } from './chunk';
+import {
+  DEFAULT_BUDGET, blocksOf, chunkMarkdown, paragraphsOf, readSection, sliceLines, splitText, tocText,
+} from './chunk';
+import {
+  MERGE_MAX_PARTS, MERGE_PCT, agenticPlan, mergePlan, planTocText, similarEnough, similarity,
+  summarizePlan, tocPlan,
+} from './plan';
+import type { PlanTopic } from './plan';
 import { checkPack, conceptByQid, emitPack } from './emit';
 import { generateTopic } from './generate';
 import type { Llm } from './llm';
@@ -172,6 +179,146 @@ ok(res.dropped.length === 2
 const chain = emitPack('链路自检', [{ topic: '复杂度', questions: res.questions }]);
 const chainChk = checkPack(chain);
 ok(chainChk.ok && chainChk.count === 2, `假模型的一轮产物能直接载入游戏（${chainChk.count} 道）`);
+
+// ── 划分计划：目录层 / 默认层 / 模型层，以及摘要合并 ──
+const PLAN_DOC = lines(
+  '# 上卷',
+  '',
+  '## 1.1 二分查找',
+  '',
+  '在有序数组上二分，每次比较折半。最坏比较 log n 次。',
+  '',
+  '```ts',
+  'const mid = (lo + hi) >> 1;',
+  '',
+  'const x = mid + 1;',
+  '```',
+  '',
+  '## 1.2 二分查找的变体',
+  '',
+  '下界与上界是二分的两种变体，仍然折半查找。',
+  '',
+  '## 1.3 哈希表',
+  '',
+  '哈希表用桶装冲突的键，查找平均 O(1)。',
+);
+
+// 段落：空行分组、代码块不拆、标题自成一段
+const paras = paragraphsOf(PLAN_DOC);
+ok(paras.some((p) => p.text.includes('const mid') && p.text.includes('const x')),
+  '段落：代码块里的空行没有把它拆成两段');
+ok(paras.every((p) => p.text.trim().length > 0 && p.to > p.from),
+  `段落：${paras.length} 段都有正文、区间都不为空`);
+ok(paras.some((p) => p.text.startsWith('## 1.2')), '段落：标题单独成段（切点可以落在标题前）');
+ok(JSON.stringify(paragraphsOf(PLAN_DOC)) === JSON.stringify(paragraphsOf(PLAN_DOC)),
+  '段落：同一份文档切两次结果逐字相同');
+
+// 默认层：段落装箱，绝不切段落
+const blocks = blocksOf(PLAN_DOC, 120);
+ok(blocks.length >= 3, `默认划分：120 字目标切出 ${blocks.length} 节`);
+ok(blocks.every((b) => {
+  const text = sliceLines(PLAN_DOC, b.from, b.to);
+  return text.includes('const mid') === text.includes('const x');
+}), '默认划分：每一节要么整块含代码，要么整块不含（没在段落中间下刀）');
+ok(blocks.every((b) => b.chars > 0 && b.title.length > 0), '默认划分：每节都有名字和正文');
+ok(JSON.stringify(blocksOf(PLAN_DOC, 120)) === JSON.stringify(blocksOf(PLAN_DOC, 120)),
+  '默认划分：纯函数，两次结果相同');
+
+// 目录层
+const tocPlaned = tocPlan(PLAN_DOC, { name: '上卷', depth: 2, size: 4000 })!;
+ok(!!tocPlaned && tocPlaned.topics.length === 3,
+  `目录划分：第 2 级标题切出 ${tocPlaned.topics.length} 节`);
+ok(tocPlaned.topics[0].title === '1.1 二分查找' && tocPlaned.topics[2].title === '1.3 哈希表',
+  '目录划分：用标题当节名，顺序与原文一致');
+ok(tocPlaned.topics.every((t, i, arr) => i === 0 || t.from === arr[i - 1].to),
+  '目录划分：相邻节的区间首尾相接，没有空档也不重叠');
+ok(tocPlaned.topics[0].chars > 0 && tocPlaned.topics[0].chars < tocPlaned.chars,
+  '目录划分：单节字数已统计，且小于全文');
+ok(tocPlan(PLAN_DOC, { name: 'x', depth: 3, size: 4000 }) === null,
+  '目录划分：该层级没有标题时返回 null（交给上层回落）');
+
+// 摘要：有模型就调，没有就回落首句
+const sumLlm: Llm = {
+  ask: async () => '二分查找的做法与最坏比较次数。',
+};
+const summed = await summarizePlan(tocPlaned!, PLAN_DOC, sumLlm);
+ok(summed.topics.every((t) => t.summarized === 'model' && t.summary.length > 0),
+  '摘要：模型给的摘要写进了每一节');
+const noModel = await summarizePlan(tocPlaned!, PLAN_DOC, null);
+ok(noModel.topics.every((t) => t.summarized === 'none' && t.summary.length > 0)
+  && noModel.notes.some((n) => n.includes('没有配模型')),
+  '摘要：没有模型时回落首句，并在 notes 里说明');
+
+// 相似度与合并：判据是整数，合并有上限
+ok(similarity('二分查找每次折半比较', '二分查找每次折半') > MERGE_PCT,
+  `相似度：几乎同义的两段（${similarity('二分查找每次折半比较', '二分查找每次折半')}%）`);
+ok(similarity('二分查找每次折半', '哈希表用桶装冲突的键') === 0,
+  '相似度：不相干的两段是 0');
+ok(similarEnough('二分查找每次折半比较', '二分查找每次折半', MERGE_PCT)
+  && !similarEnough('二分查找每次折半', '哈希表用桶装冲突的键', MERGE_PCT),
+  '相似度：阈值判据与整数百分比同向');
+
+const mkTopic = (title: string, summary: string, chars: number): PlanTopic => ({
+  title, from: 0, to: 1, chars, summary, summarized: 'model',
+});
+const merged = mergePlan({
+  ...tocPlaned!,
+  topics: [
+    mkTopic('甲', '二分查找每次折半比较，最坏 log n', 800),
+    mkTopic('乙', '二分查找每次折半比较', 900),
+    mkTopic('丙', '哈希表用桶装冲突的键', 700),
+  ],
+}, { pct: MERGE_PCT, maxChars: 8000, maxParts: 4 });
+ok(merged.topics.length === 2 && merged.topics[0].merged === 2,
+  `合并：相邻且相似的两节并成一节（剩 ${merged.topics.length} 节）`);
+ok(merged.topics[0].title === '甲' && merged.topics[0].chars === 1700,
+  '合并：留下前一节的名字，字数相加');
+ok(merged.topics[1].title === '丙', '合并：不相似的那节没被并进去');
+
+const tooBig = mergePlan({
+  ...tocPlaned!,
+  topics: [mkTopic('甲', '二分查找每次折半比较', 5000), mkTopic('乙', '二分查找每次折半比较', 4000)],
+}, { pct: MERGE_PCT, maxChars: 8000, maxParts: 4 });
+ok(tooBig.topics.length === 2, '合并：并起来超过 8000 字就不并');
+
+const tooMany = mergePlan({
+  ...tocPlaned!,
+  topics: Array.from({ length: 6 }, (_, i) => mkTopic(`节${i}`, '二分查找每次折半比较', 100)),
+}, { pct: MERGE_PCT, maxChars: 8000, maxParts: 4 });
+ok(tooMany.topics.length === 2 && tooMany.topics[0].merged === 4,
+  `合并：一节最多并 ${MERGE_MAX_PARTS} 节（${tooMany.topics.map((t) => t.merged ?? 1).join('+')}）`);
+
+// 模型层：分窗、编号、窗首强制断一次。
+// 每段都写到 300 字以上：太碎的节会被并进前一个（MIN_TOPIC），那是另一条路数。
+const pad = '折半查找每次把区间减半，最坏比较次数随规模对数增长。'.repeat(14);
+const flatDoc = lines(
+  `第一步讲二分。${pad}`,
+  '',
+  `第二步讲哈希。${pad}`,
+  '',
+  `第三步讲排序。${pad}`,
+);
+const agenticLlm: Llm = {
+  ask: async (_s, user) => {
+    ok(user.includes('⟪1⟫') && user.includes('⟪3⟫'), '模型划分：每一窗的段落都带上了编号');
+    return JSON.stringify({ topics: [{ title: '二分与哈希', start: 1 }, { title: '排序', start: 2 }] });
+  },
+};
+const agented = (await agenticPlan(flatDoc, { name: '散记', depth: 2, size: 4000 }, agenticLlm))!;
+ok(!!agented && agented.tier === 'agentic' && agented.topics.length === 2,
+  `模型划分：按模型给的切点分成 ${agented.topics.length} 节`);
+ok(agented.topics[0].title === '二分与哈希' && agented.topics[1].title === '排序',
+  '模型划分：用模型给的标题');
+ok(agented.topics.every((t, i, arr) => i === 0 || t.from === arr[i - 1].to),
+  '模型划分：区间首尾相接（窗首由我们强制断开）');
+
+// 模型不老实就整份放弃，让上层回落 —— 不做半份计划
+const badLlm: Llm = { ask: async () => '{"topics":[{"title":"","start":0}]}' };
+ok(await agenticPlan(flatDoc, { name: '散记', depth: 2, size: 4000 }, badLlm) === null,
+  '模型划分：返回不合法就整份放弃（回落固定层）');
+
+ok(planTocText(tocPlaned!).includes('1.1 二分查找') && planTocText(tocPlaned!).includes('字'),
+  '计划能渲染成给模型的目录（JIT 索引）');
 
 console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 生成工具自检通过');
 process.exitCode = fails ? 1 : 0;

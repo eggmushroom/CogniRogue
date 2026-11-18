@@ -22,6 +22,7 @@
     "words": "node tools/words.mjs",
     "sources": "node tools/sources.mjs",
     "gen": "esbuild tools/gen/main.ts --bundle --platform=node --format=esm --outfile=.cache/gen.mjs --log-level=warning && node .cache/gen.mjs",
+    "plan": "esbuild tools/gen/plancli.ts --bundle --platform=node --format=esm --outfile=.cache/plan.mjs --log-level=warning && node .cache/plan.mjs",
     "docs": "esbuild tools/docs.ts --bundle --platform=node --format=esm --outfile=.cache/docs.mjs --log-level=warning && node .cache/docs.mjs"
   },
   "devDependencies": {

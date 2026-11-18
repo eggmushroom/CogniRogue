@@ -125,8 +125,8 @@
 | 局内发牌的取舍 | `core/combat/questions.ts`：本局已答对的不发（答对即出局），本局抽满 `MAX_PICK_PER_RUN` 次的不发（一道答不对的题不许占光位置）；队列走完才复用，不锁牌 |
 | 题号 / 学习历史挂在谁身上 | `core/library/parse.ts` 的 `questionId(topic, concept)`：概念缺省回落到题干，所以老题库的号不变；改题干不改概念 = 同一个概念 |
 | 玩家侧数据离开浏览器 | `scenes/report.ts` 的「导出错题」→ `scenes/studyio.ts` → `library/stagemem.ts` 的 `studySnapshot()`。游戏不外发任何请求，这条闭环只能手动 |
-| 题库生成 | `tools/gen/`：切分在 `chunk.ts`、提示词在 `generate.ts`、DSL 输出在 `emit.ts`。**只在构建期跑**，模型写内容、代码保证格式，产物必须过 `parse.ts` |
-| **题库服务** | `server/index.mjs`：页面（`dist/`）、清单、原文、上传、生成任务、答题记账只在这儿；前端只经 `core/library/remote.ts` 与它往来，别处不许自己写 `fetch` 或直连模型 |
+| 题库生成 | `tools/gen/`：切分在 `chunk.ts`（段落 / 标题扫描的唯一实现）、**划分计划**在 `plan.ts`（三层：目录 / 模型分章 / 固定大小，摘要合并）、提示词在 `generate.ts`、DSL 输出在 `emit.ts`。**只在构建期跑**，模型写内容、代码保证格式，产物必须过 `parse.ts` |
+| **题库服务** | `server/index.mjs`：页面（`dist/`）、清单、原文、上传、**划分计划**、生成任务、答题记账只在这儿；前端只经 `core/library/remote.ts` 与它往来，别处不许自己写 `fetch` 或直连模型 |
 
 **为什么加成的顺序要写死**：`planStrike()` 里只有一条链 ——
 **底数 → 效果形状 → 常驻加成 → 临时加成（续火 ×2）→ 整手削减（装订线）**。

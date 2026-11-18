@@ -14,7 +14,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DEFAULT_BUDGET, chunkMarkdown, readSection, splitText, tocText } from './chunk';
-import type { TocEntry } from './chunk';
+import { planText, planTocText } from './plan';
+import type { Plan } from './plan';
 import { emitPack, checkPack, conceptByQid } from './emit';
 import type { GenTopic } from './emit';
 import { generateTopic } from './generate';
@@ -30,13 +31,15 @@ interface Opts {
   budget: number;
   memory: string;
   feedback?: string;
+  /** 划分计划 json（`npm run plan` 的产物）。给了就不再看标题层级。 */
+  plan?: string;
   dryRun: boolean;
   force: boolean;
 }
 
 /** 白名单解析：认不出的 `--xxx` 直接退出，不许静默忽略。 */
 function parseArgs(argv: string[]): Opts | null {
-  const known = new Set(['src', 'out', 'depth', 'per', 'budget', 'memory', 'feedback']);
+  const known = new Set(['src', 'out', 'depth', 'per', 'budget', 'memory', 'feedback', 'plan']);
   const flags = new Set(['dry-run', 'force']);
   const val: Record<string, string> = {};
   const on = new Set<string>();
@@ -69,6 +72,7 @@ function parseArgs(argv: string[]): Opts | null {
     budget: num('budget', DEFAULT_BUDGET),
     memory: val.memory ?? 'gen/memory',
     feedback: val.feedback,
+    ...(val.plan ? { plan: val.plan } : {}),
     dryRun: on.has('dry-run'),
     force: on.has('force'),
   };
@@ -110,22 +114,48 @@ async function main(): Promise<void> {
   const srcLabel = opts.src.replace(/\\/g, '/');
 
   const doc = chunkMarkdown(source, opts.budget);
-  const topics: TocEntry[] = doc.toc.filter((e) => e.path.length === opts.depth);
-  if (!topics.length) {
-    console.error(`✗ 源文档里没有第 ${opts.depth} 级标题，切不出主题。先看看目录：\n${tocText(doc).slice(0, 600)}`);
+
+  /**
+   * 这一轮要跑的几个主题。两种来路：
+   *   · `--plan=`（`npm run plan` 的产物）—— 玩家确认过的划分，切点、名字、合并都由它定；
+   *   · 不给计划 —— 老路：第 `--depth` 级标题各算一个主题。
+   *
+   * 两种来路都落成 `{ topic, text }`：本节**连同子节**的全文。
+   * 只取 `doc.chunks` 里属于本节的那些块会拿到空串 —— 书的章常常只有一行标题，
+   * 内容全在 `###` 子节里，这一步错得很安静：模型照样会出题，只是凭空编。
+   */
+  const plan: Plan | null = opts.plan
+    ? (JSON.parse(readFileSync(resolve(opts.plan), 'utf8')) as Plan)
+    : null;
+  const jobs: Array<{ topic: string; text: string }> = plan
+    ? plan.topics.map((t) => ({ topic: t.title, text: planText(source, t) }))
+    : doc.toc
+      .filter((e) => e.path.length === opts.depth)
+      .map((e) => ({ topic: e.path[e.path.length - 1], text: readSection(source, e.path) ?? '' }));
+
+  if (!jobs.length) {
+    console.error(plan
+      ? '✗ 计划里一节都没有。先跑 `npm run plan` 看看切分结果。'
+      : `✗ 源文档里没有第 ${opts.depth} 级标题，切不出主题。先看看目录：\n${tocText(doc).slice(0, 600)}`);
     process.exitCode = 1;
     return;
   }
 
-  /**
-   * 一个主题交给模型的正文：**这一章连同子节**的全文，按预算切好。
-   *
-   * 只取 `doc.chunks` 里属于本节的那些块会拿到空串 —— 书的章常常只有一行标题，
-   * 内容全在 `###` 子节里。这一步错得很安静：模型照样会出题，只是凭空编。
-   */
-  const sectionParts = (entry: TocEntry) =>
-    splitText(readSection(source, entry.path) ?? '', opts.budget)
-      .map((text, i) => ({ path: entry.path, text, part: i, size: text.length }));
+  /** 本节正文按预算切块（块只影响喂模型时的分片粒度，不改变内容）。 */
+  const sectionParts = (topic: string, text: string) =>
+    splitText(text, opts.budget)
+      .map((t, i) => ({ path: [topic], text: t, part: i, size: t.length }));
+
+  /** JIT 取数：计划模式下按节名取，老路按标题路径取。 */
+  const readBy = plan
+    ? (path: string[]) => {
+      const hit = plan.topics.find((t) => t.title === path[path.length - 1]);
+      return hit ? planText(source, hit) : null;
+    }
+    : (path: string[]) => readSection(source, path);
+
+  /** 给模型看的"这本书有什么"：计划模式用它自己的节名 + 摘要。 */
+  const tocForPrompt = plan ? planTocText(plan) : tocText(doc);
 
   const outPath = resolve(opts.out);
   if (existsSync(outPath) && !opts.force && !opts.dryRun) {
@@ -151,7 +181,7 @@ async function main(): Promise<void> {
   }
   const llm = openAiLlm(cfg);
 
-  console.log(`源文档 ${opts.src}｜主题 ${topics.length} 个（第 ${opts.depth} 级标题）｜每主题 ${opts.per} 道`);
+  console.log(`源文档 ${opts.src}｜主题 ${jobs.length} 个（${plan ? `计划：${plan.tier}` : `第 ${opts.depth} 级标题`}）｜每主题 ${opts.per} 道`);
   if (snapshot) console.log(`错题快照 ${opts.feedback}：${Object.keys(snapshot.topics).length} 个主题有记录`);
   if (opts.dryRun) console.log('（--dry-run：只切分，不调模型、不写文件）');
 
@@ -161,8 +191,7 @@ async function main(): Promise<void> {
   let mergedAll = 0;
   let orphanAll = 0;
 
-  for (const entry of topics) {
-    const topic = entry.path[entry.path.length - 1];
+  for (const { topic, text } of jobs) {
     const mem = readTopicMem(opts.memory, topic, srcLabel);
 
     if (snapshot) {
@@ -175,20 +204,26 @@ async function main(): Promise<void> {
     }
 
     if (opts.dryRun) {
-      const parts = sectionParts(entry);
-      console.log(`  ${entry.path.join(' > ')}｜${entry.size} 字｜${parts.length} 块｜` +
+      const parts = sectionParts(topic, text);
+      console.log(`  ${topic}｜${text.trim().length} 字｜${parts.length} 块｜` +
         `最大 ${parts.length ? Math.max(...parts.map((p) => p.size)) : 0} 字`);
       continue;
     }
 
     const job = {
       topic,
-      chunks: sectionParts(entry),
-      toc: tocText(doc),
+      chunks: sectionParts(topic, text),
+      toc: tocForPrompt,
       memory: memText(mem),
       per: opts.per,
-      read: (p: string[]) => readSection(source, p),
+      read: readBy,
     };
+
+    // 块只决定分片粒度，不改请求内容：一节的所有块会一起进同一次请求。
+    // 目录层的一节可能是一整章（几万字），这里至少让人看见它有多长。
+    if (text.length > 30000) {
+      console.log(`  ! ${topic}：${text.length} 字，这一次请求很长；用 npm run plan 可以把一节切小`);
+    }
 
     const r = await generateTopic(job, llm);
     const got: GenTopic = { topic, questions: r.questions };
@@ -206,7 +241,7 @@ async function main(): Promise<void> {
   if (opts.dryRun) return;
 
   // 空主题不写进题库：写个只有标题的章节，玩家那一幕会抽不到题
-  const pack = emitPack(doc.title || '生成的题库', results.filter((t) => t.questions.length));
+  const pack = emitPack(doc.title || plan?.name || '生成的题库', results.filter((t) => t.questions.length));
   const check = checkPack(pack);
   if (!check.ok) {
     console.error(`\n✗ 生成的题库没通过游戏自己的解析器（${check.issues.length} 处），没有写入：`);

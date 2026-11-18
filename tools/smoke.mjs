@@ -525,6 +525,30 @@ await step('题库：切主题换题、点开看选项', async () => {
   }
 }, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
 
+/**
+ * 划分计划：出题之前那一屏。这里只验界面接线 —— 注入一份计划，不联网、不调模型：
+ * 三种切法的按钮都在，Esc 退回题库面板，再 Esc 回首页。
+ */
+await step('划分计划：三种切法与退回', async () => {
+  await evalJs(`(() => {
+    cog.state.panel = { k: 'plan', data: {
+      docId: 'x', name: '文档.md', tier: 'toc', chars: 100,
+      topics: [{ title: '第一节', chars: 100, summary: '一句话', summarized: 'model' }],
+      notes: [], canAgentic: true, busy: '', msg: '', ok: true, planId: '',
+    } };
+    return 1;
+  })()`);
+  const labels = await evalJs('cog.hots().map((h) => h.label)');
+  for (const w of ['按这份出题', '让模型分章', '按固定大小切', '换一份文档']) {
+    if (!labels.includes(w)) throw new Error(`计划面板缺「${w}」：${labels.join(' / ')}`);
+  }
+  await pressKey('Escape', 'Escape', 27);
+  let k = await evalJs('cog.state.panel.k');
+  for (let i = 0; i < 40 && k !== 'pack'; i++) { await sleep(80); k = await evalJs('cog.state.panel.k'); }
+  if (k !== 'pack') throw new Error(`Esc 之后没退回题库面板：${k}`);
+  await pressKey('Escape', 'Escape', 27);
+}, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
 await step('标题 → 选模式 → 选两个主题 → 开局', async () => {
   await clickLabel('开始游戏');
   const label = await waitBoon();

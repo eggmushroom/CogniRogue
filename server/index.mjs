@@ -25,6 +25,8 @@ const DIST = join(ROOT, 'dist');
 const STORE = join(ROOT, 'data', 'service');
 const GEN_BANKS = join(STORE, 'banks');
 const DOCS = join(STORE, 'docs');
+/** 划分计划：`npm run plan` 的产物，玩家确认之后才拿去出题。 */
+const PLANS = join(STORE, 'plans');
 const PORT = Number(process.env.PORT ?? 7777);
 const VERSION = '0.5';
 /** 有的机器上 `python` 是 Microsoft Store 的占位程序，所以允许显式指定。 */
@@ -293,11 +295,80 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, docId: id, name, kind: 'md', chars: body.length });
     }
 
+    /**
+     * 划分计划：起 `npm run plan`，产物落到 `data/service/plans/<id>.json`。
+     *
+     * 和生成一样走任务 + 轮询，而不是等这一次请求：模型分章和每节摘要都要调模型，
+     * 一份几百页的文档要跑几十秒到几分钟，同步返回会把浏览器的请求耗死。
+     */
+    if (req.method === 'POST' && path === '/api/plan') {
+      const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+      const docId = String(body.docId ?? '').replace(/[^A-Za-z0-9_-]+/g, '');
+      const src = join(DOCS, docId + '.md');
+      if (!docId || !existsSync(src)) return json(res, 404, { ok: false, error: '没有这份文档，可能已经清理掉了。' });
+
+      const mode = ['auto', 'toc', 'fixed', 'agentic'].includes(body.mode) ? body.mode : 'auto';
+      const cfg = await genConfig();
+      if (mode === 'agentic' && !cfg.key) {
+        return json(res, 400, { ok: false, error: '模型分章要先用「设置 › 出题模型」配好模型。' });
+      }
+
+      const planId = `${docId}-${mode}`;
+      await mkdir(PLANS, { recursive: true });
+      const out = join(PLANS, planId + '.json');
+      const id = 'job-' + (++jobSeq);
+      const job = { id, kind: 'plan', state: 'running', lines: [], planId, started: Date.now() };
+      jobs.set(id, job);
+
+      const env = { ...process.env };
+      if (cfg.key) {
+        env.GEN_API_KEY = cfg.key;
+        env.GEN_BASE_URL = cfg.baseUrl;
+        env.GEN_MODEL = cfg.model;
+      }
+      const size = Math.max(500, Math.min(20000, Number(body.size) || 4000));
+      const args = ['run', 'plan', '--', `--src=${src}`, `--out=${out}`, `--mode=${mode}`, `--size=${size}`];
+      const p = spawn('npm', args, { cwd: ROOT, shell: process.platform === 'win32', env });
+      const push = (d) => {
+        for (const line of String(d).split(/\r?\n/)) if (line.trim()) job.lines.push(line.trim());
+        if (job.lines.length > 200) job.lines.splice(0, job.lines.length - 200);
+      };
+      p.stdout.on('data', push);
+      p.stderr.on('data', push);
+      p.on('close', async (code) => {
+        job.ms = Date.now() - job.started;
+        if (code !== 0 || !existsSync(out)) { job.state = 'fail'; return; }
+        try {
+          job.plan = JSON.parse(await readFile(out, 'utf8'));
+          // 显示名由浏览器给（中文文件名）。**不进环境变量**：cmd.exe 会把非 ASCII 环境变量搅乱，
+          // 所以计划写完之后在这里补一次，并回写到计划文件 —— 出题那一侧读到的也是同一个名字。
+          if (body.name) {
+            job.plan.name = String(body.name).slice(0, 80);
+            await writeFile(out, JSON.stringify(job.plan, null, 2) + '\n');
+          }
+          job.state = 'done';
+        } catch (err) {
+          push(`计划不是合法 JSON：${err.message}`);
+          job.state = 'fail';
+        }
+      });
+      p.on('error', (e) => { job.state = 'fail'; push(String(e.message)); });
+
+      return json(res, 200, { ok: true, job: id, planId });
+    }
+
     /** 起一个生成任务：`npm run gen -- --src=<doc> --out=<bank> --per=N`。 */
     if (req.method === 'POST' && path === '/api/generate') {
-      const { docId, per = 20 } = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+      const { docId, per = 20, plan = '' } = JSON.parse((await readBody(req)).toString('utf8') || '{}');
       const src = join(DOCS, String(docId) + '.md');
       if (!existsSync(src)) return json(res, 404, { ok: false, error: '没有这份文档，可能已经清理掉了。' });
+
+      // 玩家确认过的那份划分。id 只允许字母数字，不拼路径，避免 ../ 这类东西
+      const planId = String(plan).replace(/[^A-Za-z0-9_-]+/g, '');
+      const planFile = planId ? join(PLANS, planId + '.json') : '';
+      if (planFile && !existsSync(planFile)) {
+        return json(res, 404, { ok: false, error: '没有这份划分计划，重新传一次文档。' });
+      }
 
       const cfg = await genConfig();
       if (!cfg.key) {
@@ -322,6 +393,8 @@ const server = createServer(async (req, res) => {
         GEN_MODEL: cfg.model,
       };
       const args = ['run', 'gen', '--', `--src=${src}`, `--out=${out}`, `--per=${Math.max(1, Math.min(40, Number(per) || 20))}`, '--force'];
+      // 有确认过的计划就按它出题：切点、节名、合并都是玩家在计划里看过的
+      if (planFile) args.push(`--plan=${planFile}`);
       const p = spawn('npm', args, { cwd: ROOT, shell: process.platform === 'win32', env });
       const push = (d) => {
         for (const line of String(d).split(/\r?\n/)) {
@@ -356,10 +429,14 @@ const server = createServer(async (req, res) => {
       if (!job) return json(res, 404, { ok: false, error: '没有这个任务' });
       return json(res, 200, {
         id: job.id,
+        kind: job.kind ?? 'gen',
         state: job.state,
         bankId: job.bankId,
+        planId: job.planId,
         ms: job.ms ?? Date.now() - job.started,
         tail: job.lines.slice(-6).join('\n'),
+        // 计划任务跑完就把计划本身带回去：前端只调一次轮询就能显示方案
+        ...(job.plan ? { plan: job.plan } : {}),
       });
     }
 

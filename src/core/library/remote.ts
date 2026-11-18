@@ -137,21 +137,84 @@ export interface GenJob {
   error?: string;
 }
 
-export async function startGenerate(docId: string, per = 20): Promise<GenJob> {
-  const r = await post('/api/generate', { docId, per }, 15_000);
-  if (!r) return { ok: false, error: '服务没有回答（是不是没起，或者已经开始生成别的了）。' };
+/**
+ * POST 一份 JSON，**把 4xx 的 error 也带回来**。
+ *
+ * `post()` 把非 2xx 一律当"没有服务"，可生成和划分这两条路上的 400
+ * （没配模型、没有这份文档）恰恰是最需要说给玩家听的那种回答 ——
+ * 用「服务没有回答」盖掉它，玩家会去查服务是不是没起。
+ */
+async function postJson<T>(path: string, body: unknown, ms: number, down: string): Promise<T> {
   try {
-    return (await r.json()) as GenJob;
+    const r = await fetch(serviceBase() + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(ms),
+    });
+    const data = (await r.json().catch(() => null)) as T | null;
+    if (data) return data;
+    return { ok: false, error: `服务回了 ${r.status}，没有说明。` } as T;
   } catch {
-    return { ok: false, error: '服务的回答看不懂。' };
+    return { ok: false, error: down } as T;
   }
+}
+
+export async function startGenerate(docId: string, per = 20, plan = ''): Promise<GenJob> {
+  return postJson<GenJob>('/api/generate', { docId, per, plan }, 15_000,
+    '服务没有回答（是不是没起，或者已经开始生成别的了）。');
+}
+
+/** 一份划分计划：和 `tools/gen/plan.ts` 的 `Plan` 同形，只取界面要用的字段。 */
+export interface PlanTopicRemote {
+  title: string;
+  from: number;
+  to: number;
+  chars: number;
+  summary: string;
+  summarized: 'model' | 'none';
+  merged?: number;
+  sim?: number;
+}
+
+export interface PlanRemote {
+  v: number;
+  name: string;
+  tier: 'toc' | 'agentic' | 'fixed';
+  size: number;
+  depth: number;
+  chars: number;
+  topics: PlanTopicRemote[];
+  notes: string[];
+}
+
+export interface PlanStart {
+  ok: boolean;
+  job?: string;
+  planId?: string;
+  error?: string;
+}
+
+/**
+ * 起一次划分。`mode=auto` 有目录就按目录切，没有就按固定大小装箱；
+ * `agentic` 要玩家先授权（它会调模型），`fixed` 是永远可用的兜底。
+ */
+export async function startPlan(
+  docId: string, mode: 'auto' | 'toc' | 'fixed' | 'agentic', name: string,
+): Promise<PlanStart> {
+  return postJson<PlanStart>('/api/plan', { docId, mode, name }, 15_000,
+    '服务没有回答 —— 先跑 npm run serve。');
 }
 
 export interface JobState {
   state: 'running' | 'done' | 'fail';
-  bankId: string;
+  kind?: 'plan' | 'gen';
+  bankId?: string;
+  planId?: string;
   ms: number;
   tail: string;
+  /** 计划任务跑完时带回来的一份计划。 */
+  plan?: PlanRemote;
 }
 
 export async function jobState(id: string, ms = 8000): Promise<JobState | null> {

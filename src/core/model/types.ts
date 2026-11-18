@@ -485,7 +485,46 @@ export type Panel =
   | { k: 'help' }
   | { k: 'pack'; msg: string; ok: boolean }
 | { k: 'settings'; msg: string; ok: boolean; form?: ModelForm }
+  | { k: 'plan'; data: PlanView }
   | { k: 'report'; data: ReportData };
+
+/** 划分计划里的一节：候选主题。 */
+export interface PlanTopicView {
+  title: string;
+  chars: number;
+  summary: string;
+  /** 摘要来自模型还是回落到首句 —— 界面上要标出来，不然玩家以为摘要一定准。 */
+  summarized: 'model' | 'none';
+  /** 合并过几节（> 1 才有意义）。 */
+  merged?: number;
+  /** 合并时两段摘要的相似度（整数百分比）。 */
+  sim?: number;
+}
+
+/**
+ * 一份**待确认**的划分：文档切成哪几节、每节叫什么、每节多大。
+ *
+ * 它出现在出题之前，是因为切分方式会决定整份题库长什么样，而这件事没法在
+ * 生成之后补救：切错了只能重跑，重跑要花模型额度。`busy` 表示这一步是否还在跑
+ * （划分要调模型，出题也要），界面据此把按钮换成进度。
+ */
+export interface PlanView {
+  docId: string;
+  name: string;
+  /** 这一份计划是怎么切出来的：目录 / 模型 / 固定大小。 */
+  tier: 'toc' | 'agentic' | 'fixed' | '';
+  chars: number;
+  topics: PlanTopicView[];
+  /** 回落原因之类的说明。空数组 = 一切按计划。 */
+  notes: string[];
+  /** 没有目录时还能让模型分章；配了模型才有这条路。 */
+  canAgentic: boolean;
+  busy: 'plan' | 'gen' | '';
+  msg: string;
+  ok: boolean;
+  /** 服务端那份计划的 id，出题时要带回去。 */
+  planId: string;
+}
 
 export interface GameState {
   screen: 'title' | 'map' | 'battle' | 'report' | 'atlas';
