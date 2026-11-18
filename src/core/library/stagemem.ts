@@ -100,6 +100,20 @@ export function wrongCount(topic: string, qid: string): number {
   return STAGE_MEM[topic]?.q[qid]?.bad ?? 0;
 }
 
+/**
+ * 把一道题的答题记录清空（答对、答错都归零），它于是不再算掌握。
+ *
+ * 只给题库面板里那颗「重置」用。章节上的累计（`e.ok` / `e.bad`）不动：
+ * 那是"答过多少次"的历史，正确率读它 —— 让一次重置去改统计，
+ * 等于把"我练过多少"这件事一起抹掉。
+ */
+export function clearQuestionMemory(topic: string, qid: string): void {
+  const e = STAGE_MEM[topic];
+  if (!e?.q[qid]) return;
+  delete e.q[qid];
+  saveStageMem();
+}
+
 /** 一章的摘要：只报正确率，结算页读它。 */
 export function stageDigest(topic: string): StageDigest {
   const e = stageMemOf(topic);

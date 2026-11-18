@@ -493,6 +493,32 @@ await step('题库：切主题换题、点开看选项', async () => {
   for (let i = 0; i < 60 && h1 <= h0; i++) { await sleep(80); h1 = await height(b); }
   if (h1 <= h0) throw new Error(`点开题目之后这一行没变高：${h0} → ${h1}`);
 
+  // 排序与重置：同一个主题里造三笔历史 —— 答错三次那道该沉到最后，答错一次那道该排到最前
+  await clickLabel(topics[0]);
+  const t0 = topics[0].replace('topic:', '');
+  const hist = JSON.parse(await evalJs(`(async () => {
+    const m = await import('/src/core/library/index.ts');
+    const t = ${JSON.stringify(t0)};
+    const qs = m.sourceBank().byTopic[t];
+    for (let i = 0; i < 3; i++) m.recordAnswer({ stageTopic: t, qid: qs[0].qid, right: true });
+    m.recordAnswer({ stageTopic: t, qid: qs[1].qid, right: false });
+    return JSON.stringify({ t, done: qs[0].qid, bad: qs[1].qid });
+  })()`));
+  await sleep(200);
+  const order = await evalJs('cog.hots().filter((h) => h.label.startsWith("q:")).map((h) => h.label)');
+  if (order[0] !== `q:${hist.bad}`) throw new Error(`答错的那道没排到最前：${order[0]}`);
+  if (order.includes(`q:${hist.done}`)) throw new Error('已掌握的那道还留在前面');
+
+  await clickLabel(`q:${hist.bad}`);
+  if (!await waitFor(`reset:${hist.bad}`)) throw new Error('答过的题展开之后没有「重置」');
+  await clickLabel(`reset:${hist.bad}`);
+  const left = await evalJs(`(async () => {
+    const m = await import('/src/core/library/index.ts');
+    return m.rightCount(${JSON.stringify(hist.t)}, ${JSON.stringify(hist.bad)})
+      + m.wrongCount(${JSON.stringify(hist.t)}, ${JSON.stringify(hist.bad)});
+  })()`);
+  if (left !== 0) throw new Error(`重置之后还留着 ${left} 次记录`);
+
   await pressKey('Escape', 'Escape', 27);
   if (!await waitFor('开始游戏', 3000) && !await waitFor('继续这一局', 3000)) {
     throw new Error('Esc 关不掉题库面板');

@@ -7,8 +7,8 @@ import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
 import { clamp, G, shuffle } from '../core/infra';
 import { curFloor } from '../core/map';
 import {
-  bankProgress, isRetired, listBanks, rightCount, serviceModelName, serviceOnline, serviceReady,
-  sourceBank, wrongCount, type BankRow,
+  bankProgress, clearQuestionMemory, isRetired, listBanks, rightCount, serviceModelName,
+  serviceOnline, serviceReady, sourceBank, wrongCount, type BankRow,
 } from '../core/library';
 import {
   BASICS, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded, upgradedId,
@@ -1503,7 +1503,7 @@ function drawPack() {
   overflowAffordance(tView, topicX, topicW);
 
   /* ── 题目列 ── */
-  const list = cur?.list ?? [];
+  const list = packSorted(cur?.list ?? []);
   let qNeed = 0;
   for (const q of list) qNeed += qRowH(q) + 4;
   text(`题目 · ${packTopic || '—'} · ${list.length} 道`,
@@ -1546,6 +1546,28 @@ function qRowH(q: Question): number {
   return 52 + q.options.length * 22 + 24 + (q.explain ? 18 : 0);
 }
 
+/**
+ * 题目列的顺序：没掌握的排前面，掌握的沉到最后。
+ *
+ * 排的是"接下来该练哪道"，所以键是 错的次数多 → 对的次数少 → 题库原序。
+ * 原序当兜底：没有历史的题按题库的顺序读，比按题号 hash 排好找得多。
+ */
+function packSorted(list: Question[]): Question[] {
+  const key = (q: Question) => ({
+    done: rightCount(q.topic, q.qid) >= BAL.retireAt,
+    ok: rightCount(q.topic, q.qid),
+    bad: wrongCount(q.topic, q.qid),
+  });
+  return list
+    .map((q, i) => ({ q, i, k: key(q) }))
+    .sort((a, b) =>
+      Number(a.k.done) - Number(b.k.done)
+      || b.k.bad - a.k.bad
+      || a.k.ok - b.k.ok
+      || a.i - b.i)
+    .map((x) => x.q);
+}
+
 /** 一道题的状态：颜色 + 一句话。判据只在这儿，别处不许自己比 `retireAt`。 */
 function qStatusOf(q: Question): { color: string; label: string } {
   const ok = rightCount(q.topic, q.qid);
@@ -1565,6 +1587,9 @@ function drawPackQuestion(
   const shown = cy >= view.y0 - 1 && cy + rowH <= view.y0 + view.h + 1;
   const hv = shown && hover(x, cy, w, rowH);
   const st = qStatusOf(q);
+  const ok = rightCount(q.topic, q.qid);
+  const bad = wrongCount(q.topic, q.qid);
+  let infoY = 0;
 
   roundRect(x, cy, w, rowH, 9);
   g.fillStyle = open ? 'rgba(255,255,255,.045)'
@@ -1597,15 +1622,24 @@ function drawPackQuestion(
       });
       oy += 22;
     });
-    text(`答对 ${rightCount(q.topic, q.qid)} 次 · 答错 ${wrongCount(q.topic, q.qid)} 次`,
-      x + 32, oy + 2, { size: 11, color: C.faint });
+    text(`答对 ${ok} 次 · 答错 ${bad} 次`, x + 32, oy + 2, { size: 11, color: C.faint });
     if (q.explain) {
       text(q.explain, x + 32, oy + 20, { size: 11, color: C.faint, maxW: w - 64 });
     }
+    infoY = oy + 2;
   }
 
   if (shown) {
     onClick(x, cy, w, rowH, () => { packOpen = open ? '' : q.qid; }, `q:${q.qid}`);
+    // 「重置」必须注册在整行热区之后：命中是从后往前找的，
+    // 先注册就会被整行吞掉，点上去只会把这一行收起来。
+    if (open && ok + bad > 0) {
+      const rx = x + w - 16;
+      const rh = hover(rx - 60, infoY - 16, 64, 24);
+      text('重置', rx, infoY, { size: 11, color: rh ? C.red : C.dim, align: 'right' });
+      onClick(rx - 60, infoY - 16, 64, 24,
+        () => clearQuestionMemory(q.topic, q.qid), `reset:${q.qid}`);
+    }
   }
   return rowH;
 }
