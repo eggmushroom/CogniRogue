@@ -15,7 +15,7 @@
  * 同章的 `hard`（坚硬的）区分开。改词时请顺手看一眼同章有没有近义词。
  *
  * 产物进 `packs/words.md`，`core/builtin.ts` 用 vite 的 ?raw 内联它；
- * 换回计算机题库只改 builtin.ts（老的三份 md 还在 packs/ 里）。
+ * 更换随程序内置题库时只改 `src/core/builtin.ts`。
  */
 import { writeFileSync } from 'node:fs';
 
