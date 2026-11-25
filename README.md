@@ -94,8 +94,6 @@ B) `undefined`
 
 ## 项目文档
 
-- [AGENTS.md](AGENTS.md)：代码约束、架构边界和验证要求。
-- [DESIGN.md](DESIGN.md)：当前玩法与题库生成机制。
 - [data/sources/SOURCES.md](data/sources/SOURCES.md)：语料来源、许可和更新方法。
 
 游戏逻辑位于 `src/core/`，Canvas 表现位于 `src/gfx/` 与 `src/scenes/`；本机服务在 `server/app.py`，文档解析和题库生成工具在 `tools/`。

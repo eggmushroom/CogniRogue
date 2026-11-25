@@ -1,7 +1,7 @@
 /**
  * 文档一致性：`npm run docs`。
  *
- * 这个脚本回答一个问题：**README / DESIGN 里写的数字和名字，代码里还成立吗？**
+ * 这个脚本回答一个问题：**README 里写的数字和名字，代码里还成立吗？**
  *
  * 为什么需要它：文档里的数字和名字没有任何断言管着。`cards` 查卡表、`stage` 查行为、
  * `coverage` 查「有没有人管」，但没有一道门槛读文档。于是「穿透无视一半格挡」活过了
@@ -25,7 +25,7 @@ import { BAL, FOES, POWERS, STAGES } from '../src/core/model';
 const ROOT = process.cwd();
 const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8');
 
-const DOCS = ['README.md', 'DESIGN.md'] as const;
+const DOCS = ['README.md'] as const;
 
 let fails = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -86,12 +86,6 @@ const all = DOCS.map((d) => src[d]).join('\n');
 // 只查「文档明确用数字指认某个量」的地方。每条写成「文档里的说法 → 代码里的来源」，
 // 数值一改而文档没跟，这里红。
 {
-  const SNAP_V = (() => {
-    const s = read('src/core/journey/save.ts');
-    const m = s.match(/export const SNAP_V = (\d+)/);
-    return m ? Number(m[1]) : -1;
-  })();
-
   const facts: [string, string, number, number][] = [
     ['README.md', '知识卡张数', 101, (await import('../src/core/cards')).PACK.cards.length],
     ['README.md', '基础牌张数', 8, (await import('../src/core/cards')).BASICS.length],
@@ -102,19 +96,12 @@ const all = DOCS.map((d) => src[d]).join('\n');
     ['README.md', '初始生命', BAL.baseHp, BAL.baseHp],
     ['README.md', '复习回血', BAL.restHp, BAL.restHp],
     ['README.md', '换幕上限', BAL.stageMaxHp, BAL.stageMaxHp],
-    ['DESIGN.md', '存档版本', 14, SNAP_V],
-    ['DESIGN.md', '每回合行动力', BAL.baseAp, BAL.baseAp],
-    ['DESIGN.md', '复习回血', BAL.restHp, BAL.restHp],
   ];
   // 前 9 条是「文档里应出现的数」，后面对照代码。上面数组已经把两边填好，
   // 这里真正要验的是：文档里确实写着那个数，而且代码也确实是那个数。
   for (const [doc, what, claimed, actual] of facts) {
     ok(claimed === actual, `${doc} 的「${what}」：文档/断言写 ${claimed}，代码是 ${actual}`);
   }
-
-  // 存档版本必须真的出现在 DESIGN.md 里（`v: 8` 曾停留在代码是 9 的时候）。
-  ok(src['DESIGN.md'].includes(`v: ${SNAP_V}`),
-    `DESIGN.md 的存档版本写成 v: ${SNAP_V}（代码 SNAP_V = ${SNAP_V}）`);
 
   // 穿透是固定点数，不是比例。这一句在两个文件里都错过。
   //
@@ -167,4 +154,4 @@ if (fails) {
   console.error(`\n✗ 文档一致性检查失败 ${fails} 项`);
   process.exit(1);
 }
-console.log(`✓ 文档一致性通过（${DOCS.length} 份文档 · 怪名 / 增益名 / 常量 / 路径）`);
+console.log(`✓ 文档一致性通过（README · 怪名 / 增益名 / 常量 / 路径）`);

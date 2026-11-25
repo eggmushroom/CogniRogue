@@ -1,7 +1,7 @@
 /**
  * 模型调用层：OpenAI 兼容的 `/chat/completions`，只用 Node 内置 `fetch`。
  *
- * 为什么不用 SDK：`dependencies` 永远为空（AGENTS.md）。这里多一个依赖，
+ * 为什么不用 SDK：`dependencies` 永远为空（项目保持零运行时依赖）。这里多一个依赖，
  * 整个仓库就多一个"下一次 npm install 可能装不上"的理由，
  * 而我们要的只是「POST 一段 JSON，拿回一段 JSON」。
  *

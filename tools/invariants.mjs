@@ -269,7 +269,7 @@ if (!files.length || !RULES.length || !checked) {
 
 if (failures) {
   console.error(`\n✗ ${failures} 处违反架构不变量。修法见 tools/invariants.mjs 里每条规则的 why，`);
-  console.error('  以及 AGENTS.md「架构不变量」。不要加豁免：把写法收回唯一实现点。');
+  console.error('  不要加豁免：把写法收回唯一实现点。');
   process.exit(1);
 }
 console.log('✓ 通过');
