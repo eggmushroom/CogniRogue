@@ -7,12 +7,16 @@
  * 复验一遍 —— **模型写内容，代码保证格式**。
  */
 import { parseQuestionBank } from '../../src/core/library';
+import { topicHeading } from '../../src/core/library/parse';
 import type { Question } from '../../src/core/model';
+import { closesFence, codeFence } from '../../src/core/library/markdown';
 
 /** 模型该产出、也只该产出的东西。 */
 export interface GenQuestion {
-  /** 概念主键：同主题内唯一，题号按它派生。 */
-  concept: string;
+  /** 稳定知识点 ID：同一知识点的变式题共用。 */
+  knowledgeId: string;
+  knowledgeLabel?: string;
+  qid: string;
   stem: string;
   options: string[];
   /** 0 基下标。 */
@@ -23,18 +27,23 @@ export interface GenQuestion {
 
 export interface GenTopic {
   topic: string;
+  topicId?: string;
   questions: GenQuestion[];
 }
 
 const letter = (i: number) => String.fromCharCode(65 + i);
+const field = (marker: string, value: string) => {
+  const rows = value.trim().split(/\r?\n/);
+  return rows.length === 1 ? `${marker} ${rows[0]}` : [marker, ...rows.map((row) => row ? `  ${row}` : '')].join('\n');
+};
 
 /** 一道题渲染成 DSL 行；`~ 概念` 一定写，否则题号会跟着题干漂。 */
 export function emitQuestion(q: GenQuestion): string {
-  const out = [`### ${q.stem.trim()}`, `~ ${q.concept.trim()}`];
-  q.options.forEach((o, i) => out.push(`${letter(i)}) ${o.trim()}`));
+  const out = [field('###', q.stem), `~ ${q.knowledgeId.trim()}`, `^ ${q.qid}`];
+  q.options.forEach((o, i) => out.push(field(`${letter(i)})`, o)));
   out.push(`= ${letter(q.answer)}`);
   if (q.noShuffle) out.push('! 固定顺序');
-  if (q.explain?.trim()) out.push(`+ ${q.explain.trim()}`);
+  if (q.explain?.trim()) out.push(field('+', q.explain));
   return out.join('\n');
 }
 
@@ -42,17 +51,72 @@ export function emitPack(name: string, topics: GenTopic[]): string {
   const blocks = [`# ${name}`];
   for (const t of topics) {
     if (!t.questions.length) continue;
-    blocks.push(`## ${t.topic}`);
+    blocks.push(`## ${t.topic}${t.topicId ? ` <!-- topic: ${t.topicId} -->` : ''}`);
     for (const q of t.questions) blocks.push(emitQuestion(q));
   }
   return blocks.join('\n\n') + '\n';
+}
+
+/** 保留原来的章节顺序与题号；生成主题只按 ID 合并。 */
+export function appendPack(existing: string, delta: string): string {
+  if (!existing.trim()) return delta;
+
+  const split = (text: string) => {
+    const lines = text.trimEnd().split(/\r?\n/);
+    const title = lines.shift() ?? '# 生成的题库';
+    const preamble: string[] = [];
+    const order: string[] = [];
+    const topics = new Map<string, string[]>();
+    const headings = new Map<string, string>();
+    let current = '';
+    let fence: string | undefined;
+    for (const line of lines) {
+      if (!fence && line.startsWith('## ')) {
+        current = topicHeading(line.slice(3)).id;
+        headings.set(current, line);
+        if (!topics.has(current)) {
+          order.push(current);
+          topics.set(current, []);
+        }
+      } else if (current) {
+        topics.get(current)!.push(line);
+      } else {
+        preamble.push(line);
+      }
+      if (fence) {
+        if (closesFence(line, fence)) fence = undefined;
+      } else {
+        fence = codeFence(line.replace(/^(?:###|\?|[A-Za-z][).、:：]|\+) +/, ''))?.[2];
+      }
+    }
+    return { title, preamble, order, topics, headings };
+  };
+
+  const base = split(existing);
+  const added = split(delta);
+  for (const topic of added.order) {
+    const body = added.topics.get(topic)!;
+    base.headings.set(topic, added.headings.get(topic)!);
+    if (!base.topics.has(topic)) {
+      base.order.push(topic);
+      base.topics.set(topic, body);
+    } else {
+      base.topics.get(topic)!.push('', ...body);
+    }
+  }
+
+  const sections = base.order.map((topic) => {
+    const body = base.topics.get(topic)!.join('\n').trim();
+    return [base.headings.get(topic), body].filter(Boolean).join('\n\n');
+  });
+  return [base.title, ...base.preamble, ...sections].join('\n\n').trimEnd() + '\n';
 }
 
 export interface PackCheck {
   ok: boolean;
   /** 解析器报的格式问题，带行号。 */
   issues: string[];
-  /** 每题一道，按 `qid` 索引：题号 → 题干，用来发现「换了概念却没换号」。 */
+  /** 每题一道，按 `qid` 索引：题号 → 题干，用来发现单题 ID 重复。 */
   byQid: Record<string, string>;
   count: number;
 }
@@ -82,16 +146,16 @@ export function countByTopic(text: string): Record<string, Question[]> {
 }
 
 /**
- * 当前题库里 `qid → 概念`。
+ * 当前题库里 `qid → knowledgeId`。
  *
- * 玩家导出的快照按 qid 记，并进记忆要按概念记，中间这一步就在这里。
+ * 玩家导出的快照按 qid 记，并进记忆按 knowledgeId 汇总，中间这一步就在这里。
  * 没写 `~` 的老题不进表：它们的号跟着题干走，映射过去也会错。
  */
-export function conceptByQid(text: string): Record<string, string> {
+export function knowledgeIdByQid(text: string): Record<string, string> {
   const out: Record<string, string> = {};
   const bank = parseQuestionBank(text);
   for (const topic of Object.keys(bank.byTopic)) {
-    for (const q of bank.byTopic[topic]) if (q.concept) out[q.qid] = q.concept;
+    for (const q of bank.byTopic[topic]) if (q.knowledgeId) out[q.qid] = q.knowledgeId;
   }
   return out;
 }

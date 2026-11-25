@@ -3,9 +3,8 @@ import { studySnapshot } from '../core/library';
 /**
  * 把章节记忆导出成一份 JSON 文件。
  *
- * 游戏运行时对外通信是 0 次（AGENTS.md 的硬约束），所以「按错题重出题」这条
- * 闭环只能靠玩家**手动**把这份文件交给生成工具（`npm run gen -- --feedback=...`）。
- * 导出走的是本地 data URL，一个字节都不离开这台机器。
+ * 离线生成器可通过 `npm run gen -- --feedback=...` 读取这份快照。
+ * 导出使用本地 data URL，不访问网络。
  *
  * 不用 `createObjectURL` + `setTimeout(revoke)`：那是第二套时钟
  * （`clock/single` 会拦），而立刻 revoke 又会在部分浏览器里把下载掐断。

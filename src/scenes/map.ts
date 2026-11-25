@@ -1,7 +1,9 @@
-import { g, roundRect, VH, VW } from '../gfx/canvas';
-import { C, FONT_TITLE, withAlpha } from '../gfx/theme';
-import { bar, panel, text } from '../gfx/ui';
+import { g, roundRect, VW } from '../gfx/canvas';
+import { C, PRESS, FONT_TITLE, withAlpha } from '../gfx/theme';
+import { bar, cutRule, panel, text } from '../gfx/ui';
 import { drawArtIcon } from '../gfx/art/icons';
+import { drawPowerIcon } from '../gfx/art/powers';
+import { reduceMotion } from '../gfx/motion';
 import type { ArtIconName } from '../gfx/art/icons';
 import { consumeDragY, consumeWheel, hover, onClick } from '../input';
 import { NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS, stageOf } from '../core/model';
@@ -59,6 +61,7 @@ let lastFocus = -1;
 let camStage = 0;
 /** 上一帧画的是哪张地图（数组身份）。重开一局也会换一张，同样要复位。 */
 let camMap: MapNode[][] | null = null;
+const openedAt = new WeakMap<MapNode, number>();
 
 const clampCam = (v: number) => Math.max(0, Math.min(STAGE_ROWS - VISIBLE, v));
 const followRow = (r: number) => clampCam(r - 2);
@@ -129,17 +132,7 @@ export function drawMap(t: number, dt = 1 / 60) {
   updateCam(dt);
   const st = stageOf(G.stage);
 
-  // 每一幕给整屏加一层自己的色：换幕时最先察觉的不是新怪，是"这里的光变了"。
-  // 只压 8% 的透明度：再多，节点类型色（战斗橙/精英红）就会被染得认不出来。
-  g.save();
-  const amb = g.createRadialGradient(MAP_CX, VH * 0.42, 60, MAP_CX, VH * 0.42, 820);
-  amb.addColorStop(0, withAlpha(st.color, 0.09));
-  amb.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = amb;
-  g.fillRect(0, 0, VW, VH);
-  g.restore();
-
-  columns(t);
+  columns(st.color);
   header(st);
   leftPanel();
 
@@ -166,23 +159,10 @@ export function drawMap(t: number, dt = 1 / 60) {
         const bow = ROW_GAP * 0.52;
         const drift = (b.x - a.x) * 0.34;
         g.bezierCurveTo(a.x + drift, a.y - bow, b.x - drift, b.y + bow, b.x, b.y);
-        if (live) {
-          // 走过的、马上能走的路是一道光：中段最亮，两端收进节点里。
-          // 纯色细线在暗背景上分不出"哪条是我选的"，渐变 + 一点辉光就分得出。
-          const lg = g.createLinearGradient(a.x, a.y, b.x, b.y);
-          lg.addColorStop(0, withAlpha(C.gold, 0.2));
-          lg.addColorStop(0.55, withAlpha(C.gold, 0.82));
-          lg.addColorStop(1, withAlpha(C.gold, 0.34));
-          g.strokeStyle = lg;
-          g.lineWidth = 2.6;
-          g.shadowColor = withAlpha(C.gold, 0.4);
-          g.shadowBlur = 9;
-        } else {
-          // 还没走的路退到背景里，但不能退到看不见：地图要回答"我还能往哪走"，
-          // 所以留一档比背景亮、又明显低于金线的灰蓝。
-          g.strokeStyle = 'rgba(132,150,190,.28)';
-          g.lineWidth = 1.5;
-        }
+        // 实线和虚线分开已通与未通，不只靠颜色区分。
+        if (!live) g.setLineDash([4, 5]);
+        g.strokeStyle = live ? C.gold : withAlpha(C.lineHi, 0.62);
+        g.lineWidth = live ? 2 : 1.5;
         g.stroke();
         g.restore();
       }
@@ -192,14 +172,14 @@ export function drawMap(t: number, dt = 1 / 60) {
   for (let r = lo; r <= hi; r++) {
     if (!G.map[r]) continue;
     for (const nd of G.map[r]) {
-      drawNode(nd, t, avail.has(nd.key), nd.key === cur);
+      drawNode(nd, avail.has(nd.key), nd.key === cur, t);
     }
   }
 
   // 层号标尺：一条竖轴 + 每 5 层一支刻度，数字挂在轴左。
   // 之前只有一个飘着的数字，读者既不知道它是层号，也不知道它指着哪一行。
   const axisX = X0 - NODE_R - 32;
-  g.fillStyle = 'rgba(120,140,180,.14)';
+  g.fillStyle = withAlpha(C.gold, 0.2);
   g.fillRect(axisX, TOP_Y, 1, BOT_Y - TOP_Y);
   for (let r = lo; r <= hi; r++) {
     if (r !== 0 && (r + 1) % 5 !== 0 && r !== STAGE_ROWS - 1) continue;
@@ -246,7 +226,7 @@ function scrollBar() {
 }
 
 function hint(hasAvail: boolean) {
-  text(hasAvail ? '点击发光的节点继续' : '这条路的尽头，是你要面对的东西',
+  text(hasAvail ? '点击双框节点继续' : '没有可前往的节点',
     MAP_CX, 862, { size: 14, align: 'center', color: C.dim });
   text('滚轮 / 按住拖动 · 走一步自动回到当前位置',
     MAP_CX, 884, { size: 11, align: 'center', color: C.faint });
@@ -283,7 +263,7 @@ function platePath(type: MapNode['type'], x: number, y: number, r: number) {
   g.arc(x, y, r, 0, Math.PI * 2);
 }
 
-function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
+function drawNode(nd: MapNode, avail: boolean, isCur: boolean, t: number) {
   const x = xOf(nd.col);
   const y = yOf(nd.r);
   const fade = edgeFade(y);
@@ -294,80 +274,33 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   const meta = NODE_META[nd.type];
   const seen = !!G.seen[nd.key];
   const baseR = nd.type === 'boss' ? BOSS_R : NODE_R;
-  // 可前往的节点呼吸着长大一点点。满屏都在发光的时候，尺寸变化比亮度更抗噪：
-  // "亮"在这张图上已经很廉价了，光柱、浮纸、走过的路全都在发亮。
-  const p = 0.5 + 0.5 * Math.sin(t * 3 + nd.r * 0.8);
-  const r = baseR * (avail ? 1 + 0.06 * p : 1);
   const hv = avail && hover(x - baseR - 8, y - baseR - 8, (baseR + 8) * 2, (baseR + 8) * 2);
 
-  // 可选节点的呼吸光环
   if (avail) {
+    if (!openedAt.has(nd)) openedAt.set(nd, t);
+    const age = reduceMotion() ? 1 : Math.min(1, (t - openedAt.get(nd)!) / 0.38);
+    const press = 1 - (1 - age) ** 3;
     g.save();
-    const gl = g.createRadialGradient(x, y, baseR * 0.5, x, y, baseR * 2.6);
-    gl.addColorStop(0, withAlpha(meta.color, 0.4 + p * 0.25));
-    gl.addColorStop(1, 'rgba(0,0,0,0)');
-    g.fillStyle = gl;
-    g.beginPath();
-    g.arc(x, y, baseR * 2.6, 0, Math.PI * 2);
-    g.fill();
-    g.restore();
-
-    platePath(nd.type, x, y, r + 6 + p * 5);
-    g.strokeStyle = withAlpha(meta.color, 0.55 + p * 0.35);
+    g.globalAlpha *= 0.55 + 0.45 * press;
+    platePath(nd.type, x, y, baseR + 6 + (1 - press) * 8);
+    g.strokeStyle = hv ? C.ink : C.gold;
     g.lineWidth = 2;
-    if (nd.type === 'event') g.setLineDash([7, 6]);
     g.stroke();
-    g.setLineDash([]);
+    g.restore();
   }
 
   // 底盘
-  const rr = r * (hv ? 1.09 : 1);
+  const rr = baseR;
   platePath(nd.type, x, y, rr);
-  // 上亮下暗的径向：和卡面的"洗底"同一个做法，底盘才像一枚徽章而不是一块玻璃
-  const grd = g.createRadialGradient(x, y - rr * 0.55, 1, x, y, rr);
-  if (avail || seen) {
-    grd.addColorStop(0, withAlpha(meta.color, 0.46));
-    grd.addColorStop(1, 'rgba(9,11,17,.97)');
-  } else {
-    grd.addColorStop(0, 'rgba(34,38,52,.92)');
-    grd.addColorStop(1, 'rgba(8,10,15,.97)');
-  }
-  g.fillStyle = grd;
+  g.fillStyle = hv ? C.panelHi : PRESS.sheet;
+  g.fill();
+  g.fillStyle = withAlpha(meta.color, avail ? 0.21 : seen ? 0.14 : 0.045);
   g.fill();
   g.strokeStyle = avail || seen ? withAlpha(meta.color, 0.85) : withAlpha(meta.color, 0.28);
   g.lineWidth = avail ? 2.4 : 1.6;
   if (nd.type === 'event') g.setLineDash([7, 6]);
   g.stroke();
   g.setLineDash([]);
-
-  // 顶缘高光：一段短弧压在边框内侧，读成"光从上方来"。
-  // 圆、六边、圆角方都能用同一条弧，底盘因此像同一套模具压出来的。
-  g.save();
-  platePath(nd.type, x, y, rr - 1.6);
-  g.clip();
-  g.beginPath();
-  g.arc(x, y, rr - 1, -Math.PI * 0.78, -Math.PI * 0.22);
-  g.strokeStyle = withAlpha(meta.color, avail || seen ? 0.75 : 0.3);
-  g.lineWidth = 2.4;
-  g.stroke();
-  g.restore();
-
-  // 内圈细环：底盘从"一个圆"变成"一枚徽章"，图标才不像直接贴在背景上。
-  // 六边形和圆角方放内环会糊成一团，只给圆的这几种画。
-  if (nd.type === 'fight' || nd.type === 'event' || nd.type === 'boss') {
-    g.beginPath();
-    g.arc(x, y, rr - 5, 0, Math.PI * 2);
-    g.strokeStyle = withAlpha(meta.color, avail || seen ? 0.3 : 0.14);
-    g.lineWidth = 1;
-    g.stroke();
-  }
-  if (nd.type === 'boss') {
-    g.beginPath();
-    g.arc(x, y, rr - 9, 0, Math.PI * 2);
-    g.strokeStyle = withAlpha(meta.color, avail || seen ? 0.42 : 0.2);
-    g.lineWidth = 1.4;
-    g.stroke();
-  }
 
   // 还没走到的节点也要读得出类型：地图得回答"那边有什么"，玩家才能选。
   // 退后的层次交给底盘灰度和边框透明度，图标本身别压到像一颗空圈。
@@ -383,25 +316,18 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   if (seen && !avail) {
     g.beginPath();
     g.arc(x + rr * 0.75, y - rr * 0.75, 9, 0, Math.PI * 2);
-    g.fillStyle = 'rgba(10,12,18,.92)';
+    g.fillStyle = PRESS.sheet;
     g.fill();
     g.strokeStyle = withAlpha(C.gold, 0.55);
     g.lineWidth = 1;
     g.stroke();
-    text('✓', x + rr * 0.75, y - rr * 0.74, { size: 11, color: C.gold, align: 'center', weight: 900 });
+    drawArtIcon('check', x + rr * 0.75, y - rr * 0.75, 14, C.gold);
   }
 
   if (isCur) {
-    // 当前位置做成胶囊：原来是一行 12px 裸字，和 hover 时才出现的地名混在一起。
-    // 贴着底盘下沿 6px：行距 92、半径 30 之后，"这里"和下一行节点只剩 2px 的余量，
-    // 放到 10px 就会和下面那个节点咬在一起。
+    // 贴着底盘，避免压住下一行的节点。
     const tw = 52;
-    roundRect(x - tw / 2, y + baseR + 6, tw, 19, 9.5);
-    g.fillStyle = withAlpha(C.gold, 0.16);
-    g.fill();
-    g.strokeStyle = withAlpha(C.gold, 0.6);
-    g.lineWidth = 1;
-    g.stroke();
+    panel(x - tw / 2, y + baseR + 6, tw, 19, { fill: PRESS.sheet, stroke: C.goldDim });
     text('这里', x, y + baseR + 16, { size: 11, align: 'center', color: C.gold, weight: 700 });
   }
 
@@ -412,25 +338,15 @@ function drawNode(nd: MapNode, t: number, avail: boolean, isCur: boolean) {
   g.restore();
 }
 
-/** 五道竖直光柱：给五列槽位一个"塔"的结构，不然只是一堆飘着的圆。 */
-function columns(t: number) {
-  const st = stageOf(G.stage);
-  // 光柱宽随列距收：列距 150 时 92 宽的光柱会连成一片，五列反而读成一根
-  const colW = Math.round(DX * 0.4);
-  // 五列比三列多出三分之二的面积，单列浓度要跟着降，否则整屏发蓝
-  const a = 0.052 + Math.sin(t * 0.8) * 0.012;
+/** 列标线只定位槽位，亮度低于尚未开放的路径。 */
+function columns(color: string) {
   for (let c = 0; c < MAP_COLS; c++) {
     const x = xOf(c);
-    const grd = g.createLinearGradient(0, TOP_Y - 60, 0, BOT_Y + 70);
-    grd.addColorStop(0, 'rgba(120,150,220,0)');
-    grd.addColorStop(0.5, withAlpha(st.color, a + Math.sin(t * 0.8 + c) * 0.012));
-    grd.addColorStop(1, 'rgba(120,150,220,0)');
-    g.fillStyle = grd;
-    g.fillRect(x - colW / 2, TOP_Y - 60, colW, BOT_Y - TOP_Y + 130);
+    g.fillStyle = withAlpha(color, 0.13);
+    g.fillRect(x, TOP_Y - 43, 1, BOT_Y - TOP_Y + 84);
+    cutRule(x - 16, TOP_Y - 43, 33, color, 0.38);
+    cutRule(x - 16, BOT_Y + 41, 33, color, 0.38);
   }
-  // 视野边缘不做矩形渐隐：一块"暗玻璃"有自己的左右硬边，顶上会出现一条
-  // 明显的方框。改成每个节点和每条线按自己离边界的距离淡出（edgeFade），
-  // 形状是圆是线，边界就是形状本身。
 }
 
 /** 节点图标统一走 `gfx/art` 的图标库；这一层只负责把类型映射过去。 */
@@ -456,20 +372,7 @@ function leftPanel() {
   const w = 300;
   const h = 620;
 
-  panel(x, y, w, h, { r: 14, fill: 'rgba(10,12,18,.86)' });
-  // 顶光条跟着这一幕的颜色走，和浮层面板的 box() 同一种收法：
-  // 这块面板属于这一屏，不是浮在书架上的一个独立窗口。
-  g.save();
-  roundRect(x, y, w, h, 14);
-  g.clip();
-  const st = stageOf(G.stage);
-  const tg = g.createLinearGradient(x, 0, x + w, 0);
-  tg.addColorStop(0, withAlpha(st.color, 0.1));
-  tg.addColorStop(0.45, withAlpha(st.color, 0.62));
-  tg.addColorStop(1, withAlpha(st.color, 0.08));
-  g.fillStyle = tg;
-  g.fillRect(x, y, w, 2.4);
-  g.restore();
+  panel(x, y, w, h, { fill: PRESS.sheet, accent: stageOf(G.stage).color });
 
   // 生命
   text('生命', x + 20, y + 28, { size: 13, color: C.dim, weight: 600 });
@@ -519,11 +422,11 @@ function leftPanel() {
     shown.forEach((p, i) => {
       const ex = x + 22 + (i % cols) * 96;
       const ey = y + 170 + Math.floor(i / cols) * rowH;
-      text(p.icon, ex, ey, { size: 11, color: p.color, weight: 800 });
-      text(p.name, ex + 14, ey, { size: 11, color: C.ink2 });
+      drawPowerIcon(ex - 1, ey - 7.5, 15, p.id);
+      text(p.name, ex + 18, ey, { size: 11, color: C.ink2 });
     });
     if (powers.length > shown.length) {
-      text(`+${powers.length - shown.length} 张`, x + 22 + (shown.length % cols) * 96,
+      text(`+${powers.length - shown.length} 个`, x + 22 + (shown.length % cols) * 96,
         y + 170 + Math.floor(shown.length / cols) * rowH,
         { size: 11, color: C.faint });
     }

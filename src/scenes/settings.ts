@@ -6,8 +6,7 @@ import { editField, fieldOf, pasteInto, type KeyIn } from './textfield';
 /**
  * 设置面板的动作。和题库面板一样，失败就写在面板底部那行，不弹窗、不 toast。
  *
- * 这里能"做"的只有两件事：重连本机服务、改模型参数。其余都是说明 ——
- * 设置页最容易长成一排开关，而每一个开关都是一处要维护的假设。
+ * 模型参数只在编辑页修改，连接状态由实际请求反馈。
  */
 const pane = () => (G.panel.k === 'settings' ? G.panel : null);
 
@@ -22,14 +21,6 @@ export function say(msg: string, ok = true) {
 const MAX = [220, 80, 220];
 export const modelFields = (f: ModelForm) => [f.base, f.model, f.key];
 
-export async function reconnectService() {
-  say('正在连本机服务 …');
-  const up = await refreshServiceInfo();
-  say(up
-    ? '连上了。服务那边的题库在「题库」面板里。'
-    : '还是连不上：先在这个目录下跑 npm run dev。', up);
-}
-
 export function openModelForm() {
   const p = pane();
   if (!p) return;
@@ -38,8 +29,9 @@ export function openModelForm() {
     base: fieldOf(serviceModelBase()),
     model: fieldOf(serviceModelName()),
     key: fieldOf(''),
-    field: 0,
+    field: 1,
     reveal: false,
+    connection: false,
   };
   say('');
 }
@@ -77,21 +69,19 @@ export async function saveModelForm() {
   }
   say('正在保存 …');
   if (!(await setGenConfig({ baseUrl: base, key, model }))) {
-    say('服务没有接受这份配置（它在跑吗？）。', false);
+    say('保存失败，请稍后重试', false);
     return;
   }
   await refreshServiceInfo();
   p.form = undefined;
   const ready = serviceReady();
   say(ready
-    ? `已保存：${serviceModelName() || '默认模型'} · 可以从文档建题库了。`
-    : '已保存，但服务说还不能出题 —— 密钥是空的或者不对。', ready);
+    ? '已保存'
+    : '已保存，请填写模型密钥', ready);
 }
 
 /**
  * 输入框有焦点时，按键先过这里。返回 true = 这一下归输入框，别再去当快捷键。
- *
- * `Esc` 在这里是"退出表单"而不是"关面板"：填了一半的地址不该被一次误按连面板一起关掉。
  */
 export function settingsKey(k: KeyIn): boolean {
   const f = pane()?.form;
@@ -102,13 +92,13 @@ export function settingsKey(k: KeyIn): boolean {
     return true;
   }
   if (editField(cur, k, MAX[f.field])) return true;
-  if (k.key === 'Tab' || k.key === 'Enter') {
-    if (f.field >= 2) void saveModelForm();
-    else focusModelField(f.field + 1);
+  if (k.key === 'Tab') {
+    const order = f.connection ? [1, 2, 0] : [1, 2];
+    focusModelField(order[(order.indexOf(f.field) + 1) % order.length]);
     return true;
   }
-  if (k.key === 'Escape') {
-    closeModelForm();
+  if (k.key === 'Enter') {
+    void saveModelForm();
     return true;
   }
   return false;

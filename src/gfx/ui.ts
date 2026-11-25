@@ -1,10 +1,11 @@
 import { g, roundRect, wrapText } from './canvas';
-import { onClick, hover } from '../input';
-import { C, font, FONT_TITLE, FONT_UI, FONT_NUM, withAlpha } from './theme';
+import { onClick, hover, pointer } from '../input';
+import { C, PRESS, font, FONT_TITLE, FONT_UI, FONT_NUM, withAlpha } from './theme';
 import { EFFS, effFace } from '../core/model';
 import { cardKind, cardType, costGlyph, isXCost, CARD_TYPE_META } from '../core/cards';
-import type { CardDef, EffOut, PowerDef } from '../core/model';
-import { drawArtIcon } from './art/icons';
+import type { CardDef, EffOut } from '../core/model';
+import { drawArtIcon, type ArtIconName } from './art/icons';
+import { reduceMotion } from './motion';
 
 
 export function text(
@@ -33,87 +34,95 @@ export function squeeze(s: string, maxW: number): string {
   return s.slice(0, lo) + '…';
 }
 
+/** 刻痕留在边缘，不穿过正文。 */
+export function cutRule(x: number, y: number, w: number, color: string = C.gold, alpha = 0.42) {
+  g.save();
+  g.fillStyle = withAlpha(color, alpha);
+  g.fillRect(x, y, w, 1);
+  g.fillRect(x, y - 2, 3, 5);
+  g.fillRect(x + w - 3, y - 2, 3, 5);
+  g.restore();
+}
+
 export function panel(
   x: number, y: number, w: number, h: number,
-  opts: { r?: number; fill?: string; stroke?: string } = {},
+  opts: { r?: number; radius?: number; fill?: string; stroke?: string; accent?: string } = {},
 ) {
   g.save();
-  roundRect(x, y, w, h, opts.r ?? 14);
-  g.fillStyle = opts.fill ?? 'rgba(17,20,29,.94)';
+  const r = Math.max(0, opts.radius ?? Math.min(3, opts.r ?? 3));
+  roundRect(x, y, w, h, r);
+  g.fillStyle = opts.fill ?? C.panel;
   g.fill();
   g.shadowBlur = 0;
   if (opts.stroke !== 'none') {
     g.strokeStyle = opts.stroke ?? C.line;
-    g.lineWidth = 1.5;
+    g.lineWidth = 1;
+    g.stroke();
+  }
+  if (opts.accent) {
+    const edge = opts.accent;
+    g.strokeStyle = withAlpha(edge, 0.26);
+    g.strokeRect(x + 6.5, y + 6.5, w - 13, h - 13);
+    cutRule(x + 16, y + 7, Math.min(64, w / 4), edge, 0.8);
+    g.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const px = x + w - 12 - i * 4;
+      g.moveTo(px, y + h - 7);
+      g.lineTo(px - 4, y + h - 12);
+    }
     g.stroke();
   }
 
-  // 内高光裁在圆角内，防止四角漏光。
-  g.save();
-  roundRect(x, y, w, h, opts.r ?? 14);
-  g.clip();
-  const sheenH = Math.min(70, h * 0.24);
-  const sheen = g.createLinearGradient(0, y, 0, y + sheenH);
-  sheen.addColorStop(0, 'rgba(255,255,255,.07)');
-  sheen.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = sheen;
-  g.fillRect(x, y, w, sheenH);
-  g.restore();
   g.restore();
 }
 
 export type BtnKind = 'primary' | 'ghost' | 'danger';
+type ButtonOpts = { size?: number; sub?: string; mark?: ArtIconName; disabled?: boolean; r?: number };
 
 export function button(
   x: number, y: number, w: number, h: number, label: string,
-  kind: BtnKind = 'ghost', opts: { size?: number; sub?: string } = {},
+  kind: BtnKind = 'ghost', opts: ButtonOpts = {},
 ) {
-  const hv = hover(x, y, w, h);
-
-  const base =
-    kind === 'primary' ? withAlpha(C.gold, hv ? 0.22 : 0.1)
-      : kind === 'danger' ? withAlpha(C.red, hv ? 0.24 : 0.1)
-        : withAlpha('#ffffff', hv ? 0.1 : 0.04);
-  const edge =
-    kind === 'primary' ? (hv ? C.gold : withAlpha(C.gold, 0.55))
-      : kind === 'danger' ? (hv ? C.red : withAlpha(C.red, 0.5))
-        : hv ? C.lineHi : C.line;
-
+  const hv = !opts.disabled && hover(x, y, w, h);
+  const pressed = hv && pointer.down && pointer.dragDist < 8;
   g.save();
-  if (hv) { g.shadowColor = kind === 'primary' ? withAlpha(C.gold, 0.5) : withAlpha('#9ab', 0.28); g.shadowBlur = 18; }
-  roundRect(x, y, w, h, 10);
-  g.fillStyle = base;
-  g.fill();
-  g.shadowBlur = 0;
-  g.strokeStyle = edge;
-  g.lineWidth = 1.5;
-  g.stroke();
-  if (hv) {
-    g.fillStyle = 'rgba(255,255,255,.13)';
-    g.fillRect(x + 12, y + 2, w - 24, 1.5);
+  if (pressed && !reduceMotion()) g.translate(0, 2);
+
+  const base = kind === 'primary' ? (hv ? PRESS.vermilionHi : PRESS.vermilion)
+    : kind === 'danger' ? withAlpha(C.red, hv ? 0.24 : 0.1)
+      : hv ? C.panelHi : PRESS.sheet;
+  const edge = kind === 'danger' ? C.red : C.gold;
+  panel(x, y, w, h, {
+    radius: opts.r,
+    fill: opts.disabled ? C.panel : base,
+    stroke: opts.disabled ? C.lineHi : hv ? edge : withAlpha(edge, kind === 'ghost' ? 0.37 : 0.7),
+  });
+  if (!opts.disabled && w >= 64 && h >= 30) {
+    cutRule(x + 7, y + h - 6, w - 14, edge, pressed ? 1 : hv ? 0.78 : 0.34);
   }
-  g.restore();
+  if (opts.mark) drawArtIcon(opts.mark, x + 24, y + h / 2, 20, opts.disabled ? C.dim : hv ? C.ink : C.gold);
 
   const cy = opts.sub ? y + h / 2 - 9 : y + h / 2;
   text(label, x + w / 2, cy, {
     size: opts.size ?? 20,
     weight: 600,
     align: 'center',
-    color: kind === 'primary' ? C.ink : C.ink2,
+    color: opts.disabled ? C.dim : kind === 'primary' ? C.ink : C.ink2,
   });
   if (opts.sub) {
-    text(opts.sub, x + w / 2, y + h / 2 + 14, { size: 14, align: 'center', color: C.dim });
+    text(opts.sub, x + w / 2, y + h / 2 + 14, { size: 14, align: 'center', color: !opts.disabled && kind === 'primary' ? C.ink : C.dim });
   }
+  g.restore();
   return hv;
 }
 
 /** 可点击按钮，内部把 onClick 注册到回调。 */
 export function action(
   x: number, y: number, w: number, h: number, label: string, fn: () => void,
-  kind: BtnKind = 'ghost', opts: { size?: number; sub?: string } = {},
+  kind: BtnKind = 'ghost', opts: ButtonOpts = {},
 ) {
   button(x, y, w, h, label, kind, opts);
-  onClick(x, y, w, h, fn, label);
+  if (!opts.disabled) onClick(x, y, w, h, fn, label);
 }
 
 /**
@@ -126,13 +135,13 @@ export function bar(
   x: number, y: number, w: number, h: number, pct: number,
   color: string, opts: { bg?: string; r?: number; label?: string; ticks?: number } = {},
 ) {
-  const r = opts.r ?? 3;
+  const r = opts.r ?? 1;
   const p = Math.max(0, Math.min(1, pct));
   g.save();
 
   // 槽底压到跟面板一个明度：读的是「剩多少」，不是「槽本身有多亮」。
   roundRect(x, y, w, h, r);
-  g.fillStyle = opts.bg ?? 'rgba(255,255,255,.035)';
+  g.fillStyle = opts.bg ?? PRESS.groove;
   g.fill();
 
   if (p > 0.001) {
@@ -141,12 +150,8 @@ export function bar(
     // 裁在整个槽内而不是填充块内，两端才不会顶出圆角。
     roundRect(x, y, w, h, r);
     g.clip();
-    const grd = g.createLinearGradient(0, y, 0, y + h);
-    grd.addColorStop(0, withAlpha(color, 0.78));
-    grd.addColorStop(1, withAlpha(color, 0.48));
-    g.fillStyle = grd;
+    g.fillStyle = withAlpha(color, 0.64);
     g.fillRect(x, y, fw, h);
-    // 纸页上缘：1px 亮线，替代原来占掉四成高度的白色高光。
     g.fillStyle = withAlpha(color, 0.85);
     g.fillRect(x, y, fw, 1);
     g.restore();
@@ -205,7 +210,7 @@ export interface CardOpts {
   afford?: boolean;
 }
 
-/** 费用数字：白常态、金 X、红付不起；无底色，靠暗描边和弱辉光立起来。 */
+/** 费用数字：白常态、金 X、红付不起。 */
 function drawCostMark(
   left: number, midY: number, s: number, glyph: string,
   o: { x: boolean; afford: boolean },
@@ -223,10 +228,8 @@ function drawCostMark(
   // 描边先画，再填色：和效果行里的伤害数字同一套宽窄，牌面上"数字"这一族长得一样
   g.lineJoin = 'round';
   g.lineWidth = Math.max(2, 3 * s);
-  g.strokeStyle = 'rgba(6,8,13,.9)';
+  g.strokeStyle = C.void;
   g.strokeText(glyph, left, y);
-  g.shadowColor = withAlpha(col, 0.45);
-  g.shadowBlur = 8 * s;
   g.fillStyle = col;
   g.fillText(glyph, left, y);
   g.restore();
@@ -239,99 +242,16 @@ type FaceView = ReturnType<typeof effFace>;
 type EffView = (typeof EFFS)[keyof typeof EFFS];
 
 function drawCardFrame(
-  x: number, y: number, w: number, h: number, r: number,
-  tc: string, kind: CardKindView, opts: CardOpts,
+  x: number, y: number, w: number, h: number, tc: string, opts: CardOpts,
 ) {
-  g.save();
-  // 投影
-  g.save();
-  g.shadowColor = opts.glow ? withAlpha(tc, 0.75) : 'rgba(0,0,0,.65)';
-  g.shadowBlur = opts.glow ? 34 : 16;
-  g.shadowOffsetY = 6;
-  roundRect(x, y, w, h, r);
-  g.fillStyle = '#0d1018';
-  g.fill();
-  g.restore();
-
-  roundRect(x, y, w, h, r);
-  const grd = g.createLinearGradient(x, y, x, y + h);
-  grd.addColorStop(0, kind === 'junk' ? '#1a1c22' : withAlpha(tc, 0.17));
-  grd.addColorStop(0.45, '#101420');
-  grd.addColorStop(1, '#0b0e16');
-  g.fillStyle = grd;
-  g.fill();
-
-  roundRect(x + 1.5, y + 1.5, w - 3, h - 3, r - 1);
-  g.strokeStyle = opts.up ? withAlpha(C.gold, 0.85)
-    : withAlpha(tc, opts.hovered ? 0.95 : 0.5);
-  g.lineWidth = opts.up ? 2.2 : 1.5;
-  g.stroke();
-  g.restore();
-}
-
-function drawCardWash(x: number, y: number, w: number, h: number, r: number, tc: string) {
-  g.save();
-  roundRect(x, y, w, h, r);
-  g.clip();
-  const washH = 34 * (w / 220);
-  const wash = g.createLinearGradient(0, y, 0, y + washH);
-  wash.addColorStop(0, withAlpha(tc, 0.14));
-  wash.addColorStop(1, withAlpha(tc, 0));
-  g.fillStyle = wash;
-  g.fillRect(x, y, w, washH);
-  const bar1 = g.createLinearGradient(x, 0, x + w, 0);
-  bar1.addColorStop(0, withAlpha(tc, 0.12));
-  bar1.addColorStop(0.5, withAlpha(tc, 1));
-  bar1.addColorStop(1, withAlpha(tc, 0.12));
-  g.fillStyle = bar1;
-  g.fillRect(x, y, w, 4);
-  g.restore();
-}
-
-function drawCardUnder(x: number, y: number, w: number, h: number, r: number, tc: string, kind: CardKindView) {
-  g.save();
-  roundRect(x, y, w, h, r);
-  g.clip();
-  const lowH = h * 0.44;
-  const low = g.createLinearGradient(0, y + h - lowH, 0, y + h);
-  low.addColorStop(0, withAlpha(tc, 0));
-  low.addColorStop(1, withAlpha(tc, kind === 'junk' ? 0.03 : 0.08));
-  g.fillStyle = low;
-  g.fillRect(x, y + h - lowH, w, lowH);
-  g.restore();
-}
-
-function drawCardTexture(
-  x: number, y: number, w: number, h: number, r: number,
-  cardId: string, tc: string, s: number,
-) {
-  g.save();
-  roundRect(x, y, w, h, r);
-  g.clip();
-  let hsh = 0;
-  for (let i = 0; i < cardId.length; i++) hsh = (hsh * 31 + cardId.charCodeAt(i)) >>> 0;
-  const cx = x + w * 0.5;
-  const cy = y + h * 0.7;
-  const rays = 14 + (hsh % 9);
-  const phase = (hsh % 628) / 100;
-  g.strokeStyle = withAlpha(tc, 0.075);
-  g.lineWidth = 1;
-  for (let i = 0; i < rays; i++) {
-    const a = (i / rays) * Math.PI * 2 + phase;
-    g.beginPath();
-    g.moveTo(cx + Math.cos(a) * 30 * s, cy + Math.sin(a) * 30 * s);
-    g.lineTo(cx + Math.cos(a) * 132 * s, cy + Math.sin(a) * 132 * s);
-    g.stroke();
-  }
-  g.strokeStyle = withAlpha(tc, 0.11);
-  g.beginPath();
-  g.arc(cx, cy, (30 + (hsh % 5) * 4) * s, 0, Math.PI * 2);
-  g.stroke();
-  for (let yy = y + h * 0.52; yy < y + h; yy += 9 * s) {
-    g.fillStyle = 'rgba(255,255,255,.014)';
-    g.fillRect(x, yy, w, 1);
-  }
-  g.restore();
+  const edge = opts.up ? C.gold : tc;
+  const raised = opts.hovered || opts.glow;
+  panel(x, y + 4, w, h, { fill: C.void, stroke: 'none' });
+  panel(x, y, w, h, {
+    fill: raised ? C.panelHi : PRESS.card,
+    stroke: withAlpha(edge, opts.up || raised ? 1 : 0.56), accent: edge,
+  });
+  if (raised) cutRule(x + 12, y + h - 8, w - 24, edge, 0.82);
 }
 
 function drawCardHeader(
@@ -347,7 +267,7 @@ function drawCardHeader(
   }
 
   // 类别徽章：右上角，知识卡写「类别·效果」，基础牌只写类别。
-  const badgeName = kind === 'basic' ? typeMeta.name : `${typeMeta.name}·${eff.name}`;
+  const badgeName = typeMeta.name;
   const badgeColor = kind === 'basic' ? typeMeta.color : eff.color;
   if (kind !== 'junk') {
     g.font = font(Math.round(11 * s), 700, FONT_UI);
@@ -355,16 +275,9 @@ function drawCardHeader(
     const bh = 18 * s;
     const bx = x + w - pad - lw;
     const by = y + 21 * s;
-    roundRect(bx, by, lw, bh, bh / 2);
-    g.fillStyle = withAlpha(badgeColor, 0.2);
-    g.fill();
-    g.strokeStyle = withAlpha(badgeColor, 0.72);
-    g.lineWidth = 1.2;
-    g.stroke();
-    g.beginPath();
-    g.arc(bx + 8 * s, by + bh / 2, 2.6 * s, 0, Math.PI * 2);
+    panel(bx, by, lw, bh, { r: 1, fill: PRESS.sheet, stroke: withAlpha(badgeColor, 0.5) });
     g.fillStyle = badgeColor;
-    g.fill();
+    g.fillRect(bx + 6 * s, by + 6 * s, 2 * s, bh - 12 * s);
     text(badgeName, bx + 14 * s, by + bh / 2 + 0.5, {
       size: Math.round(11 * s), align: 'left', color: badgeColor, weight: 700,
     });
@@ -374,12 +287,7 @@ function drawCardHeader(
 
 function drawCardFooter(x: number, y: number, w: number, h: number, pad: number, s: number, tc: string) {
   const fy = y + h - 15 * s;
-  const fg = g.createLinearGradient(x + pad, 0, x + w - pad, 0);
-  fg.addColorStop(0, withAlpha(tc, 0));
-  fg.addColorStop(0.5, withAlpha(tc, 0.2));
-  fg.addColorStop(1, withAlpha(tc, 0));
-  g.fillStyle = fg;
-  g.fillRect(x + pad, fy, w - pad * 2, Math.max(1, 0.8 * s));
+  cutRule(x + pad, fy, w - pad * 2, tc, 0.22);
 }
 
 function drawCardNote(x: number, y: number, w: number, h: number, r: number, pad: number, s: number, note: string) {
@@ -438,16 +346,8 @@ function drawCardEffects(c: CardEffectsView) {
     if (num > 0) {
       g.font = font(big, 800, FONT_UI);
       w2 = g.measureText(ns).width;
-      g.save();
-      g.lineJoin = 'round';
-      g.lineWidth = 3 * s;
-      g.strokeStyle = 'rgba(6,8,13,.85)';
-      g.strokeText(ns, x + pad + w1, yy);
-      g.shadowColor = withAlpha(col, 0.5);
-      g.shadowBlur = 9 * s;
       g.fillStyle = kind === 'junk' ? C.faint : col;
       g.fillText(ns, x + pad + w1, yy);
-      g.restore();
     }
     if (suf) {
       g.font = font(small, 400, FONT_UI);
@@ -457,7 +357,6 @@ function drawCardEffects(c: CardEffectsView) {
   };
   if (kind === 'junk') {
     effLine('无法打出', 0, '', ey, C.faint);
-    effLine('回合结束进弃牌堆', 0, '', ey + eh, C.faint);
   } else {
     // 逐行往下排，X 费牌的第三行不会压到上一行。
     let ly = ey;
@@ -466,10 +365,10 @@ function drawCardEffects(c: CardEffectsView) {
       // X 费牌的数字是每一点行动力的量，后缀写 ×X，串联是 ×2X。
       const suf = xc ? ` 点伤害 ×${many}X`
         : face.hits > 1 ? ` 点伤害 ×${many}` : ' 点伤害';
-      effLine('造成 ', per, suf, ly, C.numDmg);
+      effLine('', per, suf, ly, C.numDmg);
       ly += eh;
     }
-    if (face.blk > 0) { effLine('获得 ', face.blk, xc ? ' 点格挡 ×X' : ' 点格挡', ly, C.numBlk); ly += eh; }
+    if (face.blk > 0) { effLine('', face.blk, xc ? ' 点格挡 ×X' : ' 点格挡', ly, C.numBlk); ly += eh; }
     else if (face.pierce) { effLine('无视格挡', 0, '', ly, eff.color); ly += eh; }
     else if (face.healMax > 0) {
       // 「最多」按实际打进去的伤害算，被格挡的部分不回。
@@ -503,28 +402,16 @@ function drawCardEffects(c: CardEffectsView) {
   }
 }
 
-/** 手牌、奖励、牌组共用一种卡面；颜色按三类，不泄露知识归属。 */
-/**
- * 卡名下面那条短线。它是分隔符，不是装饰框 —— 所以从名字末端渐隐到透明，
- * 而不是画一条等宽的实线把卡面切两半。
- *
- * 完整卡面与 `choiceCard` 两处都要它。这段原先抄了两份，改一处忘另一处时
- * 两张卡的卡名会差半个像素的基线。
- */
 function drawNameUnderline(
   x: number, w: number, pad: number, s: number,
   nameLines: string[], by0: number, lh: number,
 ) {
   const nw = Math.max(40 * s, Math.min(w - pad * 2, g.measureText(nameLines[0] ?? '').width));
   const uy = by0 + (nameLines.length - 1) * lh + 9.5 * s;
-  const ug = g.createLinearGradient(x + pad, 0, x + pad + nw, 0);
-  ug.addColorStop(0, 'rgba(255,255,255,.32)');
-  ug.addColorStop(0.6, 'rgba(255,255,255,.1)');
-  ug.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = ug;
-  g.fillRect(x + pad, uy, nw, Math.max(1.6, 2 * s));
+  cutRule(x + pad, uy, nw, C.gold, 0.35);
 }
 
+/** 手牌、奖励、牌组共用一种卡面；颜色按三类，不泄露知识归属。 */
 export function drawCard(
   x: number, y: number, w: number, h: number,
   card: CardDef, out: EffOut, opts: CardOpts = {},
@@ -539,17 +426,13 @@ export function drawCard(
   // 卡面不再自己折算：调用方传的就是 planStrike 给结算用的同一份 EffOut。
   const face = effFace(out);
   const per = face.per;
-  const r = 12;
+  const r = 3;
 
   g.save();
-  drawCardFrame(x, y, w, h, r, tc, kind, opts);
-  drawCardWash(x, y, w, h, r, tc);
+  drawCardFrame(x, y, w, h, tc, opts);
 
   const pad = w * 0.09;
   const s = w / 220;
-
-  drawCardUnder(x, y, w, h, r, tc, kind);
-  drawCardTexture(x, y, w, h, r, card.id, tc, s);
 
   const xc = isXCost(card);
   const lh = 26 * s;
@@ -557,9 +440,9 @@ export function drawCard(
 
   drawCardHeader(x, y, w, s, pad, kind, typeMeta, eff, card, opts);
 
-  g.font = font(Math.round(21 * s), 700, FONT_UI);
+  g.font = font(Math.round(21 * s), 700, FONT_TITLE);
   const nameLines = kind === 'junk' ? ['杂念'] : wrapText(card.name, w - pad * 2).slice(0, 2);
-  const by0 = y + 76 * s;
+  const by0 = y + 71 * s;
 
   // 水印先于文字绘制；大小和位置按效果行剩余空间算。
   let ruleLines: string[] = [];
@@ -584,7 +467,7 @@ export function drawCard(
     kind === 'junk' ? 'junk' : eff.key,
     x + w * 0.5, textBot + room * 0.5, artS,
     kind === 'junk' ? C.faint : tc,
-    { alpha: kind === 'junk' ? 0.2 : 0.1 },
+    { alpha: kind === 'junk' ? 0.18 : 0.08 },
   );
 
   const bodyCol = kind === 'junk' ? C.faint : C.ink2;
@@ -618,123 +501,9 @@ export function drawCard(
   g.restore();
 }
 
-/** 增益徽记：与知识卡共用尺寸，配色排版不同，只出现在掉落面板。 */
-export function drawPowerEmblem(
-  x: number, y: number, w: number, h: number, p: PowerDef, opts: CardOpts,
-) {
-  const tc = p.color;
-  const r = 12;
-  const pad = w * 0.09;
-  const s = w / 220;
-
-  g.save();
-
-  // 投影
-  g.save();
-  g.shadowColor = opts.glow ? withAlpha(tc, 0.8) : 'rgba(0,0,0,.65)';
-  g.shadowBlur = opts.glow ? 34 : 16;
-  g.shadowOffsetY = 6;
-  roundRect(x, y, w, h, r);
-  g.fillStyle = '#0d1018';
-  g.fill();
-  g.restore();
-
-  roundRect(x, y, w, h, r);
-  const grd = g.createLinearGradient(x, y, x + w * 0.9, y + h);
-  grd.addColorStop(0, withAlpha(tc, 0.22));
-  grd.addColorStop(0.42, '#141110');
-  grd.addColorStop(1, '#0a0a0d');
-  g.fillStyle = grd;
-  g.fill();
-
-  // 斜纹只出现在增益徽记上。
-  g.save();
-  roundRect(x, y, w, h, r);
-  g.clip();
-  g.globalAlpha = 0.05;
-  g.strokeStyle = tc;
-  g.lineWidth = 10 * s;
-  for (let i = -h; i < w; i += 26 * s) {
-    g.beginPath();
-    g.moveTo(x + i, y + h);
-    g.lineTo(x + i + h, y);
-    g.stroke();
-  }
-  g.restore();
-
-  roundRect(x + 1.5, y + 1.5, w - 3, h - 3, r - 1);
-  g.strokeStyle = withAlpha(tc, opts.hovered ? 1 : 0.62);
-  g.lineWidth = opts.hovered ? 2 : 1.6;
-  g.stroke();
-
-  // 左上角回答「这个东西要花我什么」，这里是生效范围。
-  text('整局', x + pad, y + 30 * s, {
-    size: Math.round(13 * s), weight: 700, color: withAlpha(tc, 0.95),
-  });
-
-  // 右上角是类别标签，和知识卡的位置对齐。
-  g.font = font(Math.round(11 * s), 700, FONT_UI);
-  const lw = g.measureText('增益').width + 38 * s;
-  const bh = 18 * s;
-  const bx = x + w - pad - lw;
-  const by = y + 21 * s;
-  roundRect(bx, by, lw, bh, bh / 2);
-  g.fillStyle = withAlpha(tc, 0.2);
-  g.fill();
-  g.strokeStyle = withAlpha(tc, 0.72);
-  g.lineWidth = 1.2;
-  g.stroke();
-  text(p.icon, bx + 9 * s, by + bh / 2 + 0.5, {
-    size: Math.round(11 * s), weight: 800, align: 'center', color: tc,
-  });
-  text('增益', bx + 18 * s, by + bh / 2 + 0.5, {
-    size: Math.round(11 * s), align: 'left', color: tc, weight: 700,
-  });
-
-  // 字体先设再量行。
-  g.font = font(Math.round(22 * s), 700, FONT_UI);
-  const nameLines = wrapText(p.name, w - pad * 2).slice(0, 2);
-  const lh = 27 * s;
-  const by0 = y + 78 * s;
-  g.fillStyle = C.ink;
-  g.textAlign = 'left';
-  nameLines.forEach((ln, i) => g.fillText(ln, x + pad, by0 + i * lh));
-
-  drawNameUnderline(x, w, pad, s, nameLines, by0, lh);
-
-  // 效果文字居中于名字下沿和底部分隔线之间。
-  const bodyTop = by0 + nameLines.length * lh + 12 * s;
-  const bodyBot = y + h - 64 * s;
-  g.font = font(Math.round(14 * s), 400, FONT_UI);
-  g.fillStyle = C.ink2;
-  const lineH = 22 * s;
-  const lines = wrapText(p.card, w - pad * 2);
-  const off = Math.max(0, (bodyBot - bodyTop - lines.length * lineH) / 2);
-  lines.forEach((ln, i) => {
-    g.fillText(ln, x + pad, bodyTop + off + 14 * s + i * lineH);
-  });
-
-  // 底部写生效时机，这是增益徽记和知识卡的行为差别。
-  const py = y + h - 30 * s;
-  g.beginPath();
-  g.moveTo(x + pad, py - 14 * s);
-  g.lineTo(x + w - pad, py - 14 * s);
-  g.strokeStyle = withAlpha(tc, 0.22);
-  g.lineWidth = 1;
-  g.stroke();
-  text('拾取即生效 · 整局', x + w / 2, py, {
-    size: Math.round(11 * s), align: 'center', color: withAlpha(tc, 0.9), weight: 600,
-  });
-
-  if (opts.note) {
-    text(opts.note, x + w / 2, y + h + 18, { size: 14, align: 'center', color: C.dim });
-  }
-  g.restore();
-}
-
 /** 三选一用的目录卡：序号 + 徽记 + 标题 + 说明 + 底部事实行 + 动作提示。 */
 export interface ChoiceCardOpts {
-  /** 身份色：顶光条、边框、徽记、hover 辉光全从它派生 */
+  /** 身份色：刻线、边框和徽记。 */
   color: string;
   /** 左上角序号，读成"目录里的第几条" */
   tag: string;
@@ -755,83 +524,37 @@ export interface ChoiceCardOpts {
 }
 
 /**
- * 目录卡：和知识卡、增益徽记共用一套语言 —— 身份色洗底、顶光条、标题下细线、
- * 底部一条分隔线收住事实。三张卡的说明行数可以不同，但事实行是固定锚点，
- * 底边始终对齐；否则第一张写三行、后两张写两行，横着看就是三条不齐的底线。
+ * 三张卡的说明行数可以不同，但事实行用同一锚点，底边始终对齐。
  */
 export function choiceCard(x: number, y: number, w: number, h: number, o: ChoiceCardOpts) {
   const pad = 30;
-  const r = 14;
   g.save();
   // 抬升只动画，不动命中矩形：鼠标停在原处时卡不会自己跑开再回来
-  if (o.hovered) g.translate(0, -7);
+  if (o.hovered && !reduceMotion()) g.translate(0, pointer.down ? -3 : -7);
 
-  g.save();
-  g.shadowColor = o.hovered ? withAlpha(o.color, 0.72) : 'rgba(0,0,0,.6)';
-  g.shadowBlur = o.hovered ? 32 : 14;
-  g.shadowOffsetY = 6;
-  roundRect(x, y, w, h, r);
-  g.fillStyle = '#0c0f16';
-  g.fill();
-  g.restore();
-
-  roundRect(x, y, w, h, r);
-  const bg = g.createLinearGradient(x, y, x + w * 0.8, y + h);
-  bg.addColorStop(0, withAlpha(o.color, o.hovered ? 0.22 : 0.15));
-  bg.addColorStop(0.55, '#111520');
-  bg.addColorStop(1, '#0a0c11');
-  g.fillStyle = bg;
-  g.fill();
-
-  g.save();
-  roundRect(x, y, w, h, r);
-  g.clip();
-  const bar = g.createLinearGradient(x, 0, x + w, 0);
-  bar.addColorStop(0, withAlpha(o.color, 0.1));
-  bar.addColorStop(0.5, withAlpha(o.color, o.hovered ? 1 : 0.7));
-  bar.addColorStop(1, withAlpha(o.color, 0.1));
-  g.fillStyle = bar;
-  g.fillRect(x, y, w, 3);
-  g.restore();
-
-  roundRect(x + 1.5, y + 1.5, w - 3, h - 3, r - 1);
-  g.strokeStyle = withAlpha(o.color, o.hovered ? 0.9 : 0.34);
-  g.lineWidth = o.hovered ? 2 : 1.4;
-  g.stroke();
+  panel(x, y, w, h, {
+    accent: o.color, fill: o.hovered ? C.panelHi : PRESS.sheet,
+    stroke: withAlpha(o.color, o.hovered ? 0.95 : 0.48),
+  });
 
   text(o.tag, x + pad, y + 42, { size: 12, weight: 700, color: withAlpha(o.color, 0.72) });
 
   // 徽记和增益徽记右上角那个标签同一个位置：玩家已经学会"右上角是身份"
   const mx = x + w - pad - 16;
   const my = y + 38;
-  g.beginPath();
-  g.arc(mx, my, 17, 0, Math.PI * 2);
-  g.fillStyle = withAlpha(o.color, o.hovered ? 0.26 : 0.14);
-  g.fill();
-  g.strokeStyle = withAlpha(o.color, o.hovered ? 0.8 : 0.45);
-  g.lineWidth = 1.2;
-  g.stroke();
+  panel(mx - 17, my - 17, 34, 34, { r: 1, fill: withAlpha(o.color, 0.14), stroke: o.color });
   text(o.mark, mx, my + 1, {
     size: 19, weight: 700, align: 'center', family: FONT_TITLE, color: o.color,
   });
 
-  const sep = g.createLinearGradient(x + pad, 0, x + w - pad, 0);
-  sep.addColorStop(0, withAlpha(o.color, 0.42));
-  sep.addColorStop(1, withAlpha(o.color, 0));
-  g.fillStyle = sep;
-  g.fillRect(x + pad, y + 60, w - pad * 2, 1.4);
+  cutRule(x + pad, y + 60, w - pad * 2, o.color, 0.44);
 
   text(o.title, x + pad, y + 106, {
     size: 27, weight: 700, family: FONT_TITLE, color: C.ink,
   });
-  // 标题下的细线按实测字宽收尾，和首页标题那条渐隐金线同一种收法
   g.font = font(27, 700, FONT_TITLE);
   const tw = Math.min(w - pad * 2 - 40, g.measureText(o.title).width);
-  const ul = g.createLinearGradient(x + pad, 0, x + pad + tw + 40, 0);
-  ul.addColorStop(0, withAlpha(o.color, o.hovered ? 0.95 : 0.62));
-  ul.addColorStop(1, withAlpha(o.color, 0));
-  g.fillStyle = ul;
-  g.fillRect(x + pad, y + 118, tw + 40, 2);
+  cutRule(x + pad, y + 118, tw + 14, o.color, o.hovered ? 0.84 : 0.44);
 
   g.font = font(13, 400, FONT_UI);
   g.fillStyle = C.ink2;
@@ -845,11 +568,7 @@ export function choiceCard(x: number, y: number, w: number, h: number, o: Choice
   });
 
   const fy = y + h - 92;
-  const fs = g.createLinearGradient(x + pad, 0, x + w - pad, 0);
-  fs.addColorStop(0, withAlpha(o.color, 0.22));
-  fs.addColorStop(1, withAlpha(o.color, 0.04));
-  g.fillStyle = fs;
-  g.fillRect(x + pad, fy, w - pad * 2, 1);
+  cutRule(x + pad, fy, w - pad * 2, o.color, 0.26);
 
   text(o.factLabel, x + pad, fy + 24, { size: 11, weight: 700, color: C.faint });
   text(o.fact, x + pad, fy + 48, {
@@ -864,130 +583,13 @@ export function choiceCard(x: number, y: number, w: number, h: number, o: Choice
   g.restore();
 }
 
-/* ── 图标（emoji 跨系统不稳定，一律手画） ─────────────────── */
+const HUD_ICONS = {
+  attack: 'strike', shield: 'guard', junk: 'disrupt', buff: 'power', check: 'check',
+  heart: 'heart', flame: 'flame', cards: 'cards', discard: 'discard', turn: 'turn', floor: 'floor',
+} as const;
 
-export type IconName =
-  | 'attack' | 'shield' | 'junk' | 'buff' | 'check'
-  | 'heart' | 'flame' | 'cards' | 'discard' | 'turn' | 'floor';
+export type IconName = keyof typeof HUD_ICONS;
 
 export function icon(name: IconName, cx: number, cy: number, s: number, col: string) {
-  g.save();
-  g.strokeStyle = col;
-  g.fillStyle = col;
-  g.lineWidth = Math.max(1.6, s * 0.16);
-  g.lineCap = 'round';
-  g.lineJoin = 'round';
-
-  if (name === 'attack') {
-    // 竖剑在小尺寸下像加号，改用实心矛头。
-    g.beginPath();
-    g.moveTo(cx, cy + s * 0.68);
-    g.lineTo(cx - s * 0.44, cy - s * 0.34);
-    g.lineTo(cx, cy - s * 0.08);
-    g.lineTo(cx + s * 0.44, cy - s * 0.34);
-    g.closePath();
-    g.fill();
-    g.beginPath();
-    g.moveTo(cx, cy - s * 0.34);
-    g.lineTo(cx, cy - s * 0.62);
-    g.stroke();
-  } else if (name === 'shield') {
-    g.beginPath();
-    g.moveTo(cx, cy - s * 0.75);
-    g.lineTo(cx + s * 0.62, cy - s * 0.42);
-    g.lineTo(cx + s * 0.52, cy + s * 0.3);
-    g.quadraticCurveTo(cx, cy + s * 0.85, cx - s * 0.52, cy + s * 0.3);
-    g.lineTo(cx - s * 0.62, cy - s * 0.42);
-    g.closePath();
-    g.stroke();
-    // 中脊给盾立体感。
-    g.beginPath();
-    g.moveTo(cx, cy - s * 0.7);
-    g.lineTo(cx, cy + s * 0.72);
-    g.stroke();
-  } else if (name === 'heart') {
-    // 描边心在小尺寸下像圆，生命图标用实心。
-    g.beginPath();
-    g.moveTo(cx, cy + s * 0.72);
-    g.bezierCurveTo(cx - s * 1.05, cy - s * 0.05, cx - s * 0.62, cy - s * 0.82, cx, cy - s * 0.28);
-    g.bezierCurveTo(cx + s * 0.62, cy - s * 0.82, cx + s * 1.05, cy - s * 0.05, cx, cy + s * 0.72);
-    g.closePath();
-    g.fill();
-  } else if (name === 'flame') {
-    // 火苗外焰实心、内焰留白。
-    g.beginPath();
-    g.moveTo(cx, cy + s * 0.75);
-    g.bezierCurveTo(cx - s * 0.72, cy + s * 0.45, cx - s * 0.5, cy - s * 0.25, cx + s * 0.02, cy - s * 0.78);
-    g.bezierCurveTo(cx + s * 0.1, cy - s * 0.3, cx + s * 0.3, cy - s * 0.2, cx + s * 0.48, cy + s * 0.05);
-    g.bezierCurveTo(cx + s * 0.68, cy + s * 0.35, cx + s * 0.55, cy + s * 0.62, cx, cy + s * 0.75);
-    g.closePath();
-    g.fill();
-  } else if (name === 'cards') {
-    // 后一张斜垫、前一张立着，读出牌堆的叠。
-    roundRect(cx - s * 0.05, cy - s * 0.62, s * 0.82, s * 1.15, s * 0.12);
-    g.stroke();
-    g.beginPath();
-    g.moveTo(cx - s * 0.32, cy - s * 0.42);
-    g.lineTo(cx - s * 0.5, cy - s * 0.32);
-    g.lineTo(cx - s * 0.28, cy + s * 0.72);
-    g.stroke();
-  } else if (name === 'discard') {
-    // 弃牌：一张卡落进托盘：箭头朝下插进槽里
-    g.beginPath();
-    g.moveTo(cx - s * 0.55, cy + s * 0.05);
-    g.lineTo(cx - s * 0.55, cy + s * 0.6);
-    g.lineTo(cx + s * 0.55, cy + s * 0.6);
-    g.lineTo(cx + s * 0.55, cy + s * 0.05);
-    g.stroke();
-    g.beginPath();
-    g.moveTo(cx, cy - s * 0.72);
-    g.lineTo(cx, cy + s * 0.18);
-    g.moveTo(cx - s * 0.3, cy - s * 0.12);
-    g.lineTo(cx, cy + s * 0.2);
-    g.lineTo(cx + s * 0.3, cy - s * 0.12);
-    g.stroke();
-  } else if (name === 'turn') {
-    // 沙漏：上宽下宽中间收腰，两条横梁压住："这一回合的时间"
-    g.beginPath();
-    g.moveTo(cx - s * 0.5, cy - s * 0.62);
-    g.lineTo(cx + s * 0.5, cy - s * 0.62);
-    g.lineTo(cx + s * 0.08, cy + s * 0.05);
-    g.lineTo(cx + s * 0.5, cy + s * 0.68);
-    g.lineTo(cx - s * 0.5, cy + s * 0.68);
-    g.lineTo(cx - s * 0.08, cy + s * 0.05);
-    g.closePath();
-    g.stroke();
-  } else if (name === 'floor') {
-    // 楼层：三条渐窄的横线叠起来：往下走的层
-    g.beginPath();
-    g.moveTo(cx - s * 0.55, cy - s * 0.42);
-    g.lineTo(cx + s * 0.55, cy - s * 0.42);
-    g.moveTo(cx - s * 0.38, cy + s * 0.02);
-    g.lineTo(cx + s * 0.38, cy + s * 0.02);
-    g.moveTo(cx - s * 0.2, cy + s * 0.46);
-    g.lineTo(cx + s * 0.2, cy + s * 0.46);
-    g.stroke();
-  } else if (name === 'junk') {
-    g.beginPath();
-    g.moveTo(cx - s * 0.4, cy - s * 0.4);
-    g.lineTo(cx + s * 0.4, cy + s * 0.4);
-    g.moveTo(cx + s * 0.4, cy - s * 0.4);
-    g.lineTo(cx - s * 0.4, cy + s * 0.4);
-    g.stroke();
-  } else if (name === 'buff') {
-    g.beginPath();
-    g.moveTo(cx, cy + s * 0.55);
-    g.lineTo(cx, cy - s * 0.55);
-    g.moveTo(cx - s * 0.38, cy - s * 0.12);
-    g.lineTo(cx, cy - s * 0.58);
-    g.lineTo(cx + s * 0.38, cy - s * 0.12);
-    g.stroke();
-  } else {
-    g.beginPath();
-    g.moveTo(cx - s * 0.45, cy + s * 0.02);
-    g.lineTo(cx - s * 0.08, cy + s * 0.42);
-    g.lineTo(cx + s * 0.5, cy - s * 0.42);
-    g.stroke();
-  }
-  g.restore();
+  drawArtIcon(HUD_ICONS[name], cx, cy, s * 1.65, col);
 }

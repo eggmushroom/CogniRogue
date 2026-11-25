@@ -11,7 +11,7 @@ import { planStrike } from '../core/combat/strike';
 import { ackPower, saveRun } from '../core/journey';
 import { EFFS } from '../core/model';
 import type { Feedback } from '../core/model';
-import { DISCARD_TO, ENEMY, ENEMY_GROUND, fxCount, handSettled, HERO, heroHand } from '../scenes/battle';
+import { DISCARD_TO, ENEMY, enemyHand, fxCount, handSettled, HERO, heroHand } from '../scenes/battle';
 import { mapCam } from '../scenes/map';
 import { quizFrame } from '../scenes/overlay';
 /* 这些是 main.ts 的时钟 / 锁状态，dev 模块只通过 hooks 读写，不反向依赖组合根。 */
@@ -19,9 +19,9 @@ export interface CogHooks {
   holdPanel(sec: number): void;
   holdEnemy(sec: number): void;
   setQuizHold(sec: number): void;
-  setAutoHold(on: boolean): void;
-  quizClock(): { settling: boolean; reveal: number; autoIn: number; autoPaused: boolean };
+  quizClock(): { settling: boolean; reveal: number };
   locked(): boolean;
+  victoryProgress(): number | null;
 }
 
 declare global {
@@ -53,7 +53,9 @@ declare global {
       /** 调试/截图用：把当前这一局写成断点（首页「继续这一局」的那条存档） */
       save: () => void;
       /** 调试/自动化用：还在飞的单元数（抽牌 / 弃牌 / 敌人动作），用来盯"飞行单元漏清" */
-      fx: () => { hand: number; discard: number; enemy: number };
+      fx: () => ReturnType<typeof fxCount> & { enemy: number };
+      guardPose: () => { hero: number; enemy: number };
+      wards: () => { hero: number; enemy: number };
       /** 调试/自动化用：这张卡此刻的实际费用（X 费牌 = 当前行动力） */
       costOf: (id: string) => number;
       /** 冒烟测试用：单独演一次敌人动作，不改任何数值。taken=0 演"被全挡下" */
@@ -62,18 +64,20 @@ declare global {
       endTurn: () => void;
       /** 输入是不是正被演出锁住：冒烟测试靠它等敌人这一下演完 */
       locked: () => boolean;
-      /** 答题面板：阶段 / 几何 / 自动推进倒计时。用来验"没有闪断、没有换框" */
+      victory: () => { striking: boolean; exit: number | null };
+      /** 答题面板的几何、翻牌阶段和解析状态。 */
       quiz: () => {
         phase: string; settling: boolean; drawn: boolean; reveal: number;
+        entry: ReturnType<typeof quizFrame>['entry'];
+        flipAt?: ReturnType<typeof quizFrame>['flipAt'];
+        optionBottom?: number;
         geom: { x: number; y: number; w: number; h: number };
-        autoIn: number; autoPaused: boolean;
+        review?: ReturnType<typeof quizFrame>['review'];
       };
       /** 最近一次判定的结果。答对不再弹面板，测试要验"打了几段"只能从这里读 */
       lastAnswer: () => Feedback | null;
       /** 截图 / 回归用：把判定演出拉长，好把"面板没消失"这一帧拍下来 */
       holdQuiz: (sec: number) => void;
-      /** 截图/回归用：停掉软自动推进，否则 4.2s 后判定面板会自己收掉 */
-      pauseAuto: (on?: boolean) => void;
       /** 联动的战场记账 + 四张联动卡此刻每段打出的伤害，给回归测试验因果 */
       links: () => {
         drawn: number; block: number; plays: Record<string, number>;
@@ -94,9 +98,10 @@ export function installCog(hooks: CogHooks) {
     lastClick: lastClickInfo,
     toScreen,
     strike: (kind = 'strike', target: 'enemy' | 'hero' = 'enemy') => {
+      const follow = target === 'enemy' ? heroHand : enemyHand;
       FX.attack({
-        from: target === 'enemy' ? heroHand() : { x: ENEMY.x, y: ENEMY.y },
-        follow: target === 'enemy' ? heroHand : undefined,
+        from: follow(),
+        follow,
         to: target === 'enemy' ? { x: ENEMY.x, y: ENEMY.y } : { x: HERO.x, y: HERO.y - 10 },
         color: target === 'enemy' ? EFFS[kind].color : C.red,
         kind, dmg: 9, target,
@@ -109,6 +114,8 @@ export function installCog(hooks: CogHooks) {
     ackPower: () => ackPower(),
     costOf: (id: string) => costNow(defOf(id)),
     fx: () => ({ ...fxCount(), enemy: FX.enemyActCount() }),
+    guardPose: () => ({ hero: FX.heroGuard(), enemy: FX.enemyGuard() }),
+    wards: () => ({ hero: FX.wardPower('hero'), enemy: FX.wardPower('enemy') }),
     enemyAct: (k: FX.EnemyActKind = 'atk', taken = 9) => {
       const from = { x: ENEMY.x, y: ENEMY.y };
       const to = { x: HERO.x, y: HERO.y };
@@ -116,34 +123,38 @@ export function installCog(hooks: CogHooks) {
       if (k === 'atk') {
         const absorbed = taken === 0 ? 12 : 0;
         const dur = FX.enemyStrike({
-          n: taken, absorbed, seq: 0, times: 1, totalAbsorbed: absorbed, from, to,
+          n: taken, absorbed, seq: 0, times: 1, totalAbsorbed: absorbed, from, to, follow: enemyHand,
         });
         hooks.holdEnemy(dur);
         return;
       }
       const n = k === 'jam' ? 2 : k === 'def' ? 12 : k === 'buff' ? 2 : 12;
       const dur = FX.enemyAct({
-        k, n, from, to, discard: DISCARD_TO, ground: ENEMY_GROUND,
+        k, n, from, to, discard: DISCARD_TO,
       });
       hooks.holdEnemy(dur);
     },
     endTurn: () => endTurn(),
     locked: () => hooks.locked(),
+    victory: () => ({ striking: FX.playerStrikeActive(), exit: hooks.victoryProgress() }),
     quiz: () => {
       const clock = hooks.quizClock();
       return {
         phase: G.panel.k === 'feedback' ? (clock.settling ? 'settle' : 'result')
           : G.panel.k === 'question' ? 'ask' : 'idle',
         settling: clock.settling,
+        entry: quizFrame().entry,
+        flipAt: quizFrame().flipAt,
+        optionBottom: quizFrame().optionBottom,
         drawn: quizFrame().drawn,
+        manual: quizFrame().manual ?? false,
         reveal: clock.reveal,
         geom: { ...quizFrame().geom },
-        autoIn: clock.autoIn, autoPaused: clock.autoPaused,
+        review: quizFrame().review,
       };
     },
     lastAnswer: () => lastFeedback(),
     holdQuiz: (sec: number) => hooks.setQuizHold(sec),
-    pauseAuto: (on = true) => hooks.setAutoHold(on),
     links: () => ({
       drawn: G.drawnThisTurn,
       block: G.block,

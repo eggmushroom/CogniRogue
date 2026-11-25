@@ -1,6 +1,8 @@
 import { g } from './canvas';
-import { C, font, FONT_NUM, withAlpha } from './theme';
+import { C, font, FONT_NUM, PRESS, PRINT, withAlpha } from './theme';
 import { roll } from '../core/infra/util';
+import { drawArtIcon } from './art/icons';
+import { reduceMotion } from './motion';
 
 /**
  * 表现层的"后果"。逻辑层只发事件，怎么演由这里决定：
@@ -10,7 +12,7 @@ import { roll } from '../core/infra/util';
 interface Particle {
   x: number; y: number; vx: number; vy: number;
   life: number; max: number; size: number;
-  color: string; grav: number; drag: number; shape: 'dot' | 'spark' | 'ring';
+  color: string; grav: number; drag: number; shape: 'chip' | 'spark' | 'ring' | 'shield';
   /** 细线环：默认环是 3–8px 的粗圈，护盾类演出用 1px 才不抢画面。 */
   thin?: boolean;
 }
@@ -81,7 +83,7 @@ export function burst(
       color,
       grav: opts.grav ?? 420,
       drag: 0.92,
-      shape: roll() <= 30 ? 'spark' : 'dot',
+      shape: roll() <= 30 ? 'spark' : 'chip',
     });
   }
 }
@@ -97,6 +99,12 @@ export function ring(
 
 export function slash(x: number, y: number, angle: number, color = '#fff6e0', len = 260) {
   slashes.push({ x, y, angle, life: 0.26, max: 0.26, len, color, width: 10 });
+}
+
+function shieldPrint(x: number, y: number, size: number) {
+  if (particles.length >= MAX_P) return;
+  particles.push({ x, y, vx: 0, vy: 0, life: 0.44, max: 0.44, size,
+    color: PRINT.ward, grav: 0, drag: 1, shape: 'shield' });
 }
 
 /* ── 打击 ── */
@@ -140,11 +148,33 @@ let eKnock = 0;
 let hKnock = 0;
 let eFlash = 0;
 let hFlash = 0;
-/** 提灯熄灭的倒计时。答错时点亮 0.34s，灯焰在这个区间里暗下去再回来 */
+let heroGuardT = 9;
+let enemyGuardT = 9;
+const ward = { hero: 0, enemy: 0 };
+const WARD_TARGETS = ['hero', 'enemy'] as const;
+export const resetWards = () => { ward.hero = 0; ward.enemy = 0; };
+
+export function updateWards(dt: number, hero: boolean, enemy: boolean) {
+  const instant = reduceMotion();
+  for (const target of WARD_TARGETS) {
+    // Rules can clear block before the projectile lands. Keep the ward through the last absorbing hit.
+    const holding = (target === 'hero' ? hero : enemy)
+      || (!instant && strikes.some((s) => s.target === target && s.absorbed > 0 && !s.landed));
+    if (instant) ward[target] = Number(holding);
+    else if (holding) ward[target] = Math.min(1, ward[target] + dt / 0.14);
+    else ward[target] = Math.max(0, ward[target] - dt / 0.32);
+  }
+}
+
+export function wardPower(target: keyof typeof ward) {
+  const k = ward[target];
+  return k * k * (3 - 2 * k);
+}
+/** 火星落地后刀锋才恢复亮色。 */
 let lampDimT = 0;
 const LAMP_DIM = 0.34;
 
-/** 提灯此刻暗了多少（0 = 正常，1 = 快灭了）。画提灯的地方拿它调亮度和半径。 */
+/** 答错时暂时压暗随武器出手的光。 */
 export function lampDim(): number {
   return Math.max(0, Math.min(1, lampDimT / LAMP_DIM));
 }
@@ -185,9 +215,29 @@ export function enemyLunge(): number {
 /** 被击退的余量，0..1 */
 export const enemyRecoil = () => eKnock;
 export const heroRecoil = () => hKnock;
+/** 飞刃拖尾和命中高光消退后，才让敌人退场；飘字与粒子可以自然收尾。 */
+export const playerStrikeActive = () => eFlash > 0 || strikes.some((s) => s.target === 'enemy');
 /** 命中瞬间的高光，卡面/立绘用来闪一下 */
 export const enemyFlash = () => eFlash;
 export const heroFlash = () => hFlash;
+
+const GUARD_DUR = 0.52;
+
+function guardPose(t: number, power: number, lunge: number) {
+  const rest = power * 0.32 * (1 - Math.max(0, lunge));
+  if (t >= GUARD_DUR) return rest;
+  const raise = Math.min(1, t / 0.09);
+  const lower = Math.min(1, (GUARD_DUR - t) / 0.23);
+  return rest + (1 - rest) * raise * lower;
+}
+
+export const heroGuard = () => guardPose(heroGuardT, wardPower('hero'), heroLunge());
+export const enemyGuard = () => guardPose(enemyGuardT, wardPower('enemy'), enemyLunge());
+
+export function heroBlock(at: Vec, n: number, showFx: boolean) {
+  heroGuardT = 0;
+  if (showFx) gainBlock(at.x, at.y, n);
+}
 
 /**
  * 一次打击。dmg 只用于飘字，敌人的血量在逻辑层已经扣过了：
@@ -224,7 +274,7 @@ export function attack(o: {
     target,
     kind,
     // 每条弧线抬的高度不一样，两段伤害才不会叠成一条
-    arc: (kind === 'chain' ? 150 : 110) + Math.random() * 60,
+    arc: kind === 'chain' ? 82 + (o.seq ?? 0) % 3 * 32 : target === 'hero' ? 72 : 118,
     seq: o.seq ?? 0,
     blocked: o.blocked ?? false,
   });
@@ -257,29 +307,34 @@ function bezPath(s: Strike, u: number): Vec {
 function land(s: Strike) {
   const { x, y } = s.b;
   if (s.target === 'enemy') {
-    eKnock = 1;
-    eFlash = 1;
-    slash(x, y, -Math.PI / 3 + (Math.random() - 0.5) * 0.7, '#fff6e2', 250);
-    slash(x, y - 16, Math.PI / 3 + (Math.random() - 0.5) * 0.7, s.color, 210);
-    burst(x, y, s.color, 20, { speed: 440, size: 6 });
-    burst(x, y, '#fff4d6', 12, { speed: 230, size: 3 });
-    ring(x, y, withAlpha(s.color, 0.6), 130, 0.34);
-    star(x, y, s.color);
-    shake(9);
+    const stopped = s.absorbed > 0 && s.dmg === 0;
+    if (s.absorbed > 0) {
+      enemyGuardT = 0.07;
+      shieldPrint(x, y, 132);
+    }
+    eKnock = stopped ? 0.28 : 1;
+    eFlash = stopped ? 0 : 1;
+    slash(x, y, s.seq % 2 ? Math.PI / 3 : -Math.PI / 3, stopped ? PRINT.ward : PRINT.parchment, stopped ? 105 : 165);
+    burst(x, y, stopped ? PRINT.ward : s.color, 15, { speed: 295, size: 4.5, grav: 280 });
+    if (!stopped) burst(x, y, PRINT.parchment, 6, { speed: 210, size: 3, grav: 240 });
+    shake(stopped ? 3 : 7);
     floatText(x + 30 + s.seq * 34, y - 60 - s.seq * 46, String(s.dmg), '#fff0c2', 66, { vy: -110 });
     if (s.absorbed > 0) floatText(x - 90, y + 30, `-${s.absorbed} 格挡`, C.blue, 34, { vy: -60, weight: 600 });
   } else if (s.blocked) {
     // 敌人确实出手了，但被格挡全接住。这里必须演"撞在盾上"而不是"挨了一下"：
     // 否则玩家叠了半天挡，画面上却什么都不发生，会以为这次格挡白叠了。
     hKnock = 0.32;
-    // 与获得格挡同一套细线护封：两道 1px 蓝环，不再是一圈 8px 粗的荧光盾圈。
-    ring(x, y, withAlpha(C.blue, 0.45), 132, 0.4, true);
-    ring(x, y, withAlpha(C.blue, 0.22), 168, 0.52, true);
+    heroGuardT = 0.07;
+    shieldPrint(x, y, 178);
     burst(x, y, C.blue, 10, { speed: 200, size: 3 });
     slash(x, y, -Math.PI / 4, withAlpha(C.blue, 0.6), 180);
     shake(5);
     floatText(x, y - 40, '全挡下', C.blue, 38, { vy: -70, weight: 700 });
   } else {
+    if (s.absorbed > 0) {
+      heroGuardT = 0.07;
+      shieldPrint(x + 38, y, 132);
+    }
     hKnock = 1;
     hFlash = 1;
     burst(x, y, C.red, 26, { speed: 380, size: 6 });
@@ -297,13 +352,10 @@ function star(x: number, y: number, color: string) {
 
 /* ── 语义化特效 ───────────────────────────────────────────── */
 
-export function gainBlock(x: number, y: number, n: number) {
-  // 旧版是一圈 8px 粗的荧光蓝大环 + 14 颗四散粒子，跟细金线的档案馆语言完全两套。
-  // 现在只留两道 1px 细环慢慢张开、少量微屑和读数；数值主要看状态牌上的盾徽章。
-  ring(x, y, withAlpha(C.blue, 0.38), 92, 0.42, true);
-  ring(x, y, withAlpha(C.blue, 0.2), 128, 0.55, true);
-  burst(x, y + 40, C.blue, 8, { speed: 90, size: 2.5, grav: -60, life: 0.5 });
-  floatText(x, y - 46, `+${n}`, C.blue, 32, { vy: -58, weight: 600 });
+function gainBlock(x: number, y: number, n: number) {
+  shieldPrint(x, y, 132);
+  burst(x, y + 22, PRINT.ward, 7, { speed: 85, size: 3, grav: 105, life: 0.38 });
+  floatText(x, y - 46, `+${n}`, PRINT.ward, 32, { vy: -58, weight: 600 });
 }
 
 export function heal(x: number, y: number, n: number) {
@@ -330,8 +382,6 @@ interface Debris {
 const debris: Debris[] = [];
 let poseKind: EnemyActKind = 'atk';
 let poseAt: Vec = { x: 0, y: 0 };
-/** 这次动作发生在哪一片地面上：护盾类的演出贴地，不绕身体转圈。 */
-let poseGround: Vec = { x: 0, y: 0 };
 let poseT = 9;
 const POSE_DUR = 0.62;
 
@@ -357,8 +407,6 @@ export interface EnemyActSpec {
   from: Vec;
   to: Vec;
   discard: Vec;
-  /** 敌人脚下的地面（护盾演出贴地画）。缺省就退回 from。 */
-  ground?: Vec;
 }
 
 /**
@@ -367,20 +415,21 @@ export interface EnemyActSpec {
  */
 export function enemyStrike(o: {
   n: number; absorbed: number; seq: number; times: number; totalAbsorbed: number;
-  from: Vec; to: Vec;
+  from: Vec; to: Vec; follow: () => Vec;
 }): number {
   poseKind = 'atk';
   poseAt = { ...o.from };
-  poseGround = { ...o.from };
   poseT = 0;
   // 扣血为 0 但确实有格挡吸收，才是"全挡下"；伤害本来就 0 的情况不算。
   const blocked = o.n === 0 && o.absorbed > 0;
   attack({
-    from: { x: o.from.x - 30, y: o.from.y + (Math.random() - 0.5) * 70 },
-    to: { x: o.to.x + (Math.random() - 0.5) * 40, y: o.to.y - 10 },
-    color: blocked ? C.blue : C.red,
+    from: o.follow(),
+    follow: o.follow,
+    to: { x: o.to.x + (blocked ? 58 : 0) + (Math.random() - 0.5) * 30, y: o.to.y - 10 },
+    color: blocked ? PRINT.ward : PRINT.cord,
     kind: 'strike',
     dmg: Math.max(1, o.n),
+    absorbed: o.absorbed,
     target: 'hero',
     seq: o.seq,
     blocked,
@@ -395,18 +444,12 @@ export function enemyStrike(o: {
 export function enemyAct(o: EnemyActSpec): number {
   poseKind = o.k;
   poseAt = { ...o.from };
-  poseGround = { ...(o.ground ?? o.from) };
   poseT = 0;
   const { from } = o;
 
   if (o.k === 'def') {
-    // 读数与两层细环都落在脚下：和常驻的地面封环同一套语言。
-    // 以前画在身体上，和封环叠起来像给敌人套了个蛋壳。
-    const gx = poseGround.x;
-    const gy = poseGround.y;
-    gainBlock(gx, gy, o.n);
-    // 从地面升起来的一层蓝雾：护甲是"裹上去"的，不是凭空多个数字
-    burst(gx, gy - 10, C.blue, 24, { speed: 120, size: 5, grav: -190, life: 0.7 });
+    enemyGuardT = 0;
+    gainBlock(from.x - 128, from.y - 14, o.n);
     return 0.55;
   }
 
@@ -458,7 +501,7 @@ export function update(dt: number) {
   for (let i = strikes.length - 1; i >= 0; i--) {
     const s = strikes[i];
     s.t += dt;
-    if (s.follow) s.a = s.follow();
+    if (s.follow && !s.landed) s.a = s.follow();
     if (!s.landed && s.t >= s.fly) { s.landed = true; land(s); }
     if (s.t > s.fly + 0.26) strikes.splice(i, 1);
   }
@@ -478,6 +521,8 @@ export function update(dt: number) {
   poseT = Math.min(9, poseT + dt);
   lungeT = Math.min(9, lungeT + dt);
   eLungeT = Math.min(9, eLungeT + dt);
+  heroGuardT = Math.min(9, heroGuardT + dt);
+  enemyGuardT = Math.min(9, enemyGuardT + dt);
   lampDimT = Math.max(0, lampDimT - dt);
   eKnock = Math.max(0, eKnock - dt * 4.2);
   hKnock = Math.max(0, hKnock - dt * 4.2);
@@ -504,13 +549,13 @@ export function update(dt: number) {
 }
 
 export function shakeOffset() {
-  if (shakeAmp <= 0) return { x: 0, y: 0 };
+  if (shakeAmp <= 0 || reduceMotion()) return { x: 0, y: 0 };
   const a = shakeAmp;
   return { x: (Math.random() - 0.5) * a * 2, y: (Math.random() - 0.5) * a * 2 };
 }
 
 export function drawFlash() {
-  if (flashA <= 0) return;
+  if (flashA <= 0 || reduceMotion()) return;
   g.save();
   g.globalAlpha = flashA;
   g.fillStyle = flashColor;
@@ -535,7 +580,7 @@ function drawStrike(s: Strike) {
   const pts: Vec[] = [];
   for (let i = 0; i <= N; i++) pts.push(bezPath(s, tail + (head - tail) * (i / N)));
 
-  const wmax = s.kind === 'pierce' ? 14 : s.kind === 'guard' ? 34 : 26;
+  const wmax = s.kind === 'pierce' ? 9 : s.target === 'hero' ? 36 : 30;
   const left: Vec[] = [];
   const right: Vec[] = [];
   for (let i = 0; i <= N; i++) {
@@ -547,7 +592,9 @@ function drawStrike(s: Strike) {
     const len = Math.hypot(dx, dy) || 1;
     dx /= len;
     dy /= len;
-    const w = (wmax * Math.pow(i / N, 0.7)) / 2;
+    // Taper both ends so the motion reads as a cut, not a moving bar.
+    const u = i / N;
+    const w = wmax * Math.pow(Math.sin(u * Math.PI), 0.85) * (0.24 + u * 0.76);
     left.push({ x: q.x - dy * w, y: q.y + dx * w });
     right.push({ x: q.x + dy * w, y: q.y - dx * w });
   }
@@ -556,8 +603,8 @@ function drawStrike(s: Strike) {
   const a1 = pts[N];
   const grd = g.createLinearGradient(a0.x, a0.y, a1.x, a1.y);
   grd.addColorStop(0, withAlpha(s.color, 0));
-  grd.addColorStop(0.45, withAlpha(s.color, 0.8 * fade));
-  grd.addColorStop(1, withAlpha('#ffffff', 0.96 * fade));
+  grd.addColorStop(0.5, withAlpha(s.color, 0.34 * fade));
+  grd.addColorStop(1, withAlpha(s.color, 0.92 * fade));
 
   g.save();
   g.beginPath();
@@ -573,54 +620,26 @@ function drawStrike(s: Strike) {
   }
   g.fill();
 
-  // 白色芯线：光刃的"刃"
   g.beginPath();
-  g.moveTo(pts[0].x, pts[0].y);
-  for (const q of pts) g.lineTo(q.x, q.y);
-  g.strokeStyle = withAlpha('#ffffff', 0.8 * fade);
-  g.lineWidth = s.kind === 'pierce' ? 2 : 4;
+  g.moveTo(left[12].x, left[12].y);
+  for (let i = 13; i <= N; i++) g.lineTo(left[i].x, left[i].y);
+  g.strokeStyle = withAlpha(PRINT.parchment, 0.87 * fade);
+  g.lineWidth = s.kind === 'pierce' ? 1.5 : 2.5;
   g.lineCap = 'round';
   g.lineJoin = 'round';
   g.stroke();
 
-  // 刃尖
-  const hr = s.kind === 'pierce' ? 12 : 20;
-  const rg = g.createRadialGradient(a1.x, a1.y, 1, a1.x, a1.y, hr);
-  rg.addColorStop(0, withAlpha('#ffffff', 0.95 * fade));
-  rg.addColorStop(0.45, withAlpha(s.color, 0.6 * fade));
-  rg.addColorStop(1, withAlpha(s.color, 0));
-  g.fillStyle = rg;
-  g.beginPath();
-  g.arc(a1.x, a1.y, hr, 0, Math.PI * 2);
-  g.fill();
   g.restore();
 }
 
 /** 敌人动作的专属图层：护盾环 / 蓄力光 / 观察环，以及飞向弃牌堆的杂念牌。 */
 function drawEnemyMotion() {
   const pose = enemyPose();
-  if (pose && (pose.k === 'def' || pose.k === 'buff' || pose.k === 'calm')) {
+  if (pose && (pose.k === 'buff' || pose.k === 'calm')) {
     const pulse = Math.sin(Math.PI * pose.p);
     g.save();
     g.translate(poseAt.x, poseAt.y);
-    if (pose.k === 'def') {
-      // 一圈细环从外往回收，最后落进常驻的那道地面封环里。
-      // 旧版是绕身体的一圈粗荧光椭圆：和新的封环叠在一起，像给敌人套了个蛋壳。
-      const gy = poseGround.y - poseAt.y;
-      const k = pose.p;
-      const rx = 214 - 82 * k;
-      const ry = rx * 0.26;
-      g.strokeStyle = withAlpha(C.blue, 0.5 * pulse);
-      g.lineWidth = 1.5;
-      g.beginPath();
-      g.ellipse(0, gy, rx, ry, 0, 0, Math.PI * 2);
-      g.stroke();
-      g.strokeStyle = withAlpha(C.blue, 0.2 * pulse);
-      g.lineWidth = 1;
-      g.beginPath();
-      g.ellipse(0, gy, rx + 26, ry + 7, 0, 0, Math.PI * 2);
-      g.stroke();
-    } else if (pose.k === 'buff') {
+    if (pose.k === 'buff') {
       g.strokeStyle = withAlpha(C.orange, 0.5 * pulse);
       g.lineWidth = 2 + 7 * pulse;
       g.beginPath();
@@ -653,17 +672,14 @@ function drawEnemyMotion() {
     g.translate(px, py);
     g.rotate(d.rot + u * 3.4);
     g.globalAlpha = u > 0.85 ? Math.max(0, (1 - u) / 0.15) : 1;
-    g.fillStyle = 'rgba(20,17,30,.96)';
+    g.fillStyle = PRESS.card;
     g.strokeStyle = withAlpha(C.purple, 0.85);
     g.lineWidth = 2;
     g.beginPath();
     g.rect(-20, -28, 40, 56);
     g.fill();
     g.stroke();
-    g.fillStyle = withAlpha(C.purple, 0.9);
-    g.font = font(22, 700);
-    g.textAlign = 'center';
-    g.fillText('?', 0, 8);
+    drawArtIcon('junk', 0, 0, 28, C.purple);
     g.restore();
   }
 }
@@ -709,25 +725,31 @@ export function draw() {
     g.translate(s.x, s.y);
     g.rotate(s.angle);
     g.globalAlpha = Math.pow(1 - t, 1.6);
-    const len = s.len * (0.4 + t * 0.8);
-    const grd = g.createLinearGradient(-len / 2, 0, len / 2, 0);
-    grd.addColorStop(0, 'rgba(255,255,255,0)');
-    grd.addColorStop(0.5, s.color);
-    grd.addColorStop(1, 'rgba(255,255,255,0)');
-    g.strokeStyle = grd;
-    g.lineWidth = s.width * (1 - t * 0.7);
-    g.lineCap = 'round';
-    g.beginPath();
-    g.moveTo(-len / 2, 0);
-    g.quadraticCurveTo(0, -14 * (1 - t), len / 2, 0);
-    g.stroke();
+    const len = s.len * (reduceMotion() ? 1 : 0.4 + t * 0.8);
+    g.fillStyle = s.color;
+    // 分开的刀痕在衰减时仍读成利刃，不会糊成一根光管。
+    for (let i = 0; i < 3; i++) {
+      const half = len * (0.5 - i * 0.09);
+      const lift = -i * 8;
+      g.beginPath();
+      g.moveTo(-half, lift + 5);
+      g.lineTo(half * 0.34, lift - s.width * (1 - t * 0.7));
+      g.lineTo(half, lift);
+      g.lineTo(-half * 0.18, lift + 3);
+      g.closePath();
+      g.fill();
+    }
     g.restore();
   }
 
   for (const p of particles) {
     const k = p.life / p.max;
     g.globalAlpha = Math.max(0, Math.min(1, k));
-    if (p.shape === 'ring') {
+    if (p.shape === 'shield') {
+      const scale = reduceMotion() ? 1 : 1.18 - k * 0.35;
+      drawArtIcon('guard', p.x, p.y, p.size * scale, p.color, { alpha: 0.68 });
+      drawArtIcon('guard', p.x, p.y, p.size * (scale + 0.22), p.color, { alpha: 0.24 });
+    } else if (p.shape === 'ring') {
       g.strokeStyle = p.color;
       g.lineWidth = p.thin ? 1.2 : 3 + 5 * k;
       g.beginPath();
@@ -741,10 +763,18 @@ export function draw() {
       g.lineTo(p.x - p.vx * 0.02, p.y - p.vy * 0.02);
       g.stroke();
     } else {
+      const size = p.size * (0.4 + k * 0.8);
+      g.save();
+      g.translate(p.x, p.y);
+      g.rotate(Math.atan2(p.vy, p.vx));
       g.fillStyle = p.color;
       g.beginPath();
-      g.arc(p.x, p.y, p.size * (0.4 + k * 0.8), 0, Math.PI * 2);
+      g.moveTo(-size, -size / 3);
+      g.lineTo(size, 0);
+      g.lineTo(-size / 3, size / 2);
+      g.closePath();
       g.fill();
+      g.restore();
     }
   }
   g.globalAlpha = 1;
@@ -782,6 +812,10 @@ export function clearFx() {
   poseT = 9;
   lungeT = 9;
   eLungeT = 9;
+  heroGuardT = 9;
+  enemyGuardT = 9;
+  resetWards();
+  lampDimT = 0;
   eKnock = 0;
   hKnock = 0;
   eFlash = 0;

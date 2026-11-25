@@ -1,161 +1,48 @@
 import { g, roundRect, VH, VW, wrapText } from '../gfx/canvas';
-import { C, FONT_NUM, font, FONT_TITLE, FONT_UI, SCRIM, topicColor, withAlpha } from '../gfx/theme';
-import { action, button, choiceCard, drawCard, drawPowerEmblem, squeeze, text } from '../gfx/ui';
+import { C, PRESS, font, FONT_TITLE, FONT_UI, topicColor, withAlpha } from '../gfx/theme';
+import { action, choiceCard, cutRule, drawCard, panel, text } from '../gfx/ui';
+import { drawArtIcon } from '../gfx/art/icons';
+import { drawPowerIcon } from '../gfx/art/powers';
 import { consumeWheel, hover, onClick } from '../input';
+import { drawMarkdown, layoutMarkdown } from '../gfx/markdown';
 import { easeOut } from '../gfx/geom';
-import { BAL, EFFS, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
+import { reduceMotion, type QuestionMotion } from '../gfx/motion';
+import { BAL, MODES, POWER_BY_ID, effSummaryOf } from '../core/model';
 import { clamp, G, shuffle } from '../core/infra';
 import { curFloor } from '../core/map';
 import {
-  bankProgress, clearQuestionMemory, isRetired, listBanks, rightCount, serviceModelName,
-  serviceOnline, serviceReady, sourceBank, wrongCount, type BankRow,
+  activeBankId, allQuestions, isRetired, listBanks, requestRunPool,
+  serviceOnline, sourceBank,
 } from '../core/library';
 import {
-  BASICS, cardType, CARD_TYPE_META, costOf, defOf, isUpgraded, upgradedId,
+  BASICS, costOf, defOf, isUpgraded, upgradedId,
   isXCost, rulesStatic, UP_MARK,
 } from '../core/cards';
-import { answer, cancelPanel, MAX_PICK_PER_RUN } from '../core/combat';
-import { liveStatOf } from '../core/combat/link';
+import { answer, MAX_PICK_PER_RUN } from '../core/combat';
 import { basicsSummary, planStrike } from '../core/combat/strike';
 import {
-  ackCardGet, ackPower, canPayHp, cancelPreview, chooseEventOption, dismissFeedback, forgetCard,
+  ackCardGet, ackPower, canPayHp, cancelPreview, chooseEventOption, forgetCard,
   openCardPick, previewUpgrade,
   restHeal, restWanted, startRun, skipReward, takeCard, upgradeCard,
 } from '../core/journey';
-import type { Feedback, ModeId, ModelForm, PlanView, PowerDef, Question, QView } from '../core/model';
+import type { Feedback, ModeId, PowerDef, Question, QView } from '../core/model';
+import { drawPackPanel, drawPlanPanel, drawSettingsPanel } from './overlay/library';
+import { box, heading, MENU_BUTTON_H, MENU_RADIUS, MENU_ROW_RADIUS, overflowAffordance, resetScroll, scrollArea } from './overlay/common';
 import { drawReport } from './report';
-import { dropBank, pastePack, requestPackFile, switchBank } from './packio';
-import { approvePlan, closePlan, replan, startDocFlow } from './plangen';
-import { closeModelForm, focusModelField, modelFields, openModelForm, reconnectService, saveModelForm, toggleReveal } from './settings';
-import { drawField } from './textfield';
+import { closeFeedback, questionCard, type QuizFlipCard } from './battle';
 
-/* ── 通用外壳 ─────────────────────────────────────────────── */
-
-/**
- * 以前每个面板各写一个 0.72~0.84 的 alpha：战斗里开选卡 / 牌组浮层时，
- * 底边下方会透出一排「幽灵手牌」，地图上的浮层还会读出左侧 HUD 标题。
- * 现在统一走 theme 的 SCRIM；dimQuestion() 的渐变是另一套，不动。
- */
-function dim() {
-  g.fillStyle = `rgba(3,4,8,${SCRIM})`;
-  g.fillRect(0, 0, VW, VH);
-}
-
-/** onClose 为 null 时不画 ×：强制选择的面板没有"关掉"语义。 */
-function box(
-  x: number, y: number, w: number, h: number,
-  glow: string = C.line, onClose: (() => void) | null = cancelPanel,
-) {
-  g.save();
-  g.shadowColor = 'rgba(0,0,0,.75)';
-  g.shadowBlur = 48;
-  g.shadowOffsetY = 12;
-  roundRect(x, y, w, h, 18);
-  g.fillStyle = 'rgba(12,15,22,.97)';
-  g.fill();
-  g.restore();
-
-  roundRect(x, y, w, h, 18);
-  g.strokeStyle = glow;
-  g.lineWidth = 1.6;
-  g.stroke();
-
-  roundRect(x + 1, y + 1, w - 2, 2.4, 16);
-  g.fillStyle = 'rgba(255,255,255,.07)';
-  g.fill();
-
-  g.save();
-  roundRect(x, y, w, h, 18);
-  g.clip();
-  g.globalAlpha = 0.8;
-  const tg = g.createLinearGradient(x, 0, x + w, 0);
-  tg.addColorStop(0, 'rgba(255,255,255,0)');
-  tg.addColorStop(0.18, glow);
-  tg.addColorStop(0.82, glow);
-  tg.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = tg;
-  g.fillRect(x, y, w, 3.5);
-  g.restore();
-
-  if (!onClose) return;
-  const cx = x + w - 34;
-  const cy = y + 34;
-  const chv = hover(cx - 16, cy - 16, 32, 32);
-  g.beginPath();
-  g.arc(cx, cy, 16, 0, Math.PI * 2);
-  g.fillStyle = chv ? 'rgba(255,255,255,.14)' : 'rgba(255,255,255,.05)';
-  g.fill();
-  text('×', cx, cy + 1, { size: 22, align: 'center', color: chv ? C.ink : C.dim });
-  onClick(cx - 16, cy - 16, 32, 32, onClose, '×');
-}
-
-function heading(s: string, x: number, y: number, sub?: string) {
-  text(s, x, y, { size: 30, weight: 700, family: FONT_TITLE, color: C.ink });
-  if (sub) text(sub, x, y + 34, { size: 14, color: C.dim });
-}
-
-// 滚动位置按 key 各存一份。题库面板同屏有两个可滚列表（主题、题目），
-// 共用一个变量会让它们每帧把对方拨回原处。
-const scrolls = new Map<string, number>();
-function scrollArea(
-  x: number, y: number, w: number, h: number, contentH: number,
-  key = '', wheel?: number,
-) {
-  const max = Math.max(0, contentH - h);
-  // 多个列表同屏时滚轮由调用方分派：`consumeWheel()` 只能取一次，第一个列表
-  // 取完第二个就永远是 0，于是"滚不动"会变成看运气的事。
-  const cur = clamp((scrolls.get(key) ?? 0) + (wheel ?? consumeWheel()) * 0.7, 0, max);
-  scrolls.set(key, cur);
-  g.save();
-  roundRect(x, y, w, h, 10);
-  g.clip();
-  return {
-    x, y: y - cur, restore: () => g.restore(), y0: y, h, max, cur,
-  };
-}
-
-/** 列表溢出：底部渐隐 + 滚动条 + 脚注，说明下面还有内容。 */
-function overflowAffordance(a: ReturnType<typeof scrollArea>, x: number, w: number) {
-  if (a.max <= 0) return;
-  if (a.cur < a.max - 1) {
-    const fadeH = 68;
-    const fd = g.createLinearGradient(0, a.y0 + a.h - fadeH, 0, a.y0 + a.h);
-    fd.addColorStop(0, 'rgba(10,13,20,0)');
-    fd.addColorStop(1, 'rgba(10,13,20,.95)');
-    g.fillStyle = fd;
-    g.fillRect(x, a.y0 + a.h - fadeH, w, fadeH);
-  }
-
-  const tx = x + w + 6;
-  roundRect(tx, a.y0 + 6, 3, a.h - 12, 1.5);
-  g.fillStyle = 'rgba(255,255,255,.06)';
-  g.fill();
-  const thumbH = Math.max(40, (a.h - 12) * (a.h / (a.h + a.max)));
-  const ty = a.y0 + 6 + (a.h - 12 - thumbH) * (a.cur / a.max);
-  roundRect(tx, ty, 3, thumbH, 1.5);
-  g.fillStyle = withAlpha(C.lineHi, 0.9);
-  g.fill();
-}
-
-/* ── 入口 ─────────────────────────────────────────────────── */
-
-export function drawOverlay(t: number, quiz: QuizState = IDLE_QUIZ) {
+export function drawOverlay(t: number, quiz: QuizState = IDLE_QUIZ, age = 0) {
   const p = G.panel;
-  quizFrameInfo = { ...quizFrameInfo, drawn: false, phase: 'idle' };
-  if (p.k !== 'reward') rewardWasOpen = false;
+  quizFrameInfo = { ...quizFrameInfo, drawn: false, phase: 'idle', entry: 'ready' };
   switch (p.k) {
-    case 'question': return drawQuestion(p.idx, p.q, p.view);
+    case 'question': return drawQuestion(p.idx, p.q, p.view, quiz.entry);
     case 'boon': return drawBoon();
     case 'topic': return drawTopics(p);
     case 'feedback':
-      // 答对不画判定面板：效果已经当场结算，这块整屏面板只会盖住战场，
-      // 把光刃、伤害数字和敌人的反应全压在底下，打击感立刻没了。
-      // 状态保留到演出结束只是当输入锁（见 main.ts），演完自己收掉。
-      // 答错仍然整屏反馈 —— 解析和正确选项是这一局真正的教学时刻。
       if (p.fb.right) return;
-      return drawFeedback(t, quiz);
-    case 'reward': return drawReward(t);
-    case 'powerdrop': return drawPowerDrop();
+      return drawFeedback(quiz);
+    case 'reward': return drawReward(age);
+    case 'powerdrop': return drawPowerDrop(age);
     case 'cardget': return drawCardGet();
     case 'rest': return drawRest(t);
     case 'cardpick': return drawCardPick(p.mode);
@@ -164,14 +51,13 @@ export function drawOverlay(t: number, quiz: QuizState = IDLE_QUIZ) {
     case 'pile': return drawGallery(p.kind === 'draw' ? '抽牌堆' : '弃牌堆',
       p.kind === 'draw' ? G.draw.slice().reverse() : G.discard);
     case 'help': return drawHelp();
-    case 'pack': return drawPack();
-    case 'settings': return drawSettings(t);
-    case 'plan': return drawPlanView(p.data);
+    case 'pack': return drawPackPanel(t);
+    case 'settings': return drawSettingsPanel(t);
+    case 'plan': return drawPlanPanel(p.data);
     case 'report': return drawReport(p.data);
     default: return;
   }
 }
-
 /* ── 答题 ─────────────────────────────────────────────────── */
 
 // 右缘 944：敌人状态牌左端 950、名字从 966 起。留 22px 给名字描边，
@@ -183,77 +69,54 @@ const QW = 892;
 export interface QuizFrameInfo {
   drawn: boolean;
   phase: 'idle' | 'ask' | 'settle' | 'result';
+  entry: 'front' | 'question' | 'ready';
+  flipAt?: { x: number; y: number };
+  optionBottom?: number;
+  manual?: boolean;
+  review?: { answer: number; choice: number; explained: boolean };
   geom: { x: number; y: number; w: number; h: number };
 }
 let quizFrameInfo: QuizFrameInfo = {
-  drawn: false, phase: 'idle', geom: { x: QX, y: 48, w: QW, h: 700 },
+  drawn: false, phase: 'idle', geom: { x: QX, y: 48, w: QW, h: 700 }, entry: 'ready',
 };
 export const quizFrame = () => quizFrameInfo;
 
 export interface QuizState {
+  entry: QuestionMotion | null;
+  exit?: { motion: QuestionMotion; card: QuizFlipCard } | null;
   /** 判定已出、打击演出还在飞；面板不消失，结果区还没展开 */
   settling: boolean;
   reveal: number;
-  autoProgress: number;
-  autoPaused: boolean;
-  autoCancelled: boolean;
 }
 const IDLE_QUIZ: QuizState = {
-  settling: false, reveal: 0, autoProgress: 0, autoPaused: true, autoCancelled: false,
+  entry: null, settling: false, reveal: 0,
 };
 
-/**
- * 一个 Panel 的三个 state：ask / settle / result 共用锚点 (x, y) 与宽度。
- *
- * 以前三者共用**整个盒子**：高度由四行选项带撑着，结果态把选项压成 2×2 后
- * 下半就空出一百多像素。现在 settle 仍是答题那一块（判定当场不换框，
- * 这条是 CHANGELOG 里消掉"选项消失 → 等演出 → 反馈弹出"割裂感的初衷），
- * result 则按自己的内容量高度：题干 + 两行小片 + 结果文字 + 释义 + 按钮。
- *
- * y 只由答题态的高度决定，所以两个 state 的上边缘严丝合缝地对齐；
- * 盒子收起来时变的是底边，不是位置。冒烟断言因此从"几何全等"
- * 改成"锚点不变、结果态不高于答题态"。
- */
-function quizPanel(
-  question: string, n: number,
-  state: 'ask' | 'settle' | 'result', fb?: Feedback,
-) {
-  g.font = font(26, 700, FONT_UI);
-  const lines = wrapText(question, QW - 68);
-  const lineH = 36;
-  const headH = 132;
+// Leave room for the result before asking so the same question never changes frame or reflows.
+const QUIZ_FOOTER = 84;
+const QUIZ_PAD = 34;
+
+let quizOptions: readonly string[] | undefined;
+
+function quizPanel(question: string, options: readonly string[]) {
+  if (quizOptions !== options) {
+    quizOptions = options;
+    resetScroll('quiz-body');
+    resetScroll('quiz-explain');
+  }
+  const width = QW - QUIZ_PAD * 2;
+  const stem = layoutMarkdown(question, width, 26, 700);
+  const choices = options.map((option) => {
+    const layout = layoutMarkdown(option, width - 104, 18);
+    return { layout, h: Math.max(56, layout.h + 24) };
+  });
+  const headH = 104;
   const gap = 12;
-  const fixedH = headH + lines.length * lineH + 24 + 76;
-  const oh = clamp(Math.floor((VH - 96 - fixedH) / 4) - gap, 54, 70);
-  const band = 4 * (oh + gap) - gap;
-  const askH = headH + lines.length * lineH + 24 + band + 76;
-  const y = Math.max(48, (VH - askH) / 2);
-  const qy = y + headH;
-  const oy = qy + lines.length * lineH + 24;
-  const rowH = Math.min(96, (band - (n - 1) * gap) / n);
-  const rowsH = n * rowH + (n - 1) * gap;
-
-  // result 的内容量：小片行数 + 每条结果文字 + 释义预算 + 按钮区。
-  // 先量内容再定高度，而不是拿一个固定盒子去裁内容。
-  const chipRows = Math.ceil(n / 2);
-  const chipRowsH = chipRows * CHIP_H + (chipRows - 1) * CHIP_GAP;
-  const noteCount = fb?.apNote ? Math.min(2, wrapText(fb.apNote, QW - 68).length) : 0;
-  const expCount = fb?.explain ? Math.min(2, wrapText(fb.explain, QW - 116).length) : 0;
-  // 按钮顶固定在 y+h-76。resultH 就是 ry0 到按钮顶的距离，精确等于内容高度
-  // + 8px 呼吸；不多留一寸，否则结果文字与「继续」之间又会长出空白。
-  const resultH = 26
-    + (fb?.linkNote ? 22 : 0)
-    + (fb && (fb.blk > 0 || fb.heal > 0 || fb.draw > 0 || fb.eff === 'pierce') ? 20 : 0)
-    + noteCount * 19 + (noteCount ? 6 : 0)
-    + (expCount ? expCount * 20 + 18 : 0)
-    + 8;
-  const fbH = headH + lines.length * lineH + 24 + chipRowsH + 12 + resultH + 76;
-
-  return {
-    x: QX, y, w: QW, h: state === 'result' ? fbH : askH,
-    askH, lines, lineH, headH, gap, oh, band,
-    qy, oy, rowH, oy0: oy + (band - rowsH) / 2,
-  };
+  const contentH = stem.h + 24 + choices.reduce((sum, choice) => sum + choice.h, 0) + (choices.length - 1) * gap;
+  const h = clamp(headH + contentH + QUIZ_FOOTER, 580, VH - 96);
+  const y = (VH - h) / 2;
+  return { x: QX, y, w: QW, h, stem, choices, gap, contentH,
+    bodyY: y + headH, footer: y + h - QUIZ_FOOTER };
 }
 
 function dimQuestion(k = 1) {
@@ -265,340 +128,210 @@ function dimQuestion(k = 1) {
   g.fillRect(0, 0, VW, VH);
 }
 
-function drawQuestion(idx: number, q: Question, view: QView) {
+/** 面板和牌面共用同一个变换，过侧边时只换内容，不换位置、尺寸或角度。 */
+function drawQuizFlip({ x, y, w, h }: QuizFrameInfo['geom'], origin: QuizFlipCard, motion: QuestionMotion) {
+  const p = motion.progress;
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const landing = origin.landing ?? origin;
+  const back = motion.returning ?? 0;
+  const lerp = (from: number, to: number, k: number) => from + (to - from) * k;
+  const width = lerp(lerp(origin.w, landing.w, back), w, p);
+  const height = lerp(lerp(origin.h, landing.h, back), h, p);
+  const face = Math.cos(Math.PI * p);
+  const at = { x: lerp(lerp(origin.x, landing.x, back), cx, p), y: lerp(lerp(origin.y, landing.y, back), cy, p) };
+  quizFrameInfo.flipAt = at;
+  g.translate(at.x, at.y);
+  g.rotate(lerp(origin.rotation, landing.rotation, back) * (1 - p));
+  g.scale(Math.max(0.01, Math.abs(face)), 1);
+  if (face > 0) {
+    quizFrameInfo.entry = 'front';
+    g.scale(width / origin.w, height / origin.h);
+    origin.drawFront();
+    return false;
+  }
+  quizFrameInfo.entry = 'question';
+  g.scale(width / w, height / h);
+  g.translate(-cx, -cy);
+  return true;
+}
+
+function drawQuestion(idx: number, q: Question, view: QView, entry: QuizState['entry']) {
   const ent = G.hand[idx];
   if (!ent) return;
   const card = defOf(ent);
   // 题面是点开那一刻的快照，选项顺序来自本次打乱；反馈面板读同一份。
   const options = view.options;
-  const gm = quizPanel(q.q, options.length, 'ask');
+  const gm = quizPanel(q.q, options);
   const { x, y, w } = gm;
   const col = C.blue;
-  quizFrameInfo = { drawn: true, phase: 'ask', geom: { x, y, w, h: gm.h } };
+  const geom = { x, y, w, h: gm.h };
+  quizFrameInfo = { drawn: true, phase: 'ask', geom, entry: 'ready', optionBottom: gm.footer };
 
-  dimQuestion();
-  box(x, y, w, gm.h, withAlpha(col, 0.5));
-
-  text(card.name, x + 34, y + 48, { size: 22, weight: 700, family: FONT_TITLE, color: C.ink });
-  const ct = CARD_TYPE_META[cardType(card)];
-  const xc = isXCost(card);
-  const costNote = xc ? `X = ${Math.max(1, G.ap)} 点，吃光行动力` : `${costOf(card)} 点行动力`;
-  text(`${ct.name}牌 · ${costNote} · 从题库随机抽一题`, x + 34, y + 74, {
-    size: 13, color: ct.color, weight: 600,
-  });
-
-  const st = liveStatOf(ent);
-  const eff = EFFS[card.eff] ?? EFFS.strike;
-  // 与卡面、真实结算同一份 EffOut；加成已经算进每段，不再另折算一次。
-  const out = planStrike(ent);
-  const sumW = 300;
-  const sx = x + w - 84 - sumW;
-  text('答对就拿到的效果', sx, y + 50, { size: 12, color: C.dim, align: 'left' });
-  text(effSummaryOf(out, card.eff, xc), sx, y + 74, {
-    size: 13, color: eff.color, weight: 700, align: 'left',
-  });
-  // 题干基线在 y+132，联动行只能落在 y+100，再往下会撞上题干。
-  if (st.reasons.length) {
-    text(`联动 · ${st.reasons.join(' · ')}`, x + 34, y + 100, {
-      size: 12, color: C.gold, weight: 600, maxW: w - 68,
-    });
+  const origin = questionCard();
+  dimQuestion(entry?.progress ?? 1);
+  g.save();
+  if (origin && entry && !entry.ready && !drawQuizFlip(geom, origin, entry)) {
+    g.restore();
+    return;
   }
+  box(x, y, w, gm.h, col, undefined, MENU_RADIUS);
 
-  roundRect(x + 24, gm.qy - 8, 3, gm.lines.length * gm.lineH - 10, 2);
-  g.fillStyle = withAlpha(col, 0.9);
-  g.fill();
-  g.font = font(26, 700, FONT_UI);
-  g.fillStyle = C.ink;
-  gm.lines.forEach((ln, i) => g.fillText(ln, x + 34, gm.qy + i * gm.lineH));
-
-  g.beginPath();
-  g.moveTo(x + 34, gm.oy - 12);
-  g.lineTo(x + w - 34, gm.oy - 12);
-  g.strokeStyle = withAlpha(col, 0.2);
-  g.lineWidth = 1;
-  g.stroke();
-
-  options.forEach((o, i) => {
-    const by = gm.oy0 + i * (gm.rowH + gm.gap);
-    const hv = hover(x + 34, by, w - 68, gm.rowH);
-    roundRect(x + 34, by, w - 68, gm.rowH, 10);
-    g.fillStyle = hv ? withAlpha(col, 0.16) : 'rgba(255,255,255,.035)';
-    g.fill();
-    g.strokeStyle = hv ? withAlpha(col, 0.8) : C.line;
-    g.lineWidth = hv ? 1.8 : 1.2;
-    g.stroke();
-    if (hv) {
-      roundRect(x + 34, by + 8, 3, gm.rowH - 16, 2);
-      g.fillStyle = col;
-      g.fill();
-    }
-
-    g.beginPath();
-    g.arc(x + 68, by + gm.rowH / 2, 17, 0, Math.PI * 2);
-    g.fillStyle = hv ? withAlpha(col, 0.35) : 'rgba(255,255,255,.06)';
-    g.fill();
-    text('ABCD'[i] ?? String(i + 1), x + 68, by + gm.rowH / 2 + 1, {
-      size: 16, weight: 800, align: 'center', color: hv ? col : C.ink2,
-    });
-
-    g.font = font(18, 400, FONT_UI);
-    g.fillStyle = hv ? C.ink : C.ink2;
-    const ol = wrapText(o, w - 190);
-    ol.slice(0, 2).forEach((ln, k) => {
-      g.fillText(ln, x + 100, by + gm.rowH / 2 + (ol.length > 1 ? (k === 0 ? -12 : 14) : 0));
-    });
-
-    onClick(x + 34, by, w - 68, gm.rowH, () => answer(i), 'opt');
+  const headX = x + 64;
+  text(`${card.name}${isUpgraded(ent) ? '+' : ''}`, headX, y + 38, {
+    size: 22, weight: 700, family: FONT_TITLE, maxW: w - 98,
+  });
+  const xc = isXCost(card);
+  text(`${xc ? 'X' : costOf(card)} 行动力`, headX, y + 67, { size: 14, color: C.gold, weight: 700 });
+  cutRule(x + 166, y + 67, 14, C.lineHi, 0.8);
+  text(effSummaryOf(planStrike(ent), card.eff, xc), x + 192, y + 67, {
+    size: 14, color: C.ink2, maxW: w - 226,
   });
 
-  text(`答对：按卡面结算，带借书证再退 ${rulesStatic().refund} 点 · 答错：这一手作废，不扣行动力，牌进弃牌堆`,
-    x + 34, y + gm.h - 37, { size: 13, color: C.dim, maxW: w - 68 });
+  drawQuizBody(gm, undefined, false, quizFrameInfo.entry === 'ready');
+  g.restore();
 }
 
-/* ── 判定：同一块面板原地翻面 ──────────────────────────────── */
+/** The answer and its review keep the same wrapped rows, even while the battle settles. */
+function drawQuizBody(gm: ReturnType<typeof quizPanel>, fb?: Feedback, settling = false, interactive = !settling, wheel = interactive ? consumeWheel() : 0) {
+  const { x, w, bodyY, footer, gap, stem, choices, contentH } = gm;
+  const left = x + QUIZ_PAD;
+  const width = w - QUIZ_PAD * 2;
+  const bodyH = footer - bodyY;
+  const view = scrollArea(left, bodyY, width, bodyH, contentH, 'quiz-body', wheel);
+  drawMarkdown(stem, left, view.y);
+  let nextY = view.y + stem.h + 24;
+  g.fillStyle = C.line;
+  g.fillRect(left, nextY - 12, width, 1);
 
-const CHIP_H = 50;
-const CHIP_GAP = 12;
+  choices.forEach(({ layout, h: rowH }, i) => {
+    const by = nextY;
+    nextY += rowH + gap;
+    const top = Math.max(by, bodyY);
+    const hitH = Math.min(by + rowH, footer) - top;
+    if (hitH <= 0) return;
+    const mid = by + 28;
+    const hv = interactive && !fb && hover(left, top, width, hitH);
+    const picked = i === fb?.choice;
+    const tint = picked ? C.gold : hv ? C.blue : null;
+    panel(left, by, width, rowH, {
+      radius: MENU_ROW_RADIUS,
+      fill: tint ? withAlpha(tint, 0.12) : PRESS.sheet,
+      stroke: tint ?? C.line,
+    });
+    panel(left + 16, mid - 14, 28, 28, { radius: 6, fill: C.panel, stroke: tint ?? C.line });
+    text('ABCD'[i] ?? String(i + 1), left + 30, mid, { size: 15, weight: 700, align: 'center', color: tint ?? C.ink2 });
 
-function drawFeedback(t: number, quiz: QuizState) {
+    drawMarkdown(layout, left + 60, by + (rowH - layout.h) / 2, hv || picked ? C.ink : C.ink2);
+    if (interactive && !fb) onClick(left, top, width, hitH, () => answer(i), 'opt');
+  });
+  view.restore();
+  overflowAffordance(view, left, width, interactive);
+}
+
+function drawFeedback(quiz: QuizState) {
   const p = G.panel;
   if (p.k !== 'feedback') return;
   const fb = p.fb;
-  const col = fb.right ? C.green : C.red;
-  const gm = quizPanel(fb.question, fb.options.length, quiz.settling ? 'settle' : 'result', fb);
+  const gm = quizPanel(fb.question, fb.options);
   const { x, y, w, h } = gm;
-  const n = fb.options.length;
-  quizFrameInfo = {
-    drawn: true, phase: quiz.settling ? 'settle' : 'result', geom: { x, y, w, h },
-  };
-
-  const u = clamp(quiz.reveal / 0.26, 0, 1);
-  const ease = easeOut(u);
-  dimQuestion(clamp(0.72 + quiz.reveal * 1.4, 0.72, 1));
-
-  // 整块面板都是"继续"；× 在 box 里后注册，演出未完时先不注册。
-  if (!quiz.settling) onClick(x, y, w, h, () => dismissFeedback(), '继续');
-  box(x, y, w, h, withAlpha(col, 0.5), quiz.settling ? null : dismissFeedback);
-
-  const pop = 1 + (1 - ease) * 0.16;
+  const geom = { x, y, w, h };
+  quizFrameInfo = { drawn: true, phase: quiz.settling ? 'settle' : 'result', geom, entry: 'ready' };
+  const exit = quiz.exit;
+  dimQuestion(exit?.motion.progress ?? 1);
   g.save();
-  g.translate(x + 34, y + 48);
-  g.scale(pop, pop);
-  if (!quiz.settling) { g.shadowColor = withAlpha(col, 0.6); g.shadowBlur = 14; }
-  text(fb.right ? '正确' : '答错', 0, 0, {
-    size: 30, weight: 800, family: FONT_TITLE, color: col,
-  });
+  if (!exit || drawQuizFlip(geom, exit.card, exit.motion)) drawFeedbackBody(gm, fb, quiz);
   g.restore();
-  text(fb.topic, x + w - 90, y + 52, {
-    size: 14, color: topicColor(fb.topic), weight: 700, align: 'right',
-  });
+}
 
-  const sx = x + w - 84 - 300;
-  text(fb.right ? '这一手已经生效' : '这一手作废', sx, y + 50, { size: 12, color: C.dim });
-  text(fb.right ? '效果已经结算' : '不扣行动力', sx, y + 74, {
-    size: 14, color: col, weight: 700,
-  });
-
-  roundRect(x + 24, gm.qy - 8, 3, gm.lines.length * gm.lineH - 10, 2);
-  g.fillStyle = withAlpha(col, 0.9);
-  g.fill();
-  g.font = font(26, 700, FONT_UI);
-  g.fillStyle = C.ink;
-  gm.lines.forEach((ln, i) => g.fillText(ln, x + 34, gm.qy + i * gm.lineH));
-
-  g.beginPath();
-  g.moveTo(x + 34, gm.oy - 12);
-  g.lineTo(x + w - 34, gm.oy - 12);
-  g.strokeStyle = withAlpha(col, 0.2);
-  g.lineWidth = 1;
-  g.stroke();
-
-  // 演出中选项留在原位，结果展开时换成 2×2 小片；不做逐帧插值，半路会叠。
-  const chipW = (w - 68 - CHIP_GAP) / 2;
-  const chipRows = Math.ceil(n / 2);
-  const chipRowsH = chipRows * CHIP_H + (chipRows - 1) * CHIP_GAP;
-  const compact = !quiz.settling;
-  fb.options.forEach((o, i) => {
-    const isAns = i === fb.answer;
-    const isPick = i === fb.choice;
-    const r = Math.floor(i / 2);
-    const c = i % 2;
-    const bx = compact ? x + 34 + c * (chipW + CHIP_GAP) : x + 34;
-    const by = compact ? gm.oy + r * (CHIP_H + CHIP_GAP) : gm.oy0 + i * (gm.rowH + gm.gap);
-    const bw = compact ? chipW : w - 68;
-    const bh = compact ? CHIP_H : gm.rowH;
-
-    const border = quiz.settling
-      ? (isPick ? withAlpha(C.gold, 0.85) : C.line)
-      : isAns ? withAlpha(C.green, 0.75) : isPick ? withAlpha(C.red, 0.75) : C.line;
-    const fill = quiz.settling
-      ? (isPick ? withAlpha(C.gold, 0.13) : 'rgba(255,255,255,.035)')
-      : isAns ? withAlpha(C.green, 0.13) : isPick ? withAlpha(C.red, 0.13) : 'rgba(255,255,255,.03)';
-    roundRect(bx, by, bw, bh, 9);
-    g.fillStyle = fill;
-    g.fill();
-    g.strokeStyle = border;
-    g.lineWidth = 1.3;
-    g.stroke();
-
-    const lx = bx + (compact ? 22 : 34);
-    const tx0 = bx + (compact ? 42 : 66);
-    const mid = by + bh / 2;
-    g.beginPath();
-    g.arc(lx, mid, compact ? 13 : 17, 0, Math.PI * 2);
-    g.fillStyle = isAns && compact ? withAlpha(C.green, 0.35)
-      : isPick ? withAlpha(quiz.settling ? C.gold : C.red, 0.35) : 'rgba(255,255,255,.06)';
-    g.fill();
-    text('ABCD'[i] ?? String(i + 1), lx, mid + 1, {
-      size: 15, weight: 800, align: 'center',
-      color: quiz.settling ? (isPick ? C.gold : C.dim)
-        : isAns ? C.green : isPick ? C.red : C.dim,
-    });
-    g.font = font(compact ? 15 : 17, 400, FONT_UI);
-    g.fillStyle = quiz.settling ? C.ink2
-      : isAns ? C.ink : isPick ? C.ink2 : C.dim;
-    g.fillText(squeeze(o, bw - (tx0 - bx) - 76), tx0, mid + 1);
-
-    if (compact && (isAns || isPick)) {
-      text(isAns ? '正确' : '你选的', bx + bw - 14, mid + 1, {
-        size: 12, align: 'right', weight: 700,
-        color: isAns ? C.green : C.red, alpha: ease,
-      });
-    } else if (quiz.settling && isPick) {
-      text('已选', bx + bw - 14, mid + 1, { size: 12, align: 'right', color: C.gold });
-    }
-  });
-
-  const ry0 = gm.oy + chipRowsH + 12;
-  const ryEnd = y + h - 84;
-  if (!quiz.settling) {
-    g.save();
-    g.globalAlpha = ease;
-    g.beginPath();
-    g.rect(x + 24, ry0 - 4, w - 48, Math.max(0, ryEnd - ry0 + 8));
-    g.clip();
-    let ry = ry0;
-    // 释义行数按剩余高度分配，长解析不能把按钮顶掉。按钮顶就是 y+h-76，
-    // 留 8px 呼吸；几何里的 resultH 与这里用同一个锚点，不再各留一次余量。
-    const contentEnd = y + h - 84;
-
-    if (fb.right) {
-      const eff = EFFS[fb.eff] ?? EFFS.strike;
-      // 每段伤害用实际值，不能用 fb.hits，那是扣格挡前的原始值。
-      const segs = fb.parts.length ? fb.parts : [{ d: fb.dmg, a: fb.absorbed }];
-      const shape = segs.length > 1 ? segs.map((s) => s.d).join(' + ') : `${fb.dmg}`;
-      text(`${eff.name} · 造成 ${shape} 点伤害${fb.absorbed ? ` · ${fb.absorbed} 被吸收` : ''}`,
-        x + 34, ry + 16, { size: 17, color: C.gold, weight: 700, maxW: w - 68 });
-      ry += 25;
-      if (fb.linkNote) {
-        text(`联动 · ${fb.linkNote}`, x + 34, ry + 14, {
-          size: 13, color: C.gold, weight: 600, maxW: w - 68,
-        });
-        ry += 22;
-      }
-      const extras: string[] = [];
-      if (fb.blk > 0) extras.push(`${fb.blk} 点格挡`);
-      if (fb.eff === 'pierce') extras.push('无视格挡');
-      if (fb.heal > 0) extras.push(`回复 ${fb.heal} 点生命`);
-      if (fb.draw > 0) extras.push(`抽 ${fb.draw} 张牌`);
-      if (extras.length) {
-        text(extras.join(' · '), x + 34, ry + 13, { size: 13, color: eff.color });
-        ry += 20;
-      }
-    } else {
-      text('这一手作废 · 不扣行动力', x + 34, ry + 16, {
-        size: 17, color: col, weight: 700,
-      });
-      ry += 26;
-    }
-
-    g.font = font(13, 500, FONT_UI);
-    const noteLines = fb.apNote ? wrapText(fb.apNote, w - 68).slice(0, 2) : [];
-    noteLines.forEach((ln, i) => {
-      text(ln, x + 34, ry + 13 + i * 19, { size: 13, color: C.gold, weight: 500 });
-    });
-    if (noteLines.length) ry += noteLines.length * 19 + 6;
-
-    g.font = font(13, 400, FONT_UI);
-    const expBudget = Math.max(0, Math.min(2, Math.floor((contentEnd - ry - 18) / 20)));
-    const expLines = expBudget && fb.explain
-      ? wrapText(fb.explain, w - 116).slice(0, expBudget) : [];
-    if (expLines.length) {
-      const eh = expLines.length * 20 + 18;
-      roundRect(x + 34, ry, w - 68, eh, 9);
-      g.fillStyle = 'rgba(255,255,255,.035)';
-      g.fill();
-      expLines.forEach((ln, i) => {
-        text(ln, x + 50, ry + 20 + i * 20, { size: 13, color: C.ink2 });
-      });
-    }
-
-    g.restore();
-
-    const bw = 280;
-    const bx = x + w / 2 - bw / 2;
-    const by = y + h - 76;
-    const bh = 58;
-    const secs = Math.max(1, Math.ceil(quiz.autoProgress < 1 ? (1 - quiz.autoProgress) * 4.2 : 0));
-    button(bx, by, bw, bh, '继续', 'primary', {
-      size: 18,
-      sub: quiz.autoPaused || quiz.autoCancelled
-        ? '点击面板任意处 · 空格'
-        : `${secs}s 后自动继续 · 点击立即`,
-    });
-    if (quiz.autoProgress > 0) {
-      roundRect(bx + 8, by + bh - 5, Math.max(2, (bw - 16) * quiz.autoProgress), 2.5, 1.25);
-      g.fillStyle = withAlpha(col, quiz.autoPaused ? 0.32 : 0.9);
-      g.fill();
-    }
-  } else {
-    text('判定已出 · 结算中…', x + w / 2, y + h - 42, {
-      size: 13, align: 'center', color: C.dim, alpha: 0.6 + 0.4 * Math.sin(t * 8),
-    });
+function drawFeedbackBody(gm: ReturnType<typeof quizPanel>, fb: Feedback, quiz: QuizState) {
+  const { x, y, w, h, footer } = gm;
+  const { settling } = quiz;
+  box(x, y, w, h, settling ? C.blue : C.red, settling ? null : { kind: 'close', side: 'left', run: closeFeedback }, MENU_RADIUS);
+  if (settling) {
+    drawQuizBody(gm, fb, true);
+    return;
   }
+  text('答错', x + 64, y + 42, { size: 26, weight: 700, family: FONT_TITLE, color: C.red });
+  drawQuizReview(gm, fb, quiz.reveal, !quiz.exit);
+  g.fillStyle = C.line;
+  g.fillRect(x + QUIZ_PAD, footer, w - QUIZ_PAD * 2, 1);
+  const bw = 132;
+  const bh = MENU_BUTTON_H;
+  action(x + w - QUIZ_PAD - bw, footer + (QUIZ_FOOTER - bh) / 2, bw, bh,
+    '继续', closeFeedback, 'primary', { size: 16, r: MENU_ROW_RADIUS });
+}
+
+function drawQuizReview(gm: ReturnType<typeof quizPanel>, fb: Feedback, age: number, interactive: boolean) {
+  const left = gm.x + QUIZ_PAD;
+  const w = gm.w - QUIZ_PAD * 2;
+  const top = gm.y + 82;
+  const correct = layoutMarkdown(fb.options[fb.answer] ?? '', w - 40, 25, 700);
+  const explain = layoutMarkdown(fb.explain, w - 24, 19);
+  const picked = layoutMarkdown(fb.options[fb.choice] ?? '', w - 28, 17);
+  const question = layoutMarkdown(fb.question, w - 24, 16);
+  const notes = layoutMarkdown(fb.apNote, w - 24, 14);
+  const answerH = 68 + correct.h;
+  const explanationH = explain.h ? 52 + explain.h : 0;
+  const pickedH = 50 + picked.h;
+  const questionH = 44 + question.h;
+  const contentH = answerH + explanationH + pickedH + questionH + (notes.h ? notes.h + 22 : 0);
+  const review = scrollArea(left, top, w, gm.footer - top - 12, contentH, 'quiz-explain', interactive ? consumeWheel() : 0);
+  quizFrameInfo.manual = review.max > 0;
+  quizFrameInfo.review = { answer: fb.answer, choice: fb.choice, explained: explain.h > 0 };
+  const { y } = review;
+  const mark = reduceMotion() ? 1 : easeOut(clamp(age / 0.45, 0, 1));
+  g.fillStyle = withAlpha(C.green, 0.13);
+  g.fillRect(left, y, w, answerH - 16);
+  g.fillStyle = C.green;
+  g.fillRect(left, y, 3, answerH - 16);
+  drawArtIcon('check', left + 22, y + 20, 18, C.green);
+  text('正确答案', left + 40, y + 20, { size: 15, weight: 700, color: C.green });
+  drawMarkdown(correct, left + 20, y + 36);
+  let underline = 32;
+  for (const row of correct.rows) for (const run of row.runs) underline = Math.max(underline, run.x + run.w);
+  cutRule(left + 20, y + 40 + correct.h, Math.max(6, underline * mark), C.green, 0.85);
+
+  let rowY = y + answerH;
+  if (explain.h) {
+    text('解析', left + 12, rowY + 12, { size: 16, weight: 700, color: C.gold });
+    g.fillStyle = withAlpha(C.gold, 0.46);
+    g.fillRect(left + 1, rowY + 28, 2, explain.h);
+    drawMarkdown(explain, left + 12, rowY + 27);
+    rowY += explanationH;
+  }
+  cutRule(left, rowY, w, C.lineHi, 0.54);
+  drawArtIcon('close', left + 12, rowY + 21, 15, C.red);
+  text('你的选择', left + 28, rowY + 21, { size: 14, weight: 700, color: C.red });
+  drawMarkdown(picked, left + 12, rowY + 33, C.ink2);
+  rowY += pickedH;
+  text('原题', left + 12, rowY + 14, { size: 14, weight: 700, color: C.dim });
+  drawMarkdown(question, left + 12, rowY + 26, C.ink2);
+  if (notes.h) drawMarkdown(notes, left + 12, rowY + questionH, C.dim);
+  review.restore();
+  overflowAffordance(review, left, w, interactive);
 }
 
 /* ── 奖励 ─────────────────────────────────────────────────── */
 
-/** 战后结算的入场时刻：只用来演一次扫光，不落到任何存档或规则里。 */
-let rewardWasOpen = false;
-let rewardEnter = -1;
-
-function drawReward(t: number) {
+function drawReward(age: number) {
   const p = G.panel;
   if (p.k !== 'reward') return;
   const isElite = G.node?.type === 'elite';
-  if (!rewardWasOpen) { rewardEnter = t; rewardWasOpen = true; }
-  const age = t - rewardEnter;
 
-  dim();
   const w = 1220;
   const h = 640;
   const x = (VW - w) / 2;
   const y = 130;
-  box(x, y, w, h, withAlpha(C.gold, 0.4), skipReward);
-
-  if (age < 0.7) {
-    const u = clamp(age / 0.7, 0, 1);
-    const sx = x - 220 + (w + 440) * u;
-    g.save();
-    roundRect(x, y, w, h, 18);
-    g.clip();
-    const lg = g.createLinearGradient(sx - 200, 0, sx + 200, 0);
-    lg.addColorStop(0, 'rgba(232,182,76,0)');
-    lg.addColorStop(0.5, withAlpha(C.gold, 0.2 * (1 - u)));
-    lg.addColorStop(1, 'rgba(232,182,76,0)');
-    g.fillStyle = lg;
-    g.fillRect(x, y, w, h);
-    g.restore();
-  }
+  box(x, y, w, h, C.gold, { kind: 'close', run: skipReward });
+  revealRule(x + 44, y + 122, w - 88, C.gold, age);
 
   heading('战斗结束', x + 44, y + 66,
     isElite ? '精英倒下了。挑一张卡，之后还会掉一个增益。'
       : p.ledger ? '账本翻开了：这一屏多一个选项，选中的牌直接精炼。'
         : '挑一张放进牌组。');
 
-  // 张数是活的；卡宽按可用宽度等比缩放，四张时左右仍留 72px，卡面发光不会蹭到框。
+  // 张数是活的；四张时按可用宽度等比缩放，保留面板左右两侧的留白。
   const n = p.cards.length;
   const baseCw = 280;
   const baseCh = 356;
@@ -616,12 +349,16 @@ function drawReward(t: number) {
   p.cards.forEach((c, i) => {
     const px = cx0 + i * (cw + gap);
     const hv = hover(px, cy, cw, ch);
-    const lift = hv ? -10 : 0;
+    const settle = reduceMotion() ? 1 : easeOut(clamp((age - i * 0.05) / 0.28, 0, 1));
+    const lift = hv && !reduceMotion() ? -10 : 0;
     // 预览用牌本身的数值；直接画 c.atk 会和入牌组后的卡面不一致。
     const id = p.ledger ? c.id + UP_MARK : c.id;
-    drawCard(px, cy + lift, cw, ch, c, planStrike(id, { noBoost: true }), {
+    g.save();
+    g.globalAlpha = 0.66 + 0.34 * settle;
+    drawCard(px, cy + lift - 10 * (1 - settle), cw, ch, c, planStrike(id, { noBoost: true }), {
       glow: hv, up: p.ledger, rule: c.link?.note,
     });
+    g.restore();
     onClick(px, cy, cw, ch, () => takeCard(i), 'rewardcard');
   });
 
@@ -631,7 +368,6 @@ function drawReward(t: number) {
 
 /* ── 增益掉落 ─────────────────────────────────────────────── */
 
-/** 精英 / 幕 Boss 的掉落：一张，拾取即生效；这一屏是收据，不是选择。 */
 /** 增益多久兑现一次，用玩家读得懂的话；作用域内部名不对玩家露出。 */
 function scopeLine(scope: PowerDef['scope']): string {
   switch (scope) {
@@ -643,38 +379,43 @@ function scopeLine(scope: PowerDef['scope']): string {
   }
 }
 
-function drawPowerDrop() {
+function revealRule(x: number, y: number, w: number, color: string, age: number) {
+  const k = reduceMotion() ? 1 : easeOut(clamp(age / 0.36, 0, 1));
+  cutRule(x, y, Math.max(6, w * k), color, 0.44);
+}
+
+function drawPowerDrop(age: number) {
   const p = G.panel;
   if (p.k !== 'powerdrop') return;
   const pw = POWER_BY_ID[p.id];
   if (!pw) return;
-  dim();
-
-  const cw = 252;
-  const ch = 322;
-  const w = 800;
-  // 面板高度跟着说明行数走：`desc` 是可选的（只说 card 装不下的边界），
-  // 写死 590 会让没有说明的增益留出半屏空白，而三行的又会被按钮压住最后一行。
-  const lines = pw.desc ? wrapText(pw.desc, w - 130).slice(0, 3) : [];
-  const h = lines.length ? 580 + (lines.length - 1) * 22 : 546;
+  const w = 640;
+  const pad = 36;
+  const size = 72;
+  const gap = 24;
+  const width = w - pad * 2 - size - gap;
+  g.font = font(17);
+  const effect = wrapText(pw.card, width);
+  g.font = font(14);
+  const details = pw.desc ? wrapText(pw.desc, width) : [];
+  const rowTop = 99;
+  const effectTop = 42;
+  const detailTop = effectTop + effect.length * 24 + 4;
+  const rowH = Math.max(size, details.length ? detailTop + (details.length - 1) * 21 + 10 : detailTop - 18);
+  const h = rowTop + rowH + 78;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
-  // 没有"不要"：增益不占牌位、不稀释牌组，拒绝没有好处。
-  box(x, y, w, h, withAlpha(pw.color, 0.5), null);
+  box(x, y, w, h, pw.color, null);
+  heading('获得增益', x + pad, y + 42, scopeLine(pw.scope));
+  revealRule(x + pad, y + rowTop - 10, w - pad * 2, pw.color, age);
 
-  heading('掉了一个增益', x + 44, y + 66, scopeLine(pw.scope));
-
-  const cx = x + (w - cw) / 2;
-  const cy = y + 118;
-  drawPowerEmblem(cx, cy, cw, ch, pw, { glow: hover(cx, cy, cw, ch) });
-  onClick(cx, cy, cw, ch, () => ackPower(), 'powerdrop');
-
-  g.font = font(14, 400, FONT_UI);
-  lines.forEach((ln, i) => {
-    text(ln, x + 50, cy + ch + 34 + i * 22, { size: 14, color: C.ink2 });
-  });
-
-  action(x + w / 2 - 110, y + h - 80, 220, 50, '知道了', () => ackPower());
+  const tx = x + pad + size + gap;
+  const ty = y + rowTop;
+  drawPowerIcon(x + pad, ty, size, pw.id);
+  text(pw.name, tx, ty + 12, { size: 24, weight: 700, family: FONT_TITLE, color: pw.color });
+  effect.forEach((ln, i) => text(ln, tx, ty + effectTop + i * 24, { size: 17 }));
+  details.forEach((ln, i) => text(ln, tx, ty + detailTop + i * 21, { size: 14, color: C.dim }));
+  action(x + w / 2 - 92, y + h - 62, 184, 44, '知道了', () => ackPower());
 }
 
 /* ── 白送的卡 ─────────────────────────────────────────────── */
@@ -691,8 +432,6 @@ function drawPowerDrop() {
 function drawCardGet() {
   const p = G.panel;
   if (p.k !== 'cardget') return;
-  dim();
-
   const n = p.ids.length;
   const cw = 300;
   const chh = 372;
@@ -700,7 +439,6 @@ function drawCardGet() {
   const rowW = n * cw + (n - 1) * gap;
   const w = Math.max(700, rowW + 160);
   const lines = p.note ? wrapText(p.note, w - 120).slice(0, 3) : [];
-  // 高度按内容推：注脚是可选的，写死会让只有一张卡的屏留出半屏空白。
   const top = 118;
   const h = top + chh + (lines.length ? 34 + lines.length * 24 : 0) + 134;
   const x = (VW - w) / 2;
@@ -731,12 +469,11 @@ function drawCardGet() {
 /* ── 复习点 ───────────────────────────────────────────────── */
 
 function drawRest(t: number) {
-  dim();
   const w = 1000;
   const h = 412;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.cyan, 0.4), null);
+  box(x, y, w, h, C.cyan, null);
 
   heading('复习', x + 44, y + 66, '这一层没有敌人。休息，或者动一动牌组。');
 
@@ -797,12 +534,11 @@ function drawCardPick(mode: 'up' | 'rm') {
   const p = G.panel;
   const pick = p.k === 'cardpick' ? p.pick : undefined;
   if (mode === 'up' && pick !== undefined) { drawUpPreview(pick); return; }
-  dim();
   const w = 1280;
   const h = 740;
   const x = (VW - w) / 2;
   const y = 90;
-  box(x, y, w, h, withAlpha(mode === 'up' ? C.gold : C.purple, 0.45));
+  box(x, y, w, h, mode === 'up' ? C.gold : C.purple);
 
   const pending = G.pendingCost;
   heading(mode === 'up' ? '精炼哪一张' : '遗忘哪一张', x + 44, y + 66,
@@ -883,13 +619,12 @@ function drawUpPreview(i: number) {
   const before = defOf(id);
   const after = defOf(upgradedId(id));
 
-  dim();
   const w = 900;
   const h = 640;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.gold, 0.45));
-  heading('精炼这张？', x + 40, y + 62, '左边是现在，右边是精炼后；确认了才会改牌组。');
+  box(x, y, w, h, C.gold);
+  heading('精炼这张？', x + 40, y + 66, '左边是现在，右边是精炼后；确认了才会改牌组。');
 
   const cw = 300;
   const chh = 372;
@@ -904,12 +639,11 @@ function drawUpPreview(i: number) {
   // 中间的箭头：两列之间的空隙就是它。
   text('→', x + w / 2, cy + chh / 2, { size: 40, align: 'center', color: C.gold, weight: 700 });
 
-  // 确认 / 返回。返回不动牌组，代价也还没收。
+  // 代价只在确认时结算。
   const bw = 200;
   const bh = 52;
   const by = y + h - 68;
-  action(x + w / 2 - bw - 16, by, bw, bh, '确认精炼', () => upgradeCard(i), 'primary');
-  action(x + w / 2 + 16, by, bw, bh, '返回', () => cancelPreview(), 'ghost');
+  action(x + (w - bw) / 2, by, bw, bh, '确认精炼', () => upgradeCard(i), 'primary');
 }
 
 /* ── 事件 ─────────────────────────────────────────────────── */
@@ -926,9 +660,7 @@ function drawEvent() {
   const optH = p.ev.opts.length * 88;
   const h = 130 + bodyH + 26 + optH + 24;
   const y = Math.max(80, (VH - h) / 2);
-
-  dim();
-  box(x, y, w, h, withAlpha(C.purple, 0.45), null);
+  box(x, y, w, h, C.purple, null);
 
   // 层号只从 curFloor() 出：这里原来读 G.node.r + 1，在第三幕事件面板上会
   // 显示「第 3 层」，而同一屏地图抬头写着「第 43 / 100 层」。
@@ -967,7 +699,6 @@ function drawEvent() {
 /* ── 牌组 / 牌堆 ──────────────────────────────────────────── */
 
 function drawGallery(title: string, list: string[]) {
-  dim();
   const w = 1280;
   const h = 740;
   const x = (VW - w) / 2;
@@ -1020,12 +751,11 @@ function drawGallery(title: string, list: string[]) {
  * 视觉细节全部交给 choiceCard()，这里只负责布局与命中。
  */
 function drawBoon() {
-  dim();
   const w = 1060;
   const h = 490;
   const x = (VW - w) / 2;
   const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.gold, 0.35));
+  box(x, y, w, h, C.gold);
   heading('这次从哪个模式开始', x + 44, y + 62,
     '差别只在开局带哪几个增益。');
 
@@ -1056,7 +786,7 @@ function drawBoon() {
     onClick(cx, cy, cw, ch, () => { G.panel = { k: 'topic', mode: m.id, picks: [] }; }, `mode:${m.id}`);
   });
 
-  text('选定后整局不变，想换就重开一局。Esc 返回。',
+  text('选定后整局不变。',
     x + 44, y + h - 26, { size: 12, color: C.faint });
 }
 
@@ -1069,7 +799,38 @@ function drawBoon() {
  * `BAL.retireAt` 次的。抽题逻辑对玩家是隐藏的，但"还剩多少"必须让他看见 ——
  * 题变少而不说明，玩家只会以为题库丢了。
  */
-function drawTopics(p: { mode: ModeId | null; picks: string[] }) {
+async function beginSelectedRun(p: { mode: ModeId | null; picks: string[]; msg?: string; loading?: boolean }) {
+  if (p.loading || p.picks.length < BAL.topicsMin) return;
+  p.loading = true;
+  p.msg = '';
+  const bankId = activeBankId();
+  const selectedBank = listBanks().find((bank) => bank.id === bankId);
+  if (selectedBank && !selectedBank.remote && !serviceOnline()) {
+    startRun(p.mode, [], p.picks);
+    return;
+  }
+  const topics = [...p.picks];
+  const retired = allQuestions()
+    .filter(isRetired)
+    .map((q) => q.qid);
+  const result = await requestRunPool({
+    bankId, topics, retired, quota: BAL.runTopicQuota,
+  });
+  // 用户等待期间可能按 Esc 离开；迟到的响应不能启动新局并清掉原存档。
+  if (G.panel !== p) return;
+  if (result.ok && result.questions?.length) {
+    startRun(p.mode, [], topics, result.questions, bankId);
+    return;
+  }
+  if (selectedBank && !selectedBank.remote) {
+    startRun(p.mode, [], topics);
+    return;
+  }
+  p.loading = false;
+  p.msg = result.error || '没有取到本局题目，请重试。';
+}
+
+function drawTopics(p: { mode: ModeId | null; picks: string[]; msg?: string; loading?: boolean }) {
   const src = sourceBank();
   const names = Object.keys(src.byTopic);
   const pad = 44;
@@ -1091,9 +852,8 @@ function drawTopics(p: { mode: ModeId | null; picks: string[] }) {
   const gridW = w - pad * 2;
   const cw = (gridW - gap * (cols - 1)) / cols;
 
-  dim();
-  box(x, y, w, h, withAlpha(C.gold, 0.35));
-  heading('这一局练哪几个主题', x + pad, y + 62,
+  box(x, y, w, h, C.gold);
+  heading('这一局练哪几个主题', x + pad, y + 66,
     `选 ${BAL.topicsMin}–${BAL.topicsMax} 个。勾选顺序就是出题顺序，开局后整局不变。`);
 
   const view = scrollArea(x + pad, y + 144, gridW, gridH, contentH, 'topic');
@@ -1109,13 +869,10 @@ function drawTopics(p: { mode: ModeId | null; picks: string[] }) {
     const hv = shown && hover(cx, cy, cw, cardH);
     const tint = topicColor(name);
 
-    roundRect(cx, cy, cw, cardH, 12);
-    g.fillStyle = on ? withAlpha(tint, 0.13)
-      : hv ? 'rgba(255,255,255,.055)' : 'rgba(255,255,255,.025)';
-    g.fill();
-    g.strokeStyle = on ? tint : (hv ? withAlpha(C.lineHi, 0.8) : C.line);
-    g.lineWidth = on ? 1.8 : 1.2;
-    g.stroke();
+    panel(cx, cy, cw, cardH, {
+      fill: on ? withAlpha(tint, 0.13) : hv ? C.panelHi : PRESS.sheet,
+      stroke: on ? tint : hv ? C.lineHi : C.line,
+    });
 
     // 左侧色条：和卡面、地图节点用的是同一套主题色
     roundRect(cx + 12, cy + 14, 4, cardH - 28, 2);
@@ -1144,7 +901,7 @@ function drawTopics(p: { mode: ModeId | null; picks: string[] }) {
         { size: 22, weight: 700, color: tint, align: 'right', family: FONT_TITLE });
     }
 
-    if (shown) {
+    if (shown && !p.loading) {
       onClick(cx, cy, cw, cardH, () => {
         const idx = p.picks.indexOf(name);
         if (idx >= 0) p.picks.splice(idx, 1);
@@ -1158,15 +915,17 @@ function drawTopics(p: { mode: ModeId | null; picks: string[] }) {
   const fy = y + h - 64;
   const bw = 190;
 
-  action(x + w - pad - bw * 2 - 14, fy, bw, 50, '随机挑几个', () => {
-    const want = BAL.topicsMin
-      + Math.floor(Math.random() * (BAL.topicsMax - BAL.topicsMin + 1));
-    p.picks = shuffle(names).slice(0, Math.min(want, names.length));
-  }, 'ghost', { size: 15 });
+  if (!p.loading) {
+    action(x + w - pad - bw * 2 - 14, fy, bw, 50, '随机挑几个', () => {
+      const want = BAL.topicsMin
+        + Math.floor(Math.random() * (BAL.topicsMax - BAL.topicsMin + 1));
+      p.picks = shuffle(names).slice(0, Math.min(want, names.length));
+    }, 'ghost', { size: 15 });
+  }
 
   if (p.picks.length >= BAL.topicsMin) {
-    action(x + w - pad - bw, fy, bw, 50, '开始这一局', () => startRun(p.mode, [], p.picks),
-      'primary', { size: 17, sub: `${p.picks.length} 个主题` });
+    action(x + w - pad - bw, fy, bw, 50, p.loading ? '准备题目…' : '开始这一局', () => { void beginSelectedRun(p); },
+      p.loading ? 'ghost' : 'primary', { size: 17, sub: `${p.picks.length} 个主题` });
   } else {
     text(`至少选 ${BAL.topicsMin} 个主题`, x + w - pad, fy + 30,
       { size: 15, color: withAlpha(C.red, 0.9), align: 'right' });
@@ -1175,12 +934,12 @@ function drawTopics(p: { mode: ModeId | null; picks: string[] }) {
   text(`已选 ${p.picks.length} / ${BAL.topicsMax}`, x + pad, fy + 18, { size: 14, color: C.ink2 });
   text(`同一道题答对 ${BAL.retireAt} 次之后不再抽到，但仍能在题库里看到。`,
     x + pad, fy + 42, { size: 12, color: C.faint });
+  if (p.msg) text(p.msg, x + pad, fy - 12, { size: 13, color: C.red });
 }
 
 /* ── 说明 ─────────────────────────────────────────────────── */
 
 function drawHelp() {
-  dim();
   const w = 1120;
   const x = (VW - w) / 2;
   const colW = (w - 96 - 36) / 2;
@@ -1323,7 +1082,7 @@ function drawHelp() {
   const contentH = PAD_TOP + maxCol;
   const h = Math.min(VH - 48, CHROME_H + contentH);
   const y = Math.max(24, (VH - h) / 2);
-  box(x, y, w, h, withAlpha(C.gold, 0.35));
+  box(x, y, w, h, C.gold);
   heading('怎么玩', x + 48, y + 70, '出牌可能要答题，答对了卡才生效。');
   // 正文进滚动区；直接照画会把最后一块切掉半行，比看不到更糟。
   const bodyTop = y + 128;
@@ -1353,592 +1112,4 @@ function drawHelp() {
   overflowAffordance(area, x + 24, w - 48);
 
   text('快捷键：Esc 取消 · 空格继续 · 数字键选选项', x + 48, y + h - 30, { size: 12, color: C.faint });
-}
-
-/* ── 题库 ─────────────────────────────────────────────────── */
-
-/**
- * 题库面板：三列 —— 题库 / 主题 / 题目。
- *
- * 上一版只回答"有哪几份"，而玩家问的是"这份里到底有什么、我练到哪了"：
- * 一份 400 道的题库在界面上只剩一个数字，答过的和没答过的长得一模一样。
- * 现在按主题拆开、题目逐条列出来，答对几次、答错几次、掌没掌握都在行上；
- * 点一条展开选项与答案 —— 不用真打一局就能核对题库本身。
- */
-let packTopic = '';
-let packOpen = '';
-
-function drawPack() {
-  const p = G.panel;
-  if (p.k !== 'pack') return;
-  dim();
-  const w = 1360;
-  const pad = 40;
-  const cw = w - pad * 2;
-  const x = (VW - w) / 2;
-
-  const rows = listBanks();
-  // 分三组：随程序的 / 服务端的 / 你导入的。来路不同的东西混成一条流水账，
-  // 玩家就看不出"我删得掉哪个"。
-  const groups = [
-    { label: '随程序的', list: rows.filter((r) => r.builtin) },
-    { label: '服务端的', list: rows.filter((r) => r.remote) },
-    { label: '你导入的', list: rows.filter((r) => !r.builtin && !r.remote) },
-  ].filter((gp) => gp.list.length);
-
-  const src = sourceBank();
-  const onRow = rows.find((r) => r.on);
-  const topics = Object.entries(src.byTopic).map(([name, list]) => ({ name, list }));
-  // 换了题库之后原来的主题名可能不在了：回落到第一个，省得每处都判空
-  if (!topics.some((t) => t.name === packTopic)) {
-    packTopic = topics[0]?.name ?? '';
-    packOpen = '';
-  }
-  const cur = topics.find((t) => t.name === packTopic);
-
-  const h = 712;
-  const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.cyan, 0.4));
-  heading('题库', x + pad, y + 56, '切到哪份，下一局开局生效。点主题、点题目看内容。');
-
-  drawPackStrip(x + pad, y + 104, cw, src.name, onRow, topics.length);
-
-  const bodyTop = y + 200;
-  const bodyH = 380;
-  const headH = 26;
-  const bankW = 300;
-  const topicW = 240;
-  const bankX = x + pad;
-  const topicX = bankX + bankW + 20;
-  const qX = topicX + topicW + 20;
-  const qW = cw - (qX - bankX);
-
-  // 滚轮只给指针所在的那一列：`consumeWheel()` 一帧只能取一次，
-  // 三列各取一次的话，只有第一个列表滚得动。
-  const wheel = consumeWheel();
-  const overBank = hover(bankX, bodyTop, bankW, bodyH);
-  const overTopic = hover(topicX, bodyTop, topicW, bodyH);
-  const overQ = hover(qX, bodyTop, qW, bodyH);
-
-  /* ── 题库列 ── */
-  const rowH = 46;
-  const bankNeed = groups.reduce((n, gp) => n + headH + gp.list.length * (rowH + 6), 0);
-  text(`题库 · ${rows.length} 份`, bankX + 4, bodyTop + 14, { size: 11, color: C.faint });
-  const bView = scrollArea(bankX, bodyTop + headH, bankW, bodyH - headH, bankNeed,
-    'pack', overBank ? wheel : 0);
-  let by = bView.y;
-  for (const gp of groups) {
-    text(`${gp.label} · ${gp.list.length}`, bView.x + 4, by + 14, { size: 10, color: C.faint });
-    by += headH;
-    for (const row of gp.list) {
-      // 滚出去的行必须一起失去热区，否则它会盖住下面那行的点击
-      const shown = by >= bView.y0 - 1 && by + rowH <= bView.y0 + (bodyH - headH) + 1;
-      const hv = shown && hover(bView.x, by, bankW, rowH);
-      roundRect(bView.x, by, bankW, rowH, 9);
-      g.fillStyle = row.on ? withAlpha(C.gold, 0.1)
-        : hv ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)';
-      g.fill();
-      if (row.on) {
-        g.fillStyle = C.gold;
-        roundRect(bView.x + 10, by + 10, 3, rowH - 20, 2);
-        g.fill();
-      }
-      text(row.name, bView.x + 24, by + 28, {
-        size: 14, weight: row.on ? 700 : 500,
-        color: row.on ? C.ink : C.ink2, maxW: bankW - 96,
-      });
-      text(`${row.total} 道`, bView.x + bankW - 16, by + 28, {
-        size: 11, color: row.on ? C.gold : C.dim, align: 'right', family: FONT_NUM,
-      });
-      if (shown) {
-        onClick(bView.x, by, bankW, rowH, () => {
-          if (row.on) return;
-          packOpen = '';
-          switchBank(row.id);
-        }, `bank:${row.id}`);
-      }
-      by += rowH + 6;
-    }
-  }
-  bView.restore();
-  overflowAffordance(bView, bankX, bankW);
-
-  /* ── 主题列 ── */
-  const tRowH = 40;
-  const topicNeed = topics.length * (tRowH + 4);
-  text(`主题 · ${topics.length}`, topicX + 4, bodyTop + 14, { size: 11, color: C.faint });
-  const tView = scrollArea(topicX, bodyTop + headH, topicW, bodyH - headH, topicNeed,
-    `pack-t:${onRow?.id ?? ''}`, overTopic ? wheel : 0);
-  let ty = tView.y;
-  for (const t of topics) {
-    const shown = ty >= tView.y0 - 1 && ty + tRowH <= tView.y0 + (bodyH - headH) + 1;
-    const sel = t.name === packTopic;
-    const hv = shown && hover(tView.x, ty, topicW, tRowH);
-    const mastered = t.list.filter((q) => isRetired(q)).length;
-    roundRect(tView.x, ty, topicW, tRowH, 8);
-    g.fillStyle = sel ? withAlpha(C.cyan, 0.12)
-      : hv ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)';
-    g.fill();
-    if (sel) {
-      g.fillStyle = C.cyan;
-      roundRect(tView.x + 8, ty + 9, 3, tRowH - 18, 2);
-      g.fill();
-    }
-    text(t.name, tView.x + 20, ty + 25, {
-      size: 13, weight: sel ? 700 : 500, color: sel ? C.ink : C.ink2, maxW: topicW - 92,
-    });
-    // 「掌握几道 / 一共几道」：这一列横着比的是进度，不是题量
-    text(`${mastered}/${t.list.length}`, tView.x + topicW - 14, ty + 25, {
-      size: 11, align: 'right', family: FONT_NUM,
-      color: mastered === t.list.length ? C.green : C.dim,
-    });
-    if (shown) {
-      onClick(tView.x, ty, topicW, tRowH, () => {
-        if (sel) return;
-        packTopic = t.name;
-        packOpen = '';
-      }, `topic:${t.name}`);
-    }
-    ty += tRowH + 4;
-  }
-  tView.restore();
-  overflowAffordance(tView, topicX, topicW);
-
-  /* ── 题目列 ── */
-  const list = packSorted(cur?.list ?? []);
-  let qNeed = 0;
-  for (const q of list) qNeed += qRowH(q) + 4;
-  text(`题目 · ${packTopic || '—'} · ${list.length} 道`,
-    qX + 4, bodyTop + 14, { size: 11, color: C.faint });
-  const qView = scrollArea(qX, bodyTop + headH, qW, bodyH - headH, qNeed,
-    `pack-q:${packTopic}`, overQ ? wheel : 0);
-  let qy = qView.y;
-  for (const q of list) qy += drawPackQuestion(qView, qX, qy, qW, q) + 4;
-  qView.restore();
-  overflowAffordance(qView, qX, qW);
-
-  /* ── 底栏 ── */
-  g.fillStyle = 'rgba(255,255,255,.06)';
-  g.fillRect(x + pad, y + 596, cw, 1);
-
-  const fy = y + 618;
-  action(x + pad, fy, 224, 46, '从文档建题库', () => void startDocFlow(), 'primary');
-  action(x + pad + 236, fy, 196, 46, '选一个 .md 文件', () => requestPackFile(), 'ghost', { size: 14 });
-  action(x + pad + 444, fy, 196, 46, '从剪贴板粘贴', () => pastePack(), 'ghost', { size: 14 });
-  if (!serviceOnline()) {
-    text('从文档建题库要先跑 npm run dev', x + w - pad, fy + 29,
-      { size: 12, color: C.faint, align: 'right' });
-  }
-
-  const ly = y + 688;
-  if (p.msg) {
-    g.font = font(13, 500, FONT_UI);
-    g.fillStyle = p.ok ? C.green : C.red;
-    wrapText(p.msg, cw).slice(0, 2).forEach((ln, i) => g.fillText(ln, x + pad, ly + i * 20));
-  } else {
-    // 没有消息时才占这行：格式速查是常态信息，不该和"刚发生了什么"抢位置
-    text('格式：## 主题 / ### 题干 / A) 选项 / = 答案字母 —— 样例 packs/algorithms.md',
-      x + pad, ly, { size: 12, color: C.faint, maxW: cw });
-  }
-}
-
-/** 题目行展开时占多高。画和量共用它，否则列表长度和滚动位置会各说各话。 */
-function qRowH(q: Question): number {
-  if (packOpen !== q.qid) return 44;
-  return 52 + q.options.length * 22 + 24 + (q.explain ? 18 : 0);
-}
-
-/**
- * 题目列的顺序：没掌握的排前面，掌握的沉到最后。
- *
- * 排的是"接下来该练哪道"，所以键是 错的次数多 → 对的次数少 → 题库原序。
- * 原序当兜底：没有历史的题按题库的顺序读，比按题号 hash 排好找得多。
- */
-function packSorted(list: Question[]): Question[] {
-  const key = (q: Question) => ({
-    done: rightCount(q.topic, q.qid) >= BAL.retireAt,
-    ok: rightCount(q.topic, q.qid),
-    bad: wrongCount(q.topic, q.qid),
-  });
-  return list
-    .map((q, i) => ({ q, i, k: key(q) }))
-    .sort((a, b) =>
-      Number(a.k.done) - Number(b.k.done)
-      || b.k.bad - a.k.bad
-      || a.k.ok - b.k.ok
-      || a.i - b.i)
-    .map((x) => x.q);
-}
-
-/** 一道题的状态：颜色 + 一句话。判据只在这儿，别处不许自己比 `retireAt`。 */
-function qStatusOf(q: Question): { color: string; label: string } {
-  const ok = rightCount(q.topic, q.qid);
-  const bad = wrongCount(q.topic, q.qid);
-  if (ok >= BAL.retireAt) return { color: C.green, label: '已掌握' };
-  if (ok > 0) return { color: C.gold, label: `答对 ${ok}/${BAL.retireAt}` };
-  if (bad > 0) return { color: C.red, label: `答错 ${bad}` };
-  return { color: C.faint, label: '未答' };
-}
-
-/** 题目行。返回这一行的实际高度（必须和 `qRowH` 一致）。 */
-function drawPackQuestion(
-  view: { y0: number; h: number }, x: number, cy: number, w: number, q: Question,
-): number {
-  const open = packOpen === q.qid;
-  const rowH = qRowH(q);
-  const shown = cy >= view.y0 - 1 && cy + rowH <= view.y0 + view.h + 1;
-  const hv = shown && hover(x, cy, w, rowH);
-  const st = qStatusOf(q);
-  const ok = rightCount(q.topic, q.qid);
-  const bad = wrongCount(q.topic, q.qid);
-  let infoY = 0;
-
-  roundRect(x, cy, w, rowH, 9);
-  g.fillStyle = open ? 'rgba(255,255,255,.045)'
-    : hv ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)';
-  g.fill();
-  if (open) {
-    g.strokeStyle = withAlpha(C.lineHi, 0.8);
-    g.lineWidth = 1;
-    roundRect(x, cy, w, rowH, 9);
-    g.stroke();
-  }
-
-  // 状态点：答过的题一眼挑得出来。颜色和结算面板同一套 —— 绿=掌握、金=还差几次、红=错过、灰=没答
-  g.beginPath();
-  g.arc(x + 18, cy + 22, 3, 0, Math.PI * 2);
-  g.fillStyle = st.color;
-  g.fill();
-
-  text(q.q, x + 32, cy + 27, {
-    size: 14, color: open ? C.ink : C.ink2, weight: open ? 600 : 400, maxW: w - 32 - 96,
-  });
-  text(st.label, x + w - 16, cy + 27, { size: 11, color: st.color, align: 'right' });
-
-  if (open) {
-    let oy = cy + 52;
-    q.options.forEach((opt, i) => {
-      const right = i === q.answer;
-      text(`${'ABCDEF'[i] ?? '?'}) ${opt}`, x + 32, oy, {
-        size: 13, color: right ? C.green : C.dim, weight: right ? 600 : 400, maxW: w - 64,
-      });
-      oy += 22;
-    });
-    text(`答对 ${ok} 次 · 答错 ${bad} 次`, x + 32, oy + 2, { size: 11, color: C.faint });
-    if (q.explain) {
-      text(q.explain, x + 32, oy + 20, { size: 11, color: C.faint, maxW: w - 64 });
-    }
-    infoY = oy + 2;
-  }
-
-  if (shown) {
-    onClick(x, cy, w, rowH, () => { packOpen = open ? '' : q.qid; }, `q:${q.qid}`);
-    // 「重置」必须注册在整行热区之后：命中是从后往前找的，
-    // 先注册就会被整行吞掉，点上去只会把这一行收起来。
-    if (open && ok + bad > 0) {
-      const rx = x + w - 16;
-      const rh = hover(rx - 60, infoY - 16, 64, 24);
-      text('重置', rx, infoY, { size: 11, color: rh ? C.red : C.dim, align: 'right' });
-      onClick(rx - 60, infoY - 16, 64, 24,
-        () => clearQuestionMemory(q.topic, q.qid), `reset:${q.qid}`);
-    }
-  }
-  return rowH;
-}
-
-/** 顶上那条：这份题库叫什么、从哪来、练到哪了。明细都在下面三列里。 */
-function drawPackStrip(
-  x: number, y: number, w: number, name: string, row: BankRow | undefined, topicCount: number,
-) {
-  const prog = bankProgress();
-  roundRect(x, y, w, 80, 12);
-  g.fillStyle = 'rgba(255,255,255,.022)';
-  g.fill();
-  g.strokeStyle = 'rgba(255,255,255,.07)';
-  g.lineWidth = 1;
-  roundRect(x, y, w, 80, 12);
-  g.stroke();
-
-  const cx = x + 22;
-  const cw = w - 44;
-  text(name, cx, y + 34, { size: 18, weight: 700, color: C.ink, maxW: cw - 380 });
-  const kind = row?.builtin ? '随程序' : row?.remote ? '服务端' : '你导入的';
-  text(`${kind} · ${topicCount} 个主题 · ${prog.total} 道题`, cx, y + 58, { size: 12, color: C.dim });
-
-  const rate = prog.answers ? Math.round((prog.ok / prog.answers) * 100) : 0;
-  text(`已掌握 ${prog.mastered} / ${prog.total}${prog.answers ? ` · 正确率 ${rate}% · 累计 ${prog.answers} 次` : ' · 还没答过题'}`,
-    x + w - 22, y + 58, { size: 12, color: C.ink2, align: 'right' });
-
-  // 删掉只对导入的那几份开放：随程序的在包里，服务端的在服务那侧
-  if (row && !row.builtin && !row.remote) {
-    const dh = hover(x + w - 22 - 70, y + 16, 70, 28);
-    text('删掉', x + w - 22, y + 34, { size: 12, color: dh ? C.red : C.faint, align: 'right' });
-    onClick(x + w - 22 - 70, y + 16, 70, 28, () => dropBank(row.id), `bank-del:${row.id}`);
-  }
-
-  // 不放进度条：400 道里掌握 1 道时，填充只有几像素，"条"读起来像一条脏边。
-  // 掌握到哪了由左右两处数字回答 —— 这里一句话、主题列每行一个 `x/80`。
-}
-
-/**
- * 划分计划：出题之前先让玩家看见「会切成哪几节」。
- *
- * 这一屏存在的理由只有一个：切分决定整份题库的样子，而它没法在出题之后补救 ——
- * 切错了只能重跑，重跑要花模型额度。所以这里只做三件事：说清怎么切的、
- * 把每节摆出来、给一个「按这份出题」和一个「换一种切法」。
- */
-function drawPlanView(v: PlanView) {
-  dim();
-  const w = 1180;
-  const pad = 40;
-  const cw = w - pad * 2;
-  const x = (VW - w) / 2;
-  const h = 700;
-  const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.gold, 0.4), closePlan);
-
-  heading('划分计划', x + pad, y + 56, '确认之后按这份计划出题。');
-
-  const tier = v.tier === 'toc' ? '按目录'
-    : v.tier === 'agentic' ? '模型分章'
-      : v.tier === 'fixed' ? '按固定大小' : '尚未切分';
-  roundRect(x + pad, y + 96, cw, 64, 12);
-  g.fillStyle = 'rgba(255,255,255,.022)';
-  g.fill();
-  g.strokeStyle = 'rgba(255,255,255,.07)';
-  g.lineWidth = 1;
-  roundRect(x + pad, y + 96, cw, 64, 12);
-  g.stroke();
-
-  text(v.name, x + pad + 20, y + 124, { size: 16, weight: 700, color: C.ink, maxW: cw - 340 });
-  text(`${v.chars} 字 · ${tier} · ${v.topics.length} 节`, x + pad + 20, y + 146,
-    { size: 12, color: C.dim });
-  // 每一节出几道是一句规则，不是进度：放在角上，别和切法抢
-  text('每节最多 20 道', x + w - pad - 20, y + 146, { size: 12, color: C.faint, align: 'right' });
-
-  if (v.notes.length) {
-    text(v.notes.join('；'), x + pad + 4, y + 182, { size: 12, color: C.faint, maxW: cw - 8 });
-  }
-
-  const listTop = y + 198;
-  const listH = 372;
-  const rowH = 62;
-  const gap = 6;
-  const need = v.topics.length * (rowH + gap);
-  const view = scrollArea(x + pad, listTop, cw, listH, need, 'plan');
-
-  if (!v.topics.length) {
-    text(v.msg || '还没有切出任何一节。', x + pad + cw / 2, listTop + 90,
-      { size: 14, color: C.dim, align: 'center' });
-  }
-  let cy = view.y;
-  v.topics.forEach((t, i) => {
-    const hv = cy + rowH > view.y0 && cy < view.y0 + listH && hover(view.x, cy, cw, rowH);
-    roundRect(view.x, cy, cw, rowH, 9);
-    g.fillStyle = hv ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)';
-    g.fill();
-
-    text(String(i + 1), view.x + 16, cy + 26, {
-      size: 11, color: C.faint, family: FONT_NUM,
-    });
-    text(t.title, view.x + 44, cy + 26, {
-      size: 15, weight: 600, color: C.ink, maxW: cw - 44 - 120,
-    });
-    text(`${t.chars} 字`, view.x + cw - 16, cy + 26, {
-      size: 12, color: C.dim, align: 'right', family: FONT_NUM,
-    });
-    // 摘要来自模型还是首句，直接标在行上：没有模型时"摘要"只是开头第一句
-    const tag = t.summarized === 'model' ? '' : '（首句）';
-    text(`${t.summary}${tag}`, view.x + 44, cy + 48, {
-      size: 12, color: C.faint, maxW: cw - 44 - (t.merged ? 200 : 40),
-    });
-    if (t.merged && t.merged > 1) {
-      text(`并了 ${t.merged} 节 · 相似 ${t.sim ?? 0}%`, view.x + cw - 16, cy + 48,
-        { size: 11, color: C.gold, align: 'right' });
-    }
-    cy += rowH + gap;
-  });
-  view.restore();
-  overflowAffordance(view, x + pad, cw);
-
-  g.fillStyle = 'rgba(255,255,255,.06)';
-  g.fillRect(x + pad, y + 592, cw, 1);
-
-  if (v.busy) {
-    // 跑着的时候一个按钮都不给：这一屏的每一步都要调模型，重复点就是重复花钱
-    text(v.msg || '处理中…', x + pad, y + 630, { size: 14, color: C.gold });
-    text('这一步在服务里跑，别关页面。', x + w - pad, y + 630,
-      { size: 12, color: C.faint, align: 'right' });
-  } else {
-    const fy = y + 614;
-    action(x + pad, fy, 200, 46, '按这份出题', () => void approvePlan(), 'primary');
-    let bx = x + pad + 212;
-    if (v.canAgentic && v.tier !== 'agentic') {
-      // 授权就在按钮上：点它之前，玩家读到的是"这会调模型"，而不是一句免责声明
-      action(bx, fy, 168, 46, '让模型分章', () => void replan('agentic'), 'ghost', { size: 14 });
-      bx += 180;
-    }
-    if (v.tier && v.tier !== 'fixed') {
-      action(bx, fy, 168, 46, '按固定大小切', () => void replan('fixed'), 'ghost', { size: 14 });
-      bx += 180;
-    }
-    action(bx, fy, 168, 46, '换一份文档', () => void startDocFlow(), 'ghost', { size: 14 });
-  }
-
-  // 这一行只在"刚发生了什么"的时候占位：没有消息就空着，不拿它讲设计
-  if (v.msg && !v.busy) {
-    g.font = font(13, 500, FONT_UI);
-    g.fillStyle = v.ok ? C.green : C.red;
-    wrapText(v.msg, cw).slice(0, 2).forEach((ln, i) => g.fillText(ln, x + pad, y + 682 + i * 20));
-  }
-}
-
-/**
- * 设置：说明、本机服务、出题模型。三行都是"看一眼状态、按一下就走"，
- * 需要输入长串字符的只有模型参数 —— 那一项单独画一页，见 `drawModelForm`。
- */
-function drawSettings(t: number) {
-  const p = G.panel;
-  if (p.k !== 'settings') return;
-  if (p.form) {
-    drawModelForm(p.form, p.msg, p.ok, t);
-    return;
-  }
-  dim();
-  const w = 760;
-  const rowH = 100;
-  const h = 112 + rowH * 3 + 76;
-  const x = (VW - w) / 2;
-  const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.gold, 0.35));
-  heading('设置', x + 44, y + 62, '说明、本机服务、出题模型 —— 都是这台机器上的事。');
-
-  const online = serviceOnline();
-  const ready = serviceReady();
-  const remote = listBanks().filter((b) => b.remote).length;
-
-  const rows = [
-    {
-      name: '玩法说明',
-      desc: '牌怎么打、题从哪来、界面上每块是什么',
-      btn: '打开 ›',
-      color: C.dim,
-      run: () => { G.panel = { k: 'help' }; },
-    },
-    {
-      name: '本机服务',
-      // 连上时不报地址：页面从哪个来源来，它就在哪个来源后面（5178 会转发到 7777）。
-      // 地址只在连不上时有用 —— 那才是需要你去核对的时刻。
-      desc: online
-        ? (remote ? `已连接 · 另有 ${remote} 份服务端题库` : '已连接 · 服务端还没有自己的题库')
-        : '未连接 · 起 npm run dev（127.0.0.1:7777）',
-      btn: online ? '重新连接' : '试着连接',
-      color: online ? C.green : C.dim,
-      run: () => { void reconnectService(); },
-    },
-    {
-      name: '出题模型',
-      desc: ready
-        ? `已配置（${serviceModelName() || '默认模型'}）· 用来从文档生成题库`
-        : '未配置 —— 「从文档建题库」要先配它',
-      btn: '修改 ›',
-      color: ready ? C.green : C.dim,
-      run: openModelForm,
-    },
-  ];
-
-  rows.forEach((r, i) => {
-    const ry = y + 112 + i * rowH;
-    if (i) {
-      g.fillStyle = 'rgba(255,255,255,.06)';
-      g.fillRect(x + 44, ry, w - 88, 1);
-    }
-    text(r.name, x + 44, ry + 40, { size: 16, weight: 700, color: C.ink });
-    text(r.desc, x + 44, ry + 64, { size: 12, color: r.color, maxW: w - 88 - 168 });
-    action(x + w - 44 - 132, ry + 26, 132, 40, r.btn, r.run, 'ghost', { size: 14 });
-  });
-
-  const fy = y + h - 36;
-  if (p.msg) {
-    g.font = font(13, 500, FONT_UI);
-    g.fillStyle = p.ok ? C.green : C.red;
-    const lines = wrapText(p.msg, w - 88).slice(0, 2);
-    lines.forEach((ln, i) => g.fillText(ln, x + 44, fy - (lines.length - 1 - i) * 19));
-  } else {
-    text('Esc 关闭', x + 44, fy, { size: 12, color: C.faint });
-  }
-}
-/**
- * 模型参数的编辑页：接口地址、模型、密钥。
- *
- * 地址和模型名带服务报上来的当前值；密钥永远是空框 —— 服务从不下发 key，
- * 所以这里能"改"不能"看"，留空就是不改。
- *
- * 画布没有 DOM 输入框，字段由 `textfield.ts` 画、按键由 `settings.ts` 的
- * `settingsKey` 收拢 —— 这一页只负责排版和命中矩形。
- */
-function drawModelForm(f: ModelForm, msg: string, ok: boolean, t: number) {
-  dim();
-  const w = 700;
-  const h = 448;
-  const x = (VW - w) / 2;
-  const y = (VH - h) / 2;
-  box(x, y, w, h, withAlpha(C.gold, 0.35));
-  heading('设置 › 出题模型', x + 40, y + 58, '服务拿这组参数从文档生成题库。存在它那侧，不留在浏览器里。');
-
-  const caretOn = Math.sin(t * 5) > -0.45; // 不闪的竖线看着像排版错误
-  // 左一列标签、中间一列输入、右一列放「显示」。三格同宽，读起来是一张表而不是三块空框。
-  const labX = x + 150;
-  const fx = x + 166;
-  const fw = 420;
-  const kinds = [
-    ['接口地址', 'https://api.deepseek.com/v1'],
-    ['模型', 'deepseek-chat'],
-    ['密钥', '留空 = 不改'],
-  ] as const;
-
-  modelFields(f).forEach((field, i) => {
-    const ry = y + 124 + i * 58;
-    const focused = f.field === i;
-    text(kinds[i][0], labX, ry + 29, { size: 13, color: focused ? C.gold : C.dim, align: 'right' });
-    drawField(fx, ry, fw, 46, field, {
-      focused,
-      masked: i === 2 && !f.reveal,
-      placeholder: kinds[i][1],
-      caretOn: focused ? caretOn : false,
-      rightGap: focused && field.value ? 30 : 0,
-    });
-    onClick(fx, ry, fw, 46, () => focusModelField(i));
-    // 有焦点且非空时给一个 ✕：整串换掉比一个字一个字退格现实，
-    // 而"点进格里就全选"那种隐形行为在没有选区高亮时会让人丢数据。
-    if (focused && field.value) {
-      const clearAt = fx + fw - 20;
-      const lit = hover(clearAt - 12, ry + 11, 28, 24);
-      text('✕', clearAt, ry + 29, { size: 12, color: lit ? C.ink : C.faint, align: 'center' });
-      onClick(clearAt - 12, ry + 11, 28, 24, () => { field.value = ''; field.caret = 0; });
-    }
-    if (i === 2) {
-      // 明文开关做成文字链接：它属于这一格，不该长成第二颗按钮
-      const lit = hover(fx + fw + 12, ry + 12, 64, 24);
-      text(f.reveal ? '隐藏' : '显示', fx + fw + 64, ry + 29, {
-        size: 12, color: lit ? C.ink : C.dim, align: 'right',
-      });
-      onClick(fx + fw + 12, ry + 12, 64, 24, toggleReveal);
-    }
-  });
-
-  g.fillStyle = 'rgba(255,255,255,.06)';
-  g.fillRect(x + 40, y + 318, w - 80, 1);
-
-  if (msg) {
-    g.save();
-    g.font = font(13, 500, FONT_UI);
-    g.fillStyle = ok ? C.green : C.red;
-    wrapText(msg, w - 80).slice(0, 1).forEach((ln) => g.fillText(ln, x + 40, y + 346));
-    g.restore();
-  }
-  text('Tab 换一格 · Enter 保存 · Esc 返回', x + 40, y + 396, { size: 11, color: C.faint });
-
-  action(x + w - 40 - 236, y + h - 80, 104, 42, '取消', closeModelForm, 'ghost', { size: 15 });
-  action(x + w - 40 - 120, y + h - 80, 120, 42, '保存', () => { void saveModelForm(); }, 'primary', { size: 15 });
 }

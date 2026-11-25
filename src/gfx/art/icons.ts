@@ -8,8 +8,7 @@ import { g } from '../canvas';
  *      矢量数据几百字节一个，不进任何位图，单文件构建不受影响；
  *   2. 只描形状不上色：颜色一律由调用方传入，图标永远跟着
  *      效果色 / 主题色 / 警示色走，换肤只改 theme.ts；
- *   3. s 是描边路径，f 是实心路径（先实心后描边）。风格和 ui.ts 的
- *      手画线条图标同一种语言：圆头、粗细随尺寸、剪影优先。
+ *   3. s 是描边路径，f 是实心路径（先实心后描边）。平刀口、剪影优先。
  *
  * 加新图标时在 ART_ICONS 里加一项、在图集页（?dev=atlas）看协调度即可。
  */
@@ -21,10 +20,10 @@ export interface ArtIcon {
 }
 
 export const ART_ICONS = {
-  /** 猛击：尖朝下的剑 —— 和 ui.ts 的矛头同一个读法，加了护手和剑柄 */
+  /** 猛击：刀身实心，小尺寸仍能与治疗标记区分。 */
   strike: {
-    s: ['M7.5 9.5 L16.5 9.5', 'M12 9 L12 4'],
-    f: ['M12 22 L9.2 10.5 L14.8 10.5 Z'],
+    s: ['M6 9 L18 9', 'M12 8 L12 3', 'M9.5 3 L14.5 3'],
+    f: ['M7.5 11 L13 11 L12 22 L9.5 18 Z M14.5 11 L16.5 11 L13.5 19 Z'],
   },
   /** 洞察：箭从圆环里偏心穿过（环像被串在箭上）—— 环在穿越点断开，"穿透"才读得出来 */
   pierce: {
@@ -38,8 +37,8 @@ export const ART_ICONS = {
   /** 巩固：盾 + 中脊 */
   guard: {
     s: [
-      'M12 3 L19 5.8 L19 11.5 C19 16.5 16.2 19.8 12 21.3 C7.8 19.8 5 16.5 5 11.5 L5 5.8 Z',
-      'M12 7 L12 16.5',
+      'M12 3 L19 6 L18 15 L12 21 L6 15 L5 6 Z',
+      'M12 7 L12 16',
     ],
   },
   /** 内化：水滴落入杯 —— 把伤害收进自己身体 */
@@ -112,9 +111,25 @@ export const ART_ICONS = {
   crown: {
     s: ['M4 18.6 L2.9 7.2 L8.3 11.2 L12 4 L15.7 11.2 L21.1 7.2 L20 18.6 Z'],
   },
+  records: { s: ['M5 3 H19 V21 H5 Z M8 3 V21 M11 8 H16 M11 12 H16 M11 16 H15'] },
+  tasks: { s: ['M4 8 H10 L12 10 H20 V20 H4 Z M7 5 H19 V8 M8 15 H16'] },
+  close: { s: ['M6 6 L18 18 M6 18 L18 6'] },
+  back: { s: ['M14 5 L7 12 L14 19'] },
+  forward: { s: ['M10 5 L17 12 L10 19'] },
+  expand: { s: ['M5 9 L12 16 L19 9'] },
+  collapse: { s: ['M5 15 L12 8 L19 15'] },
+  check: { s: ['M5 12 L10 17 L19 7'] },
+  cards: { s: ['M7 4 H18 V20 H7 Z M11 8 H14 M11 12 H14 M4 8 V22 H14'] },
+  discard: { s: ['M4 14 V20 H20 V14 M12 4 V15 M8 11 L12 15 L16 11'] },
+  turn: { s: ['M6 4 H18 M6 20 H18 M7 4 L8 9 L12 12 L16 9 L17 4 M7 20 L8 15 L12 12 L16 15 L17 20'] },
+  floor: { s: ['M3 6 H21 M6 12 H18 M9 18 H15'] },
+  heart: { s: [], f: ['M12 21 L4 13 L3 8 L7 4 L12 7 L17 4 L21 8 L20 13 Z'] },
+  flame: { s: [], f: ['M7 21 L4 16 L6 10 L9 13 L13 3 L15 10 L19 12 L20 17 L16 21 L13 21 L15 18 L12 14 L9 18 L11 21 Z'] },
+  disrupt: { s: ['M5 5 L19 19 M5 19 L19 5 M12 3 V6 M12 18 V21'] },
 } satisfies Record<string, ArtIcon>;
 
 export type ArtIconName = keyof typeof ART_ICONS;
+const paths = new Map<ArtIconName, { strokes: Path2D[]; fills: Path2D[] }>();
 
 /**
  * 画一枚图标。cx/cy 是中心点，size 是外接方框边长；
@@ -124,18 +139,23 @@ export function drawArtIcon(
   name: ArtIconName, cx: number, cy: number, size: number, color: string,
   opts: { alpha?: number } = {},
 ) {
-  const ic: ArtIcon = ART_ICONS[name];
+  let ic = paths.get(name);
+  if (!ic) {
+    const def: ArtIcon = ART_ICONS[name];
+    ic = { strokes: def.s.map(d => new Path2D(d)), fills: (def.f ?? []).map(d => new Path2D(d)) };
+    paths.set(name, ic);
+  }
   const k = size / 24;
   g.save();
   g.translate(cx - 12 * k, cy - 12 * k);
   g.scale(k, k);
-  if (opts.alpha !== undefined) g.globalAlpha = opts.alpha;
-  g.lineCap = 'round';
+  if (opts.alpha !== undefined) g.globalAlpha *= opts.alpha;
+  g.lineCap = 'butt';
   g.lineJoin = 'round';
   g.strokeStyle = color;
   g.fillStyle = color;
   g.lineWidth = 1.9;
-  if (ic.f) for (const d of ic.f) g.fill(new Path2D(d));
-  for (const d of ic.s) g.stroke(new Path2D(d));
+  for (const d of ic.fills) g.fill(d);
+  for (const d of ic.strokes) g.stroke(d);
   g.restore();
 }

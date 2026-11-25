@@ -10,8 +10,7 @@ import { clamp01 } from './geom';
  *
  *   1. `groundGlow` —— 脚下一滩有层次的光：外散光 / 光池 / 接地点 + 地面细环 + 浮尘。
  *      旧版是一层扁掉的径向渐变，边缘糊成一团，读不出"光照在砖面上"。
- *   2. `shieldDome` + `shieldSeal` —— 护盾的"罩"和地面封环，玩家和敌人同款：
- *      罩在立绘之前画（光从脚下升起来），封环在立绘之后画（压在脚前面）。
+ *   2. `shieldDome` —— 双方共用的护盾光，垫在立绘后面，不盖住人物轮廓。
  *
  * 语言仍然跟全局一致：最亮的地方只有 1–2px，靠层次而不是靠荧光堆亮度。
  */
@@ -130,117 +129,5 @@ export function shieldDome(o: { x: number; y: number; rx: number; ry: number; t:
   g.beginPath();
   g.arc(0, 0, o.rx * 1.02, 0, TAU);
   g.fill();
-  g.restore();
-}
-
-/** 护盾的「地面封环」：画在立绘之后，压在脚前面。 */
-export function shieldSeal(o: { x: number; y: number; rx: number; ry: number; t: number; power: number }) {
-  const a = clamp01(o.power);
-  if (a <= 0.01) return;
-  const { x, y, rx, ry, t } = o;
-  const p = 0.5 + 0.5 * Math.sin(t * 2.2);
-
-  g.save();
-  g.globalCompositeOperation = 'lighter';
-
-  // 罩的前景一层：极淡，只为了让护罩"盖到身上"，而不是只在地上画一个圈。
-  // 立绘本身是亮的，罩画在它后面会被洗掉，所以这一层必须压在立绘之后。
-  g.save();
-  g.translate(x, y - 40);
-  g.scale(1, 2.4);
-  const hz = g.createRadialGradient(0, 0, rx * 0.06, 0, 0, rx * 0.96);
-  hz.addColorStop(0, withAlpha(C.blue, 0.085 * a));
-  hz.addColorStop(0.55, withAlpha(C.blue, 0.034 * a));
-  hz.addColorStop(1, withAlpha(C.blue, 0));
-  g.fillStyle = hz;
-  g.beginPath();
-  g.arc(0, 0, rx * 0.96, 0, TAU);
-  g.fill();
-  g.restore();
-
-  // 内圈：实线。护盾要有"厚度"，一圈虚线只会读成提示框。
-  g.strokeStyle = withAlpha(C.blue, (0.34 + 0.12 * p) * a);
-  g.lineWidth = 1;
-  g.beginPath();
-  g.ellipse(x, y, rx * 0.74, ry * 0.74, 0, 0, TAU);
-  g.stroke();
-
-  // 外圈：细虚线沿地面慢慢转 —— 转的是地上的封环，不是套在身上的大圈。
-  g.setLineDash([7, 11]);
-  g.lineDashOffset = -t * 11;
-  g.strokeStyle = withAlpha(C.blue, 0.3 * a);
-  g.beginPath();
-  g.ellipse(x, y, rx, ry, 0, 0, TAU);
-  g.stroke();
-  g.setLineDash([]);
-
-  // 扫光：一段带尾巴的亮弧绕圈，是"封环在运转"唯一的证据。
-  const sweeps = 6;
-  for (let i = 0; i < sweeps; i++) {
-    const a0 = t * 0.8 - i * 0.1;
-    g.strokeStyle = withAlpha(C.blue, 0.5 * a * (1 - i / sweeps));
-    g.lineWidth = i === 0 ? 1.8 : 1.1;
-    g.beginPath();
-    g.ellipse(x, y, rx, ry, 0, a0 - 0.1, a0);
-    g.stroke();
-  }
-
-  // 四个铆点：沿椭圆法线方向伸出的短线，像封条上的钉
-  for (let i = 0; i < 4; i++) {
-    const ang = Math.PI / 4 + (i * Math.PI) / 2;
-    const ca = Math.cos(ang);
-    const sa = Math.sin(ang);
-    const nx = ca / rx;
-    const ny = sa / ry;
-    const L = Math.hypot(nx, ny) || 1;
-    const px = x + ca * rx * 0.87;
-    const py = y + sa * ry * 0.87;
-    g.strokeStyle = withAlpha(C.blue, 0.42 * a);
-    g.lineWidth = 1.2;
-    g.beginPath();
-    g.moveTo(px - (nx / L) * 5, py - (ny / L) * 5);
-    g.lineTo(px + (nx / L) * 5, py + (ny / L) * 5);
-    g.stroke();
-  }
-
-  // 光栅：从封环上升起来的几道短线，把"罩"的边界勾出来。
-  // 只画到一半高度就淡掉，绝不连成整圈 —— 连起来就又变成套在身上的箍了。
-  const fence = 10;
-  for (let i = 0; i < fence; i++) {
-    const ang = (i / fence) * TAU + 0.31;
-    const ca = Math.cos(ang);
-    const sa = Math.sin(ang);
-    const px = x + ca * rx * 0.99;
-    const py = y + sa * ry * 0.99;
-    const h = 26;
-    const al = (0.16 + 0.1 * (0.5 + 0.5 * Math.sin(t * 1.7 + i * 1.3))) * a;
-    g.strokeStyle = withAlpha(C.blue, al);
-    g.lineWidth = 1;
-    g.beginPath();
-    g.moveTo(px, py);
-    g.lineTo(px, py - h * 0.55);
-    g.stroke();
-    g.strokeStyle = withAlpha(C.blue, al * 0.4);
-    g.beginPath();
-    g.moveTo(px, py - h * 0.55);
-    g.lineTo(px, py - h);
-    g.stroke();
-  }
-
-  // 光屑：从封环上升起来的蓝点，越往上越淡 —— 护罩正在"充能"
-  for (let i = 0; i < 6; i++) {
-    const seed = (i * 0.371) % 1;
-    const ang = seed * TAU;
-    const u = (t * (0.2 + (i % 3) * 0.04) + seed) % 1;
-    const al = Math.sin(Math.PI * u) * 0.55 * a;
-    if (al <= 0.02) continue;
-    const px = x + Math.cos(ang) * rx * (0.82 - u * 0.14);
-    const py = y + Math.sin(ang) * ry * (0.82 - u * 0.14) - u * 54;
-    g.fillStyle = withAlpha(C.blue, al);
-    g.beginPath();
-    g.arc(px, py, 1.1 + (i % 2) * 0.6, 0, TAU);
-    g.fill();
-  }
-
   g.restore();
 }

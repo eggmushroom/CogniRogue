@@ -124,6 +124,7 @@ export function askCard(idx: number) {
       const drop = wrongs[Math.floor(Math.random() * wrongs.length)];
       view = {
         options: view.options.filter((_, i) => i !== drop),
+        originalIndices: view.originalIndices.filter((_, i) => i !== drop),
         answer: drop < view.answer ? view.answer - 1 : view.answer,
       };
     }

@@ -20,11 +20,11 @@ export default defineConfig({
   plugins: [viteSingleFile()],
   // 端口固定成 5178：tools/smoke.mjs 的默认目标就是它，两边对不上就跑不起来
   server: {
-    port: 5178,
+    port: Number(process.env.WEB_PORT ?? 5178),
     strictPort: true,
-    // 开发时把 /api 转给本机题库服务（npm run serve）。浏览器只认一个来源，
+    // 开发时把 /api 转给本机题库服务（uv run uvicorn server.app:app）。浏览器只认一个来源，
     // 前端那边也就只剩一个地址要算 —— 见 core/library/remote.ts 的 setServiceBase。
-    proxy: { '/api': 'http://127.0.0.1:7777' },
+    proxy: { '/api': `http://127.0.0.1:${process.env.API_PORT ?? 7777}` },
   },
   build: {
     target: 'es2022',

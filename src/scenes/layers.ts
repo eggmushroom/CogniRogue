@@ -1,5 +1,5 @@
 import { g, VH, VW } from '../gfx/canvas';
-import { C } from '../gfx/theme';
+import { C, SCRIM, withAlpha } from '../gfx/theme';
 import { drawBackdrop, drawMotes } from '../gfx/backdrop';
 import { drawAtlas } from './atlas';
 import { drawBattle } from './battle';
@@ -39,7 +39,7 @@ export function drawSceneBackdrop(screen: string, t: number) {
     return;
   }
   const dim = screen === 'title' ? 0.72 : screen === 'map' ? 0.66 : 0.58;
-  drawBackdrop(t, dim);
+  drawBackdrop(dim);
   drawMotes(t);
 }
 
@@ -48,12 +48,18 @@ export interface SceneHooks {
   openSettings(): void;
 }
 
+/** 只留背景的浮层共用遮罩；面板移动时，遮罩仍固定在画幅上。 */
+export function drawSceneScrim() {
+  g.fillStyle = withAlpha(C.void, SCRIM);
+  g.fillRect(0, 0, VW, VH);
+}
+
 /** 世界层：HUD / 节点 / 立绘 / 手牌，以及它们各自的点击热区。 */
-export function drawSceneWorld(screen: string, t: number, dt: number, hooks: SceneHooks) {
+export function drawSceneWorld(screen: string, t: number, dt: number, hooks: SceneHooks, defeat = 0) {
   switch (screen) {
     case 'atlas': drawAtlas(t); return;
     case 'title': drawTitle(t, hooks.openPack, hooks.openSettings); return;
     case 'map': drawMap(t, dt); return;
-    default: drawBattle(t, dt); return;
+    default: drawBattle(t, dt, defeat); return;
   }
 }

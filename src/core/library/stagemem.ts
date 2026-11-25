@@ -1,108 +1,142 @@
 import type { StageDigest } from '../model/types';
 import { readStore, storeAvailable, writeStore } from '../infra/storage';
+import { G } from '../infra/state';
+import { activeBankId } from './bank';
 
-/**
- * 按章节记的学习档案：章节 + 题号的正确/错误次数，出题和结算页读它。
- * 不参与战斗结算，只在答题后记账、结算 / 过幕时落盘。
- */
+const ANSWERS_KEY = 'cognirogue.answers.pending.v2';
+const MEMORY_KEY = 'cognirogue.stage-memory.v2';
 
-const KEY = 'cognirogue.stage.v1';
-
-interface QStat { ok: number; bad: number }
+interface QStat { ok: number; bad: number; attempts: number[] }
 interface StageMemEntry {
   ok: number;
   bad: number;
   q: Record<string, QStat>;
 }
 
-const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-const countOf = (v: unknown): number => (isNum(v) && v > 0 ? Math.floor(v) : 0);
+export interface AnswerRecordBase {
+  id: string;
+  bankId: string;
+  runId?: string;
+  topic: string;
+  qid: string;
+  archived: boolean;
+}
 
-/** 读坏条目时保留能读的字段，不整份拒绝 —— 跨局积累的错题不该因一行 JSON 全丢。 */
-function parseStageMem(raw: string): Record<string, StageMemEntry> {
-  try {
-    const data: unknown = JSON.parse(raw);
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return {};
-    const out: Record<string, StageMemEntry> = Object.create(null);
-    for (const topic of Object.keys(data)) {
-      const v = (data as Record<string, unknown>)[topic];
-      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
-      const e = v as Record<string, unknown>;
-      const q: Record<string, QStat> = Object.create(null);
-      const rawQ = e.q;
-      if (rawQ && typeof rawQ === 'object' && !Array.isArray(rawQ)) {
-        for (const qid of Object.keys(rawQ as Record<string, unknown>)) {
-          const s = (rawQ as Record<string, unknown>)[qid];
-          if (!s || typeof s !== 'object' || Array.isArray(s)) continue;
-          const qs = s as Record<string, unknown>;
-          q[qid] = { ok: countOf(qs.ok), bad: countOf(qs.bad) };
-        }
-      }
-      out[topic] = { ok: countOf(e.ok), bad: countOf(e.bad), q };
-    }
-    return out;
-  } catch {
-    return {};
+export type AnswerRecord = AnswerRecordBase & (
+  | { type: 'answer'; right: boolean; choice: number }
+  | { type: 'reset' }
+  | { type: 'archive' }
+);
+
+type NewAnswerRecord = Omit<AnswerRecordBase, 'id' | 'archived'> & (
+  | { type: 'answer'; right: boolean; choice: number }
+  | { type: 'reset' }
+  | { type: 'archive' }
+);
+
+let history: AnswerRecord[] = loadAnswerHistory();
+export let STAGE_MEM: Record<string, StageMemEntry> = loadStageMemory();
+
+function applyRecord(record: AnswerRecord) {
+  if (record.type === 'archive') return;
+  const e = stageMemOf(record.topic);
+  if (record.type === 'reset') {
+    delete e.q[record.qid];
+    return;
   }
+  const field = record.right ? 'ok' : 'bad';
+  e[field] += 1;
+  const stat = (e.q[record.qid] ??= { ok: 0, bad: 0, attempts: [] });
+  stat[field] += 1;
+  stat.attempts.push(record.choice);
 }
-
-function loadStageMem(): Record<string, StageMemEntry> {
-  return parseStageMem(readStore(KEY) ?? '{}');
-}
-
-export let STAGE_MEM: Record<string, StageMemEntry> = loadStageMem();
 
 export function stageMemOf(topic: string): StageMemEntry {
   if (!STAGE_MEM[topic]) STAGE_MEM[topic] = { ok: 0, bad: 0, q: Object.create(null) };
   return STAGE_MEM[topic];
 }
 
-export function saveStageMem() {
-  // 无头模拟没有 localStorage；先问一句，避免每局序列化一份越来越大的章节记忆。
-  if (!storeAvailable()) return;
-  writeStore(KEY, JSON.stringify(STAGE_MEM));
-}
-
 export function resetStageMemory() {
+  history = [];
   STAGE_MEM = {};
-  saveStageMem();
+  saveAnswerHistory();
+  saveStageMemory();
 }
 
-/** 一局的答题流水，只为「交回服务端」攒一份；判据一律不读它。 */
-export interface AnswerNote {
-  topic: string;
-  qid: string;
-  right: boolean;
+function loadAnswerHistory(): AnswerRecord[] {
+  try {
+    const rows: unknown = JSON.parse(readStore(ANSWERS_KEY) ?? '[]');
+    return Array.isArray(rows) ? rows as AnswerRecord[] : [];
+  } catch {
+    return [];
+  }
 }
 
-/**
- * 一局最多记这么多手。无头模拟（`npm run sim`）跑几千局、每局几百手，
- * 不封顶就是一路往上涨的内存，而且没人会去读那么长的一份流水。
- */
-const RUN_LOG_MAX = 600;
-let runLog: AnswerNote[] = [];
-
-/** 这一局答了哪些题。结算时由 `queueRunAnswers()` 打包，别处只读。 */
-export function runAnswers(): AnswerNote[] {
-  return runLog;
+function saveAnswerHistory() {
+  if (storeAvailable()) writeStore(ANSWERS_KEY, JSON.stringify(history));
 }
 
-export function clearRunAnswers() {
-  runLog = [];
+function loadStageMemory(): Record<string, StageMemEntry> {
+  try {
+    const value: unknown = JSON.parse(readStore(MEMORY_KEY) ?? '{}');
+    return value && typeof value === 'object' ? value as Record<string, StageMemEntry> : {};
+  } catch {
+    return {};
+  }
 }
 
-/** 答完一道题记一笔。按**章节**归档，题号只用于定位具体是哪道题。 */
-export function recordAnswer(a: { stageTopic: string; qid: string; right: boolean }) {
-  const e = stageMemOf(a.stageTopic);
-  if (a.right) e.ok += 1;
-  else e.bad += 1;
-  const s = (e.q[a.qid] ??= { ok: 0, bad: 0 });
-  if (a.right) s.ok += 1;
-  else s.bad += 1;
-  // 同一手顺手记进这一局的流水：局末要把它交回服务端。
-  // 放在这里而不是 `answer.ts`，是因为"答题记录"只有一个写入口。
-  if (runLog.length >= RUN_LOG_MAX) runLog.shift();
-  runLog.push({ topic: a.stageTopic, qid: a.qid, right: a.right });
+function saveStageMemory() {
+  if (storeAvailable()) writeStore(MEMORY_KEY, JSON.stringify(STAGE_MEM));
+}
+
+function appendRecord(record: NewAnswerRecord) {
+  const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  const entry: AnswerRecord = { ...record, id, archived: record.type === 'archive' };
+  history.push(entry);
+  applyRecord(entry);
+  saveAnswerHistory();
+  saveStageMemory();
+}
+
+export function answerHistory(): Exclude<AnswerRecord, { type: 'archive' }>[] {
+  return history.filter((record) => record.type !== 'archive');
+}
+
+/** Pending archive tombstones share the existing offline answer queue and retry policy. */
+export function pendingAnswerEvents(): AnswerRecord[] {
+  return history;
+}
+
+export function archiveAnswerRun(runId: string, bankId?: string) {
+  const bank = bankId ?? history.find((record) => record.runId === runId)?.bankId ?? activeBankId();
+  let changed = false;
+  for (const record of history) {
+    if (record.runId === runId && record.bankId === bank && record.type !== 'archive' && !record.archived) {
+      record.archived = true;
+      changed = true;
+    }
+  }
+  if (!history.some((record) => record.type === 'archive' && record.runId === runId && record.bankId === bank)) {
+    const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    history.push({ id, bankId: bank,
+      runId, type: 'archive', topic: '', qid: '', archived: true });
+    changed = true;
+  }
+  if (changed) saveAnswerHistory();
+}
+
+export function markAnswersUploaded(events: Array<{ id: string; archived: boolean }>) {
+  const sent = new Map(events.map((event) => [event.id, event.archived]));
+  const next = history.filter((record) => sent.get(record.id) !== record.archived);
+  if (next.length === history.length) return;
+  history = next;
+  saveAnswerHistory();
+}
+
+/** 每次作答都更新掌握统计，并记录归档与同步状态。 */
+export function recordAnswer(a: { stageTopic: string; qid: string; right: boolean; choice: number }) {
+  appendRecord({ bankId: G.runBankId || activeBankId(), runId: G.runId || undefined,
+    type: 'answer', topic: a.stageTopic, qid: a.qid, right: a.right, choice: a.choice });
 }
 
 /**
@@ -134,11 +168,8 @@ export function wrongCount(topic: string, qid: string): number {
  * 那是"答过多少次"的历史，正确率读它 —— 让一次重置去改统计，
  * 等于把"我练过多少"这件事一起抹掉。
  */
-export function clearQuestionMemory(topic: string, qid: string): void {
-  const e = STAGE_MEM[topic];
-  if (!e?.q[qid]) return;
-  delete e.q[qid];
-  saveStageMem();
+export function clearQuestionMemory(bankId: string, topic: string, qid: string): void {
+  appendRecord({ bankId, type: 'reset', topic, qid });
 }
 
 /** 一章的摘要：只报正确率，结算页读它。 */
@@ -151,18 +182,17 @@ export function stageDigest(topic: string): StageDigest {
 /**
  * 章节记忆的快照，给「导出错题」用。
  *
- * 这是玩家侧数据离开浏览器的**唯一**一条路：游戏运行时对外通信是 0 次，
- * 所以想按错题重出题，只能由玩家自己把这份快照交给生成工具。
- * 形状和存档一样，但**不复用存档键**：存档是断点，这是给别人读的数据。
+ * 服务可用时答题事件会同步到本机；离线生成仍可通过这份快照导入历史。
+ * 形状和存档不同：存档是断点，这是给生成器读的数据。
  */
 export interface StudySnapshot {
   /** 快照版本。生成工具只认这个数，换格式就抬它。 */
-  v: 1;
-  /** 主题 → 累计对错 + 每道题（按 `qid`）累计对错。 */
-  topics: Record<string, { ok: number; bad: number; q: Record<string, { ok: number; bad: number }> }>;
+  v: 2;
+  /** 主题 → 累计对错 + 每道题的累计对错与原题选项作答序列（1-based）。 */
+  topics: Record<string, { ok: number; bad: number; q: Record<string, { ok: number; bad: number; attempts: number[] }> }>;
 }
 
-export const STUDY_SNAPSHOT_V = 1;
+export const STUDY_SNAPSHOT_V = 2;
 
 export function studySnapshot(): StudySnapshot {
   return { v: STUDY_SNAPSHOT_V, topics: STAGE_MEM };

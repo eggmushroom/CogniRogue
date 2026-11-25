@@ -59,7 +59,7 @@ def locate(toc, pages):
     missing = 0
     for lv, title, page in toc:
         y = -1
-        want = norm(title)
+        want = norm(re.sub(r"^\d+(?:\.\d+)*\.\s*", "", title))
         if 1 <= page <= len(pages):
             for b in pages[page - 1]:
                 have = norm(b["text"])
@@ -76,9 +76,50 @@ def locate(toc, pages):
 def body_start(marks):
     """跳过封面、作者、法务声明这些前置页：从第一个编号为 1 的一级标题开始。"""
     for i, (lv, title, _page, _y) in enumerate(marks):
-        if lv == 1 and re.match(r"^1[.\s]", title):
+        if lv <= 2 and re.match(r"^1[.\s]", title):
             return i
     return 0
+
+
+def printed_toc(doc):
+    """读取前置页上的印刷目录；不少 PDF 有可见目录，却没有 PDF 书签。"""
+    out = []
+    started = False
+    for page_no, page in enumerate(doc[: min(12, doc.page_count)], 1):
+        lines = [
+            " ".join(span["text"] for span in line["spans"]).strip()
+            for block in page.get_text("dict")["blocks"] if block.get("type") == 0
+            for line in block["lines"]
+        ]
+        if not started:
+            if not any(re.fullmatch(r"目录|contents", re.sub(r"\s+", "", line), re.I) for line in lines):
+                continue
+            started = True
+
+        page_entries = []
+        for line in lines:
+            line = line.replace("\u2060", "")
+            match = re.search(r"(?:\s*\.\s*){3,}\s*(\d+)\s*$", line)
+            if not match:
+                continue
+            page = int(match.group(1))
+            title = line[:match.start()].strip(" .\t")
+            numbered = re.match(r"^(\d+(?:\.\d+)*)\.\s*(.+)$", title)
+            if numbered:
+                number, title = numbered.groups()
+                level = number.count(".") + 2
+                title = f"{number}. {title}"
+            else:
+                level = 1
+            title = re.sub(r"\s+", " ", title).strip()
+            if title and 1 <= page <= doc.page_count:
+                page_entries.append((level, title, page))
+
+        if page_entries:
+            out.extend(page_entries)
+        elif out:
+            break
+    return out
 
 
 def to_markdown(marks, pages):
@@ -93,6 +134,7 @@ def to_markdown(marks, pages):
         hs.sort(key=lambda h: h[0])
 
     for pno in range(1, len(pages) + 1):
+        stream.append(("page", 0, pno))
         heads = heads_by_page.get(pno, [])
         hi = 0
         used = []  # 已经当标题用掉的块，正文里不能再出现一遍
@@ -121,7 +163,9 @@ def to_markdown(marks, pages):
             hi += 1
 
     for kind, lv, text in stream:
-        if kind == "head":
+        if kind == "page":
+            out.append(f"<!-- cognirogue-page: {text} -->\n")
+        elif kind == "head":
             out.append(f"{'#' * min(lv, 6)} {text}\n")
         else:
             out.append(f"{text}\n")
@@ -137,13 +181,9 @@ def main():
 
     doc = pymupdf.open(src)
     pages = drop_furniture([page_blocks(p) for p in doc])
-    toc = doc.get_toc(simple=True)
-    if not toc:
-        print("✗ 这份 PDF 没有目录（bookmark），先人工补一份再跑", file=sys.stderr)
-        return 1
-
-    marks, missing = locate(toc, pages)
-    if not keep_front:
+    toc = doc.get_toc(simple=True) or printed_toc(doc)
+    marks, missing = locate(toc, pages) if toc else ([], 0)
+    if toc and not keep_front:
         marks = marks[body_start(marks):]
 
     md = to_markdown(marks, pages)

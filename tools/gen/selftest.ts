@@ -1,3 +1,6 @@
+import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 /**
  * 生成工具里**确定性**的那一半：切分与取数。
  *
@@ -9,13 +12,16 @@ import {
   DEFAULT_BUDGET, blocksOf, chunkMarkdown, paragraphsOf, readSection, sliceLines, splitText, tocText,
 } from './chunk';
 import {
-  MERGE_MAX_PARTS, MERGE_PCT, agenticPlan, mergePlan, planTocText, similarEnough, similarity,
-  summarizePlan, tocPlan,
+  MERGE_MAX_PARTS, MERGE_PCT, agenticPlan, mergePlan, pageRange, planTocText, similarEnough, similarity,
+  firstSentence, summarizePlan, tocPlan,
 } from './plan';
 import type { PlanTopic } from './plan';
-import { checkPack, conceptByQid, emitPack } from './emit';
+import { appendPack, checkPack, knowledgeIdByQid, countByTopic, emitPack } from './emit';
+import { parseQuestionBank } from '../../src/core/library/parse';
+import { sendAnswers, serviceBase, setServiceBase } from '../../src/core/library/remote';
 import { generateTopic } from './generate';
-import type { Llm } from './llm';
+import { openAiLlm, type Llm } from './llm';
+import { indexTopicMemory, memText, mergeSnapshot, newTopicMem, readMemorySection, sourceIndexText, sourceSectionId, topicIdOf } from './memory';
 
 let fails = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -53,9 +59,79 @@ const BOOK = lines(
 );
 
 const doc = chunkMarkdown(BOOK);
+const indexPlan = tocPlan(BOOK, { name: '测试', depth: 1, size: 4000 })!;
+const indexed = newTopicMem(indexPlan.topics[0].title, 'book.md', topicIdOf('book.md', BOOK, indexPlan.topics[0]!));
+const sectionDir = mkdtempSync(join(tmpdir(), 'cognirogue-jit-'));
+const sectionFiles = indexTopicMemory(indexed, BOOK, indexPlan.topics[0]);
+for (const file of sectionFiles) writeFileSync(join(sectionDir, `${file.id}.md`), file.content, 'utf8');
+const sectionId = indexed.sections!.find((section) => section.title === '1.1 二分查找')!.id;
+ok(!Object.keys(indexed.knowledge).length && indexed.sections!.length === 3,
+  '未生成题目的主题也有独立记忆与完整子节索引');
+ok(readMemorySection(indexed, sectionDir, sectionId)!.includes('有序数组')
+  && !readMemorySection(indexed, sectionDir, sectionId)!.includes('比较排序'), 'JIT 按 ID 直接读取独立章节文件');
+ok(readMemorySection(indexed, sectionDir, sourceSectionId('book.md', ['第一章 复杂度', '2.1 最短路'])) === null,
+  'ID 不属于当前主题时不会读取其他主题');
+indexed.knowledge.binary = { label: 'binary', stem: '二分', gen: 2, questions: {} };
+indexed.cursor = 1;
+indexTopicMemory(indexed, BOOK, indexPlan.topics[0]);
+ok(indexed.knowledge.binary.gen === 2 && indexed.cursor === 1, '重新划分保留学习记忆与增量游标');
+ok(sourceIndexText(indexed).includes(`${sectionId} | 1.1 二分查找`), '主题记忆提供标题与文件 ID 对照表');
+const repeated = '# Root\n## Same\nFirst passage.\n## Same\nSecond passage.';
+const repeatedPlan = tocPlan(repeated, { name: 'Root', depth: 2, size: 4000 })!;
+const repeatedMem1 = newTopicMem('Same', 'repeat.md', topicIdOf('repeat.md', repeated, repeatedPlan.topics[0]!));
+const repeatedMem2 = newTopicMem('Same', 'repeat.md', topicIdOf('repeat.md', repeated, repeatedPlan.topics[1]!));
+const repeatedFiles1 = indexTopicMemory(repeatedMem1, repeated, repeatedPlan.topics[0]!);
+const repeatedFiles2 = indexTopicMemory(repeatedMem2, repeated, repeatedPlan.topics[1]!);
+ok(repeatedMem1.topicId !== repeatedMem2.topicId && repeatedFiles1[0]!.id !== repeatedFiles2[0]!.id
+  && repeatedFiles1[0]!.content.includes('First passage.') && repeatedFiles2[0]!.content.includes('Second passage.'), '同名主题有不同 ID 与记忆文件');
 const paths = doc.toc.map((e) => e.path.join(' > '));
 
 ok(doc.title === '第一章 复杂度', `一级标题当书名（${doc.title}）`);
+
+// 单主题答题流水进入记忆一次；同一批记录重试不会重复计数。
+const answerMem = newTopicMem('第一章 复杂度', 'book.md', 't_aaaaaaaaaaaaaaaaaaaaaaaa');
+const answerKnowledgeId = 'k_aaaaaaaaaaaaaaaaaaaaaaaa';
+answerMem.knowledge[answerKnowledgeId] = { label: '二分查找边界', stem: '二分', gen: 1, questions: {} };
+const answerMap = { qA: answerKnowledgeId, qB: answerKnowledgeId };
+const feedback = (after: number, rows: Array<{ seq: number; qid: string; type: 'answer' | 'reset'; right?: boolean; choice?: number }>) => ({
+  v: 3 as const, topicId: answerMem.topicId, after, through: rows.at(-1)?.seq ?? after, records: rows,
+});
+mergeSnapshot(answerMem, feedback(0, [
+  { seq: 1, qid: 'qA', type: 'answer', right: false, choice: 2 },
+  { seq: 2, qid: 'qA', type: 'reset' },
+  { seq: 3, qid: 'qB', type: 'answer', right: false, choice: 3 },
+  { seq: 4, qid: 'qA', type: 'answer', right: true, choice: 1 },
+  { seq: 5, qid: 'qA', type: 'reset' },
+]), answerMap);
+const learned = answerMem.knowledge[answerKnowledgeId];
+const stats = () => Object.values(answerMem.stats).reduce((sum, q) => ({ ok: sum.ok + q.ok, bad: sum.bad + q.bad }), { ok: 0, bad: 0 });
+ok(stats().ok === 0 && stats().bad === 1 && answerMem.stats.qB?.attempts[0] === 3, '重复重置 A 不会扣掉同知识点 B 的错误');
+ok(answerMem.cursor === 5 && !answerMem.stats.qA, '重置按 qid 清零并推进增量游标');
+mergeSnapshot(answerMem, feedback(0, [{ seq: 1, qid: 'qA', type: 'answer', right: false, choice: 2 }]), answerMap);
+ok(answerMem.cursor === 5 && stats().bad === 1, '重放旧游标不会重复消费答题流水');
+learned!.questions.qB = { stem: '二分题', options: ['左移', '右移'], answer: 1 };
+ok(memText(answerMem).includes('正确选项 2') && memText(answerMem).includes('选项选择顺序（1-based）'), '记忆从逐题流水组装正确选项与作答顺序');
+let feedbackPrompt = '';
+const feedbackLlm: Llm = {
+  ask: async (_system, user) => {
+    feedbackPrompt = user;
+    return JSON.stringify({ questions: [{
+      knowledge: '第一章 复杂度/二分查找',
+      stem: '二分查找每次比较后区间如何变化？',
+      options: ['减半', '不变'], answer: 0,
+    }] });
+  },
+};
+const targeted = await generateTopic({
+  topic: '第一章 复杂度',
+  chunks: [{ path: ['第一章 复杂度'], text: '二分查找每次比较后区间减半。', part: 0, size: 20 }],
+  toc: '第一章 复杂度',
+  memory: memText(answerMem),
+  per: 1,
+  read: () => null,
+}, feedbackLlm);
+ok(feedbackPrompt.includes('玩家 0 对 1 错') && targeted.questions[0]?.knowledgeId.startsWith('k_'),
+  '单主题增量生成读取重新纳入的答题记忆并允许生成新题号');
 ok(paths.length === 5 && paths[0] === '第一章 复杂度' && paths[1] === '第一章 复杂度 > 1.1 二分查找'
   && paths[4] === '第二章 图 > 2.1 最短路',
   `目录按标题层级展开（${paths.length} 条：${paths.join(' / ')}）`);
@@ -123,18 +199,18 @@ ok(DEFAULT_BUDGET === 6000, `默认预算是 6000 字（${DEFAULT_BUDGET}）`);
 const packText = emitPack('自检题库', [{
   topic: '复杂度',
   questions: [
-    { concept: 'algo/binary-worst', stem: '二分最坏比较几次？', options: ['O(1)', 'O(log n)'], answer: 1, explain: '每次折半。' },
-    { concept: 'algo/sort-lower', stem: '比较排序的下界？', options: ['n log n', 'n', '以上都对'], answer: 0, noShuffle: true },
+    { knowledgeId: 'algo/binary-worst', qid: 'q_1', stem: '二分最坏比较几次？', options: ['O(1)', 'O(log n)'], answer: 1, explain: '每次折半。' },
+    { knowledgeId: 'algo/sort-lower', qid: 'q_2', stem: '比较排序的下界？', options: ['n log n', 'n', '以上都对'], answer: 0, noShuffle: true },
   ],
 }]);
 const chk = checkPack(packText);
 ok(chk.ok && chk.count === 2, `渲染出的题库能过游戏自己的解析器（${chk.count} 道，${chk.issues.length} 条问题）`);
 ok(packText.includes('~ algo/binary-worst') && packText.includes('= B'),
-  '概念行与答案字母都由代码写出来，不靠模型拼');
+  '知识点行、题号和答案字母都由代码写入，不靠模型拼');
 
-const qidMap = conceptByQid(packText);
+const qidMap = knowledgeIdByQid(packText);
 ok(Object.keys(qidMap).length === 2 && Object.values(qidMap).includes('algo/sort-lower'),
-  'qid → 概念 的映射能把玩家数据对回概念');
+  'qid → knowledgeId 映射能把逐题作答归并到知识点');
 
 // ── 一个主题 = 一个子 agent：JIT 取数 + 校验 + 去重（全离线，假模型） ──
 const asked: string[] = [];
@@ -143,31 +219,54 @@ const fake: Llm = {
   ask: async (_sys, user) => {
     asked.push(user);
     round += 1;
-    if (round === 1) return JSON.stringify({ read: ['第一章 复杂度 > 1.2 排序'], questions: [] });
+    if (round === 1) return JSON.stringify({ read: [sortSectionId], questions: [] });
     return JSON.stringify({
       questions: [
-        { concept: 'algo/binary-worst', stem: '二分查找最坏比几次？', options: ['O(1)', 'O(log n)'], answer: 1 },
-        { concept: 'algo/binary-worst', stem: '重复概念的那道', options: ['甲', '乙'], answer: 0 },
-        { concept: 'algo/sort-lower', stem: '下界？', options: ['n', 'n log n', '以上都对'], answer: 1 },
-        { concept: 'algo/bad', stem: '答案越界', options: ['甲', '乙'], answer: 5 },
+        { knowledge: '二分查找最坏情况', stem: '二分查找最坏比几次？', options: ['O(1)', 'O(log n)'], answer: 1 },
+        { knowledge: '二分查找最坏情况', stem: '二分查找最坏比几次？', options: ['甲', '乙'], answer: 0 },
+        { knowledge: '比较排序下界', stem: '下界？', options: ['n', 'n log n', '以上都对'], answer: 1 },
+        { knowledge: 'algo/bad', stem: '答案越界', options: ['甲', '乙'], answer: 5 },
       ],
     });
   },
 };
-const doc2 = chunkMarkdown(BOOK);
+const sortSectionId = indexed.sections!.find((section) => section.title === '1.2 排序')!.id;
 const res = await generateTopic({
   topic: '复杂度',
-  chunks: doc2.chunks.filter((c) => c.path.join('>') === '第一章 复杂度'),
-  toc: tocText(doc2),
+  chunks: [],
+  toc: `${sortSectionId} | 1.2 排序`,
   memory: '（这个主题还没有记忆）',
   per: 6,
-  read: (p: string[]) => readSection(BOOK, p),
+  read: (id: string) => id === sortSectionId ? readMemorySection(indexed, sectionDir, id) : null,
 }, fake);
 
-ok(res.reads.includes('第一章 复杂度 > 1.2 排序'),
-  `JIT：模型申请的节真的读给了它（${res.reads.join(' / ')}）`);
+ok(res.reads.includes(sortSectionId),
+  `JIT：模型通过章节 ID 读取独立原文文件（${res.reads.join(' / ')}）`);
+ok(!asked[0].includes('# 已读取的原文') && asked[0].includes('# 本主题的原文索引') && !asked[0].includes('渐进下界'),
+  'JIT：首轮只注入目录和记忆，不注入任何正文');
+const ungrounded = await generateTopic({
+  topic: '复杂度', chunks: [], toc: '复杂度', memory: '', per: 1, read: () => null,
+}, { ask: async () => JSON.stringify({ questions: [{ knowledge: 'algo/guess', stem: '猜测', options: ['甲', '乙'], answer: 0 }] }) });
+ok(ungrounded.questions.length === 0, 'JIT：没有取到原文时不接受题目');
 ok(asked.length === 2 && asked[1].includes('渐进下界'),
   '第二轮把读到的原文追加进了上下文');
+// Tool-calling agent asks the service for one exact section; the untouched chapter never enters context.
+const toolContexts: string[] = [];
+let toolRound = 0;
+const toolAgent: Llm = {
+  ask: async () => '',
+  tool: async (_system, messages, _tools) => {
+    toolContexts.push(JSON.stringify(messages));
+    toolRound++;
+    if (toolRound === 1) return { text: '', calls: [{ id: 'read-1', name: 'read_source', arguments: JSON.stringify({ sectionId: sortSectionId }) }] };
+    return { text: JSON.stringify({ questions: [{ knowledge: '排序下界', stem: '比较排序下界？', options: ['n', 'n log n'], answer: 1 }] }), calls: [] };
+  },
+};
+const toolResult = await generateTopic({ topic: '复杂度', chunks: [], toc: `${sortSectionId} | 1.2 排序`, memory: '', per: 1, read: (id) => id === sortSectionId ? readMemorySection(indexed, sectionDir, id) : null }, toolAgent);
+ok(toolResult.questions.length === 1 && toolResult.reads.length === 1,
+  'agent 通过 read_source 工具按需取一节，得到题目');
+ok(!toolContexts[0].includes('渐进下界') && toolContexts[1].includes('渐进下界') && !toolContexts[1].includes('归并排序'),
+  'JIT 工具只把申请的小节加入上下文，没有预载整个主题');
 ok(res.questions.length === 2, `合格的题被收下（${res.questions.length} 道）`);
 ok(res.questions[1]?.noShuffle === true, '位置依赖的选项自动补上「! 固定顺序」声明');
 ok(res.dropped.length === 2
@@ -175,10 +274,44 @@ ok(res.dropped.length === 2
   && res.dropped.some((d) => d.reason.includes('越界')),
   `不合格的题被扔下并说明原因（${res.dropped.map((d) => d.reason).join(' / ')}）`);
 
-// 整条链路走一遍：假模型出的题 → 渲染 → 过游戏解析器 → 题号按概念派生
+// 整条链路走一遍：假模型出的题 → 渲染 → 过游戏解析器 → 每题题号独立生成
 const chain = emitPack('链路自检', [{ topic: '复杂度', questions: res.questions }]);
 const chainChk = checkPack(chain);
 ok(chainChk.ok && chainChk.count === 2, `假模型的一轮产物能直接载入游戏（${chainChk.count} 道）`);
+
+const basePack = emitPack('增量自检', [
+  { topic: '甲', questions: [{ knowledgeId: 'a', qid: 'q_a', stem: '旧题', options: ['是', '否'], answer: 0 }] },
+  { topic: '乙', questions: [{ knowledgeId: 'b', qid: 'q_b', stem: '另一题', options: ['是', '否'], answer: 1 }] },
+]);
+const deltaPack = emitPack('增量自检', [
+  { topic: '甲', questions: [{ knowledgeId: 'c', qid: 'q_c', stem: '新题', options: ['是', '否'], answer: 0 }] },
+]);
+const appended = appendPack(basePack, deltaPack);
+const appendedCheck = checkPack(appended);
+ok(appendedCheck.ok && appendedCheck.count === 3
+  && (appended.match(/^## 甲$/gm) ?? []).length === 1
+  && Object.keys(countByTopic(appended)).join(',') === '甲,乙'
+  && appended.includes('### 旧题') && appended.includes('### 新题'),
+'增量追加：保留旧题、合并同名主题且不改主题顺序');
+
+const codeStem = lines('看 **这段代码**：', '```text', '## 不是主题', '', '  A) 不是选项', '= B', '```');
+const codeOption = lines('~~~js', 'if (ok) {', '  run();', '}', '~~~');
+const codeExplain = lines('使用 `run()`。', '', '> 第二段');
+const codePack = emitPack('Markdown', [{ topic: '甲', questions: [{
+  knowledgeId: 'code', qid: 'q_code', stem: codeStem, options: [codeOption, '`skip()`'], answer: 0, explain: codeExplain,
+}] }]);
+const codeBank = parseQuestionBank(appendPack(basePack, codePack));
+const codeQuestion = codeBank.byTopic['甲']?.[1];
+ok(!codeBank.issues.length && Object.keys(codeBank.byTopic).join(',') === '甲,乙'
+  && codeQuestion?.q === codeStem && codeQuestion?.options[0] === codeOption && codeQuestion?.answer === 0
+  && codeQuestion?.explain === codeExplain && codeQuestion?.qid === 'q_code',
+'Markdown 字段经生成、追加与解析后保留换行、空行、缩进和 DSL 标记');
+
+const bareCode = parseQuestionBank(lines('  ## 甲', '  ### 代码？', '  ```text', '    A) 内容', '  ```', '  A) 是', '  B) 否', '  = A'));
+ok(!bareCode.issues.length && bareCode.byTopic['甲']?.[0]?.q === lines('代码？', '```text', '  A) 内容', '```'),
+'兼容整体缩进的旧题库和未额外缩进的围栏');
+ok(parseQuestionBank(codePack.replace('  ```\n', '')).issues.some((issue) => issue.includes('代码块未闭合')),
+'未闭合的代码围栏报告导入错误');
 
 // ── 划分计划：目录层 / 默认层 / 模型层，以及摘要合并 ──
 const PLAN_DOC = lines(
@@ -248,6 +381,18 @@ const noModel = await summarizePlan(tocPlaned!, PLAN_DOC, null);
 ok(noModel.topics.every((t) => t.summarized === 'none' && t.summary.length > 0)
   && noModel.notes.some((n) => n.includes('没有配模型')),
   '摘要：没有模型时回落首句，并在 notes 里说明');
+ok(firstSentence('# 1. 入门指南\nch01-getting-started.md\n正文说明了 Rust 的安装步骤。')
+  === '正文说明了 Rust 的安装步骤',
+  '摘要：编号标题、页锚点和源文件名不冒充首句');
+
+const paged = `<!-- cognirogue-page: 4 -->\n# 一节\n正文\n<!-- cognirogue-page: 5 -->\n续文\n`;
+ok(JSON.stringify(pageRange(paged, 1, 6)) === JSON.stringify({ pageFrom: 4, pageTo: 5 }),
+  `PDF 页锚点：计划行区间映射到原页 4-5`);
+ok(pageRange(PLAN_DOC, 0, 2) === null, `Markdown 没有 PDF 页范围`);
+const pageMem = newTopicMem('PDF 章节', 'book.pdf.md');
+indexTopicMemory(pageMem, paged, { title: 'PDF 章节', from: 1, to: 6, chars: 10, summary: '', summarized: 'none' });
+ok(pageMem.sections![0].pageFrom === 4 && pageMem.sections![0].pageTo === 5
+  && sourceIndexText(pageMem).includes('PDF 第 4-5 页'), '未出题的 PDF 主题记忆保存物理页表');
 
 // 相似度与合并：判据是整数，合并有上限
 ok(similarity('二分查找每次折半比较', '二分查找每次折半') > MERGE_PCT,
@@ -321,4 +466,156 @@ ok(planTocText(tocPlaned!).includes('1.1 二分查找') && planTocText(tocPlaned
   '计划能渲染成给模型的目录（JIT 索引）');
 
 console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 生成工具自检通过');
+// Split inside a Chinese character and an SSE frame; keep the response open until the first output is observed.
+{
+  const fetch = globalThis.fetch;
+  const cfg = { apiKey: 'test', baseUrl: 'http://test.invalid/v1', model: 'stub', retries: 0 };
+  const encoder = new TextEncoder();
+  const content = (text: string) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\r\n\r\n`;
+  try {
+    let release!: () => void;
+    const first = new Promise<void>((resolve) => { release = resolve; });
+    const events: Array<{ call: number; phase: string; text: string; inputTokens?: number; outputTokens?: number }> = [];
+    const wire = encoder.encode(content('现'));
+    const split = wire.indexOf(0xe7) + 1;
+    globalThis.fetch = async () => new Response(new ReadableStream({
+      async start(controller) {
+        controller.enqueue(wire.slice(0, split));
+        controller.enqueue(wire.slice(split));
+        await Promise.race([first, new Promise<void>((_, reject) => {
+          const timeout = AbortSignal.timeout(1000);
+          timeout.addEventListener('abort', () => reject(timeout.reason), { once: true });
+        })]);
+        controller.enqueue(encoder.encode(content('场')
+          + 'data: {"choices":[],"usage":{"prompt_tokens":31,"completion_tokens":2}}\n\n'
+          + 'data: [DONE]\n\n'));
+        controller.close();
+      },
+    }), { headers: { 'content-type': 'text/event-stream; charset=utf-8' } });
+    const streamed = await openAiLlm(cfg, (event) => {
+      events.push(event);
+      if (event.phase === 'live') release();
+    }).ask('system', 'user');
+    ok(events[1]?.call === 1 && events[1]?.phase === 'live' && events[1]?.text === '现' && events[1].outputTokens === undefined,
+      '模型尚未结束时已发布真实输出，UTF-8 跨片段不乱码，也不估算 token');
+    ok(events.at(-2)?.phase === 'live' && events.at(-2)?.text === '现场',
+      '流结束时刷新尚未到节流间隔的最后一段文本');
+    ok(streamed === '现场' && events.at(-1)?.call === 1 && events.at(-1)?.inputTokens === 31 && events.at(-1)?.outputTokens === 2,
+      'SSE 拼回完整回复，最终用量来自服务商');
+
+    let releaseTool!: () => void;
+    const toolStarted = new Promise<void>((resolve) => { releaseTool = resolve; });
+    const toolEvents: Array<{
+      phase: string;
+      text: string;
+      toolCalls?: Array<{ id: string; name: string; arguments: string; state: string; detail?: string }>;
+    }> = [];
+    const toolFrame = (delta: unknown, finish_reason: string | null = null) => `data: ${JSON.stringify({ choices: [{ delta, finish_reason }] })}\n\n`;
+    globalThis.fetch = async () => new Response(new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(toolFrame({ tool_calls: [{ index: 0, id: 'read-1', function: { name: 'read_source', arguments: '{"sectionId":"sec_' } }] })));
+        await Promise.race([toolStarted, new Promise<void>((_, reject) => {
+          const timeout = AbortSignal.timeout(1000);
+          timeout.addEventListener('abort', () => reject(timeout.reason), { once: true });
+        })]);
+        const finalToolFrame = toolFrame({ tool_calls: [{ index: 0, function: { arguments: '0123456789abcdef"}' } }] }, 'tool_calls');
+        controller.enqueue(encoder.encode(finalToolFrame + 'data: [DONE]\n\n'));
+        controller.close();
+      },
+    }), { headers: { 'content-type': 'text/event-stream' } });
+    const toolAgentStream = openAiLlm(cfg, (event) => {
+      toolEvents.push(event);
+      if (event.phase === 'live' && event.toolCalls?.some((call) => call.name === 'read_source')) releaseTool();
+    });
+    const toolReply = await toolAgentStream.tool!('system', [{ role: 'user', content: '目录' }], [
+      { name: 'read_source', description: '读目录中的小节', parameters: { type: 'object' } },
+    ]);
+    ok(toolEvents.some((event) => event.phase === 'live' && event.toolCalls?.some((call) =>
+      call.name === 'read_source' && call.arguments.includes('{"sectionId":"sec_') && call.state === 'streaming')),
+      '工具名与参数作为独立结构在模型流中途推送到任务详情');
+    ok(toolEvents.some((event) => event.phase === 'live' && event.toolCalls?.some((call) =>
+      call.arguments === '{"sectionId":"sec_0123456789abcdef"}' && call.state === 'streaming')),
+      '工具流结束前刷新最后一段参数');
+    ok(toolReply.calls[0]?.arguments === '{"sectionId":"sec_0123456789abcdef"}', '流式工具参数被完整拼接后交给 JIT 执行器');
+    toolReply.reportToolResult?.('read-1', { ok: true, detail: '已读取 20 字符' });
+    ok(toolEvents.at(-1)?.phase === 'tools' && toolEvents.at(-1)?.toolCalls?.[0]?.state === 'complete',
+      '工具执行结果单独更新步骤状态，而不拼进模型消息');
+
+    const requests: Array<{ stream?: boolean; stream_options?: unknown }> = [];
+    globalThis.fetch = async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      requests.push(request);
+      if (request.stream_options) return new Response('unsupported stream_options', { status: 400 });
+      if (request.stream) return new Response('stream not supported', { status: 422 });
+      return Response.json({ choices: [{ message: { content: '完整回复' } }] });
+    };
+    const fallbackEvents: Array<{ call: number; phase: string }> = [];
+    const batch = openAiLlm(cfg, (event) => fallbackEvents.push({ call: event.call, phase: event.phase }));
+    const batchText = await batch.ask('system', 'user');
+    await batch.ask('system', 'user');
+    ok(batchText === '完整回复' && requests.length === 4 && requests[0].stream_options !== undefined &&
+      requests[1].stream === true && requests[1].stream_options === undefined && !requests[2].stream && !requests[3].stream &&
+      !fallbackEvents.some((event) => event.phase === 'live') && fallbackEvents.some((event) => event.phase === 'batch') &&
+      new Set(fallbackEvents.map((event) => event.call)).size === 2,
+      '不支持流式用量或流式输出时逐级降级，非流式回复不冒充实时输出');
+
+    requests.length = 0;
+    globalThis.fetch = async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      requests.push(request);
+      if (request.stream_options) return new Response('unsupported stream_options', { status: 400 });
+      if (request.stream) return new Response('stream not supported', { status: 422 });
+      return Response.json({ choices: [{ message: { tool_calls: [{ id: 'read-1', function: {
+        name: 'read_source', arguments: JSON.stringify({ sectionId: sortSectionId }),
+      } }] } }] });
+    };
+    const fallbackTool = openAiLlm(cfg, () => {}).tool!;
+    const fallbackSpec = [{ name: 'read_source', description: '读取章节', parameters: { type: 'object' } }];
+    const fallbackMessages = [{ role: 'user' as const, content: '目录' }];
+    const batchTool = await fallbackTool('system', fallbackMessages, fallbackSpec);
+    await fallbackTool('system', fallbackMessages, fallbackSpec);
+    ok(requests.length === 4 && !!requests[0].stream_options && requests[1].stream === true &&
+      !requests[1].stream_options && !requests[2].stream && !requests[3].stream &&
+      batchTool.calls[0]?.arguments === JSON.stringify({ sectionId: sortSectionId }),
+      '工具调用兼容无用量流和非流式响应，并缓存可用模式');
+
+    globalThis.fetch = async () => new Response(content('半截回复'), { headers: { 'content-type': 'text/event-stream' } });
+    const error = await openAiLlm(cfg, () => {}).ask('system', 'user').catch((err: Error) => err.message);
+    ok(error.includes('模型输出流提前结束'), '断开的输出流不会作为完整模型回复交给出题器');
+  } finally {
+    globalThis.fetch = fetch;
+  }
+}
+
+const originalFetch = globalThis.fetch;
+const originalBase = serviceBase();
+try {
+  const calls: string[] = [];
+  setServiceBase('http://stale-service.test');
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    return Response.json({ ok: true, version: '0.9' });
+  };
+  const staleAccepted = await sendAnswers({ v: 2, bankId: 'words', events: [] });
+  ok(!staleAccepted && calls.length === 1 && calls[0]!.endsWith('/api/health'),
+    '旧服务即使接受了旧答题接口也不会确认并清除待同步记录');
+
+  calls.length = 0;
+  setServiceBase('http://current-service.test');
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    return String(url).endsWith('/api/health')
+      ? Response.json({ ok: true, apiVersion: 1 })
+      : Response.json({ ok: true, written: 0 });
+  };
+  ok(await sendAnswers({ v: 2, bankId: 'words', events: [] }) && calls.length === 2
+    && calls[0]!.endsWith('/api/health') && calls[1]!.endsWith('/api/answers'),
+    '新服务通过 API 契约探测后才接收答题事件');
+} finally {
+  globalThis.fetch = originalFetch;
+  setServiceBase(originalBase);
+}
+
+for (const file of sectionFiles) unlinkSync(join(sectionDir, `${file.id}.md`));
+rmdirSync(sectionDir);
 process.exitCode = fails ? 1 : 0;

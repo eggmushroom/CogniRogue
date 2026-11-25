@@ -1,16 +1,15 @@
 import { BAL, MODE_BY_ID, STAGES } from '../model/data';
-import type { ModeId, PowerId } from '../model/types';
+import type { ModeId, PowerId, Question } from '../model/types';
 import { G, newRunState, resetBattleFields } from '../infra/state';
 import { shuffle } from '../infra/util';
 import { raiseMaxHp, refillHp } from '../infra/write';
 import { basicDeck } from '../cards/basics';
 import { startDeck } from '../cards/starter';
 import { applyInstant, clearStageOnce, rulesOf } from '../cards/powers';
-import { sourceBank } from '../library/bank';
+import { activeBankId, sourceBank } from '../library/bank';
 import { buildRunPool, runLabel } from '../library/stage';
-import { saveStageMem, clearRunAnswers } from '../library/stagemem';
 import { availableNodes, genStage } from '../map/gen';
-import { setSettleHandler, startBattle } from '../combat';
+import { requestSettle, setSettleHandler, startBattle } from '../combat';
 import { drawEvent } from './events';
 import { openReward, openPowerDrop } from './rewards';
 import { endRun } from './report';
@@ -28,13 +27,13 @@ function pickTopics(): string[] {
   return shuffle(all).slice(0, Math.min(want, all.length));
 }
 
+function newRunId() {
+  return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 /** 一局的编排：开局、进节点、结算后决定下一步。 */
 /** 幕 Boss 死掉是换图，只有第五幕的 Boss 结束一局。 */
-export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = [], topics?: string[]) {
-  // 开局前先把上一局的答题流水落盘，并丢掉上一局没收尾的流水
-  // （调试跳转能直接 startRun，那条路上没有结算）
-  saveStageMem();
-  clearRunAnswers();
+export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = [], topics?: string[], pool?: Question[], bankId = activeBankId()) {
   clearRun();
   const deck = basicDeck().concat(startDeck());
   const modeDef = mode ? MODE_BY_ID[mode] : null;
@@ -46,12 +45,16 @@ export function startRun(mode: ModeId | null = null, extraPowers: PowerId[] = []
   // 整局状态换一份新的；这里只覆盖“这一局特有的选择”，不手抄字段清单。
   Object.assign(G, newRunState(), {
     screen: 'map', mode, deck, map: genStage(1), powers: startPowers,
-    topics: picked, stageTopic: runLabel(picked),
+    topics: picked, stageTopic: runLabel(picked), runBankId: bankId, runId: newRunId(),
   });
   // 模式能力若是「拾取即结算」类，和精英掉落走同一条通道
   for (const id of startPowers) applyInstant(id);
   // 整局共用一份临时题库：按主题连续排列，五幕都从它里面抽
-  buildRunPool(picked);
+  if (pool) {
+    G.runQuestions = pool;
+    G.runQueue = pool.map((q) => q.qid);
+    G.runCursor = 0;
+  } else buildRunPool(picked);
 }
 
 export function enterNode(key: string) {
@@ -76,17 +79,14 @@ export function settlePending() {
 }
 
 export function dismissFeedback() {
-  G.busy = false;
   G.panel = { k: 'none' };
-  settlePending();
+  requestSettle();
 }
 
 /** 过幕三件事：换图并清走过的标记；上限 +stageMaxHp 且回满；再掉一个增益。 */
 /** 层号跨幕连续，玩家看到的是 41 → 42。 */
 function nextStage() {
   const next = G.stage + 1;
-  // 流水先落盘再换阶段，否则写到下一章头上
-  saveStageMem();
   G.stage = next;
   // 新的一章，本局“本章答题”重新计数；整局统计不动。
   G.stageOk = 0;

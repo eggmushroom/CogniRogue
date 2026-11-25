@@ -7,10 +7,10 @@
   "scripts": {
     "dev": "node tools/dev.mjs",
     "dev:web": "vite",
-    "serve": "node server/index.mjs",
+    "serve": "node tools/serve.mjs",
     "build": "npm run verify && vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit && node tools/deps.mjs && node tools/invariants.mjs && node --check server/index.mjs && node --check tools/dev.mjs",
+    "check": "tsc --noEmit && node tools/deps.mjs && node tools/invariants.mjs && uv run --cache-dir .cache/uv --frozen python -m py_compile server/app.py && uv run --cache-dir .cache/uv --frozen python -m unittest server.test_app && node --check tools/service.mjs && node --check tools/serve.mjs && node --check tools/dev.mjs",
     "sim": "esbuild tools/sim.ts --bundle --platform=node --format=esm --outfile=.cache/sim.mjs --log-level=warning && node .cache/sim.mjs",
     "smoke": "node tools/smoke.mjs",
     "shots": "node tools/shots.mjs",
@@ -23,6 +23,8 @@
     "sources": "node tools/sources.mjs",
     "gen": "esbuild tools/gen/main.ts --bundle --platform=node --format=esm --outfile=.cache/gen.mjs --log-level=warning && node .cache/gen.mjs",
     "plan": "esbuild tools/gen/plancli.ts --bundle --platform=node --format=esm --outfile=.cache/plan.mjs --log-level=warning && node .cache/plan.mjs",
+    "pool:build": "esbuild ./tools/runpool.ts --bundle --platform=node --format=esm --outfile=.cache/runpool.mjs --log-level=warning",
+    "service:build": "npm run pool:build && esbuild tools/gen/main.ts --bundle --platform=node --format=esm --outfile=.cache/gen.mjs --log-level=warning && esbuild tools/gen/plancli.ts --bundle --platform=node --format=esm --outfile=.cache/plan.mjs --log-level=warning",
     "docs": "esbuild tools/docs.ts --bundle --platform=node --format=esm --outfile=.cache/docs.mjs --log-level=warning && node .cache/docs.mjs"
   },
   "devDependencies": {

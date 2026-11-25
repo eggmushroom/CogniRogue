@@ -6,7 +6,6 @@ export * from './basics';
 export * from './catalog';
 export * from './cost';
 export * from './kinds';
-export * from './legacy';
 export * from './pack';
 export * from './powers';
 export * from './registry';

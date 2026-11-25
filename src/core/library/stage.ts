@@ -1,9 +1,9 @@
 import { G } from '../infra/state';
-import { shuffle } from '../infra/util';
 import { BAL } from '../model/data';
-import type { Question } from '../model/types';
-import { allQuestions } from './bank';
+import type { Question, QuestionBank } from '../model/types';
+import { allQuestions, flattenBank, sourceBank } from './bank';
 import { STAGE_MEM, rightCount } from './stagemem';
+import { selectRunQuestions } from './pool';
 
 /**
  * 本局的**临时题库**。
@@ -25,8 +25,8 @@ import { STAGE_MEM, rightCount } from './stagemem';
  * 按题目自己的主题查记忆。题池回退到全部题目时按 `G.stageTopic` 查会记错账 ——
  * 主题轮换之后，同一个 qid 在不同幕会被当成两个不同的题。
  *
- * 这一步最终归后端：接上服务之后，终身答对次数由服务端记账，
- * 前端拿到的就是"还能抽的题"，不再自己判。
+ * 退役判据只读浏览器里的答题记忆；在线建池时，前端把退役题号交给服务端。
+ * 答题事件另行同步给服务端，供题库增量更新读取。
  */
 export function isRetired(q: Question): boolean {
   return rightCount(q.topic, q.qid) >= BAL.retireAt;
@@ -38,15 +38,15 @@ export function liveQuestionsOf(topic: string): Question[] {
 }
 
 /**
- * 首页要显示的那几个数：当前题库有多少题、其中多少道已经答对满 `BAL.retireAt` 次、
+ * 题库有多少题、其中多少道已经答对满 `BAL.retireAt` 次、
  * 累计答过多少次、对了多少次。
  *
- * 只数**当前题库里出现的主题**：章节记忆按主题名存，切到另一份题库之后，
+ * 只数**所查看的题库里出现的主题**：章节记忆按主题名存，切到另一份题库之后，
  * 上一份的历史不该被算进这一份的进度 —— 否则换题库会让进度条看起来凭空涨了一截。
  * 只读记忆，不 `stageMemOf()`（那是写路径，会顺手建空条目）。
  */
-export function bankProgress(): { total: number; mastered: number; answers: number; ok: number } {
-  const all = allQuestions();
+export function bankProgress(bank: QuestionBank = sourceBank()): { total: number; mastered: number; answers: number; ok: number } {
+  const all = flattenBank(bank);
   const topics = new Set<string>();
   let mastered = 0;
   for (const q of all) {
@@ -66,7 +66,7 @@ export function bankProgress(): { total: number; mastered: number; answers: numb
 }
 
 /**
- * 建这一局的临时题库。
+ * 离线 / 无头路径建这一局的临时题库。在线开局使用服务端下发的同形快照。
  *
  * 每个主题各取 `BAL.runTopicQuota` 道，按传入顺序首尾相接。主题的活题不足就全取；
  * 一道活的都没有就退回它全部的题 —— 一个主题整局缺席，比抽到旧题更糟，
@@ -74,21 +74,14 @@ export function bankProgress(): { total: number; mastered: number; answers: numb
  */
 export function buildRunPool(topics: string[]): void {
   const all = allQuestions();
-  const queue: string[] = [];
-  for (const topic of topics) {
-    const mine = all.filter((q) => q.topic === topic);
-    const live = mine.filter((q) => !isRetired(q));
-    const take = shuffle(live.length ? live : mine).slice(0, BAL.runTopicQuota);
-    queue.push(...take.map((q) => q.qid));
-  }
-  G.runQueue = queue;
+  G.runQuestions = selectRunQuestions(all, topics, isRetired, BAL.runTopicQuota);
+  G.runQueue = G.runQuestions.map((q) => q.qid);
   G.runCursor = 0;
 }
 
 /** 本局临时题库里的全部题：复用兜底、存档校验、"这个主题还有多少"都读它。 */
 export function runPool(): Question[] {
-  const byId = new Map(allQuestions().map((q) => [q.qid, q]));
-  return G.runQueue.map((id) => byId.get(id)).filter((q): q is Question => !!q);
+  return G.runQuestions;
 }
 
 /**
@@ -96,7 +89,7 @@ export function runPool(): Question[] {
  * 队列走完就返回手上这些，不回头 —— 回头由 `takeQuestion` 的复用兜底。
  */
 export function nextQuestions(n: number): Question[] {
-  const byId = new Map(allQuestions().map((q) => [q.qid, q]));
+  const byId = new Map(G.runQuestions.map((q) => [q.qid, q]));
   const out: Question[] = [];
   while (out.length < n && G.runCursor < G.runQueue.length) {
     const q = byId.get(G.runQueue[G.runCursor] as string);

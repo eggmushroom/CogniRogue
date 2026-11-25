@@ -197,7 +197,6 @@ const SHOTS = [
   // 不能靠 sleep 猜时机（截图本身还有几十毫秒延迟，光刃早就飞过去了），
   // 在页面里用 rAF 数 3 帧，正好停在"快命中"那一格。
   ['answer', '?dev=question', `(async () => {
-    cog.pauseAuto();
     const right = cog.state.panel.view.answer;
     cog.pick(right);
     await new Promise((r) => {
@@ -207,7 +206,7 @@ const SHOTS = [
     });
   })()`, 0],
   // 答错那一屏：统一价码写在反馈面板里
-  ['wrong', '?dev=wrong', 'cog.pauseAuto()', 1400],
+  ['wrong', '?dev=wrong', null, 1400],
   // 光刃飞出去的那一瞬：0.18s 左右正好在半路
   ['strike', '?dev=battle', 'cog.strike()', 180],
   // 敌人回合：真的走一次 endTurn（?dev=foe:xxx 把招式固定成单招循环），

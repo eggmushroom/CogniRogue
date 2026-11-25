@@ -47,6 +47,26 @@ export function beginFrame() {
   g.textBaseline = 'middle';
 }
 
+/** 只保留逻辑画幅，过渡缓存不会随屏幕分辨率或 DPR 增长。 */
+export function captureFrame(target: CanvasRenderingContext2D) {
+  target.clearRect(0, 0, VW, VH);
+  target.drawImage(el, ox * dpr, oy * dpr, VW * scale * dpr, VH * scale * dpr, 0, 0, VW, VH);
+}
+
+/** 合成整张面板时，只对成品做淡入，避免文字和边框分别叠色。 */
+export function renderLayer(target: Ctx, draw: () => void) {
+  const previous = g;
+  target.clearRect(0, 0, VW, VH);
+  target.save();
+  target.textBaseline = 'middle';
+  g = target;
+  try { draw(); }
+  finally {
+    g = previous;
+    target.restore();
+  }
+}
+
 /** 屏幕像素 → 逻辑坐标。 */
 export function toLogic(clientX: number, clientY: number) {
   const r = el.getBoundingClientRect();

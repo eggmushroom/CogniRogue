@@ -1,10 +1,13 @@
-import { g, roundRect, VH, VW } from '../gfx/canvas';
-import { C, FONT_TITLE, withAlpha } from '../gfx/theme';
-import { action, text } from '../gfx/ui';
+import { VH, VW } from '../gfx/canvas';
+import { C, PRESS, FONT_TITLE } from '../gfx/theme';
+import { action, bar, cutRule, panel, text } from '../gfx/ui';
+import { drawArtIcon } from '../gfx/art/icons';
 import { hover, onClick } from '../input';
 import { G } from '../core/infra';
 import { resumeRun, runSaveInfo } from '../core/journey';
 import { bankProgress, countQuestions, sourceBank } from '../core/library';
+
+// Visual polish informed by Unslop by Damir Sokolovsky (CC BY 4.0).
 
 /**
  * 世界层：只画标题、三个入口、学习进度和它们的热区；书架由 layers.ts 的背景层统一画。
@@ -16,32 +19,20 @@ import { bankProgress, countQuestions, sourceBank } from '../core/library';
  * 玩法说明没有消失，它搬进了「设置」：那是一页说明，不是每天要按的东西。
  */
 export function drawTitle(
-  t: number, openPack: () => void, openSettings: () => void,
+  _t: number, openPack: () => void, openSettings: () => void,
 ) {
   const cx = VW / 2;
 
-  // 标题光
-  const gl = g.createRadialGradient(cx, 252, 20, cx, 252, 520);
-  gl.addColorStop(0, withAlpha(C.gold, 0.16));
-  gl.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = gl;
-  g.fillRect(0, 0, VW, VH);
+  panel(cx - 24, 126, 48, 48, { r: 1, fill: PRESS.vermilion, stroke: C.gold });
+  drawArtIcon('book', cx, 150, 28, C.ink);
+  cutRule(cx - 146, 150, 100, C.gold);
+  cutRule(cx + 46, 150, 100, C.gold);
 
-  const pulse = 1 + Math.sin(t * 1.1) * 0.006;
-  g.save();
-  g.translate(cx, 236);
-  g.scale(pulse, pulse);
-  text('COGNIROGUE', 0, 0, {
+  text('COGNIROGUE', cx, 236, {
     size: 96, weight: 700, align: 'center', color: C.ink, family: FONT_TITLE,
   });
-  g.restore();
 
-  const lg = g.createLinearGradient(cx - 300, 0, cx + 300, 0);
-  lg.addColorStop(0, withAlpha(C.gold, 0));
-  lg.addColorStop(0.5, withAlpha(C.gold, 0.85));
-  lg.addColorStop(1, withAlpha(C.gold, 0));
-  g.fillStyle = lg;
-  g.fillRect(cx - 300, 296, 600, 1.6);
+  cutRule(cx - 230, 295, 460, C.gold, 0.68);
 
   text('一边打牌，一边把该复习的东西复习掉', cx, 336, {
     size: 21, align: 'center', color: C.ink2, weight: 500,
@@ -79,7 +70,7 @@ export function drawTitle(
     size: 21, sub: `${src.name} · ${countQuestions(src)} 道题 / ${Object.keys(src.byTopic).length} 个主题`,
   });
   action(bx, by + 80, bw, bh, '设置', openSettings, 'ghost', {
-    size: 21, sub: '玩法说明 · 本机服务 · 出题模型',
+    size: 21, sub: '玩法说明 · 出题模型',
   });
 
   // 进度条的位置两种版式一致：多了一个断点，它不该跟着往下跳
@@ -115,16 +106,7 @@ function drawProgress(y: number) {
     text(`正确率 ${rate}%`, x + w, y, { size: 13, color: C.dim, align: 'right' });
   }
 
-  // 8px 才看得出是"进度"，6px 会读成一条分隔线
-  roundRect(x, y + 13, w, 8, 4);
-  g.fillStyle = 'rgba(255,255,255,.09)';
-  g.fill();
-  if (p.total && p.mastered) {
-    // 一道题也是看得见的一点，别让"刚掌握 1 题"渲染成空条
-    roundRect(x, y + 13, Math.max(8, (w * p.mastered) / p.total), 8, 4);
-    g.fillStyle = C.gold;
-    g.fill();
-  }
+  bar(x, y + 13, w, 8, p.total && p.mastered ? Math.max(8 / w, p.mastered / p.total) : 0, C.gold);
 
   text(p.answers ? `累计 ${p.answers} 次答题` : '还没答过题', x, y + 42, {
     size: 12, color: C.faint,

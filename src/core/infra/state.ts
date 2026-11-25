@@ -14,7 +14,7 @@ export function newRunState(): GameState {
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0, ap: BAL.baseAp, apMax: BAL.baseAp,
     turn: 1, enemy: null, draw: [], discard: [], hand: [],
     map: [], pos: null, node: null, seen: {}, eventsSeen: [],
-    charge: {}, qLeft: [], qPicked: {}, topics: [], runQueue: [], runCursor: 0, qSolved: {},
+    charge: {}, qLeft: [], qPicked: {}, topics: [], runQueue: [], runQuestions: [], runBankId: '', runId: '', runCursor: 0, qSolved: {},
     topicWrong: {}, okThisTurn: 0, topOkTopic: null,
     markerRefund: 0, syllabusTurn: 0,
     onceUsed: {}, onceStage: {}, onceRun: {},

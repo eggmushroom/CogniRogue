@@ -55,10 +55,19 @@ export const FOES: FoeTpl[] = [
     key: 'drift', name: '走神', type: 'fight', art: 'moth', stage: 1, tag: '普通', hp: 25, hpStep: 3, dmg: 7, moves: [{ k: 'jam', n: 1 }, { k: 'jam', n: 1 }, { k: 'atk' }],
   },
   {
+    key: 'indexkite', name: '索引纸鸢', type: 'fight', art: 'indexkite', stage: 1, tag: '普通', hp: 27, hpStep: 3, dmg: 9, moves: [{ k: 'atk', add: -4, times: 2 }, { k: 'def', v: 6 }],
+  },
+  {
+    key: 'puncher', name: '打孔兽', type: 'fight', art: 'puncher', stage: 1, tag: '普通', hp: 33, hpStep: 3, dmg: 9, moves: [{ k: 'def', v: 8 }, { k: 'atk', add: 4 }],
+  },
+  {
     key: 'inquisitor', name: '主考官', type: 'elite', art: 'inquisitor', stage: 1, tag: '精英', hp: 58, hpStep: 7, dmg: 14, moves: [{ k: 'atk', add: 4 }, { k: 'def', v: 14 }, { k: 'atk', add: -4, times: 2 }], mech: 'reviewer',
   },
   {
     key: 'rereader', name: '复读者', type: 'elite', art: 'examiner', stage: 1, tag: '精英', hp: 53, hpStep: 6, dmg: 11, moves: [{ k: 'atk', add: 1 }, { k: 'atk', add: -5, times: 3 }, { k: 'jam', n: 2 }],
+  },
+  {
+    key: 'bellwarden', name: '铜铃门卫', type: 'elite', art: 'bellwarden', stage: 1, tag: '精英', hp: 56, hpStep: 6, dmg: 13, moves: [{ k: 'atk' }, { k: 'def', v: 12 }, { k: 'atk', add: 5 }],
   },
   {
     key: 'cataloguer', name: '编目者', type: 'boss', art: 'cataloguer', stage: 1, tag: 'BOSS', hp: 68, hpStep: 8, dmg: 15, moves: [{ k: 'atk' }, { k: 'jam', n: 2 }, { k: 'atk', add: 5 }], mech: 'reviewer',
@@ -78,10 +87,19 @@ export const FOES: FoeTpl[] = [
     key: 'stitchworm', name: '线虫', type: 'fight', art: 'grub', stage: 2, tag: '普通', hp: 52, hpStep: 2, dmg: 10, moves: [{ k: 'atk', add: -4, times: 2 }, { k: 'atk' }], hue: 100,
   },
   {
+    key: 'shelfspider', name: '架角蛛', type: 'fight', art: 'shelfspider', stage: 2, tag: '普通', hp: 51, hpStep: 2, dmg: 11, moves: [{ k: 'atk', add: -5, times: 2 }, { k: 'def', v: 9 }, { k: 'atk' }],
+  },
+  {
+    key: 'moldcap', name: '霉帽', type: 'fight', art: 'moldcap', stage: 2, tag: '普通', hp: 55, hpStep: 2, dmg: 11, moves: [{ k: 'jam', n: 1 }, { k: 'def', v: 9 }, { k: 'atk', add: 3 }],
+  },
+  {
     key: 'wormking', name: '蠹王', type: 'elite', art: 'grub', stage: 2, tag: '精英', hp: 99, hpStep: 3, dmg: 14, moves: [{ k: 'jam', n: 1 }, { k: 'atk', add: 3 }, { k: 'atk', add: -6, times: 2 }], mech: 'fog', hue: 150,
   },
   {
     key: 'copyist', name: '抄书吏', type: 'elite', art: 'examiner', stage: 2, tag: '精英', hp: 92, hpStep: 3, dmg: 13, moves: [{ k: 'atk', add: 2 }, { k: 'def', v: 14 }], mech: 'bulwark', mechV: 8, hue: 130,
+  },
+  {
+    key: 'shelfmantis', name: '书架螳', type: 'elite', art: 'shelfmantis', stage: 2, tag: '精英', hp: 96, hpStep: 3, dmg: 14, moves: [{ k: 'atk', add: -6, times: 2 }, { k: 'def', v: 12 }, { k: 'atk', add: 5 }],
   },
   {
     key: 'devourer', name: '饕餮书虫', type: 'boss', art: 'devourer', stage: 2, tag: 'BOSS', hp: 123, hpStep: 4, dmg: 15, moves: [{ k: 'atk' }, { k: 'jam', n: 2 }, { k: 'atk', add: -5, times: 2 }], mech: 'leech', hue: 110,
@@ -92,7 +110,7 @@ export const FOES: FoeTpl[] = [
     key: 'ghostprint', name: '影印', type: 'fight', art: 'shard', stage: 3, tag: '普通', hp: 65, hpStep: 1, dmg: 12, moves: [{ k: 'atk', add: -6, times: 3 }], mech: 'thorns', mechV: 1, hue: 205,
   },
   {
-    key: 'typeblock', name: '铅字块', type: 'fight', art: 'shard', stage: 3, tag: '普通', hp: 76, hpStep: 2, dmg: 12, moves: [{ k: 'def', v: 14 }, { k: 'atk', add: 1 }], hue: 220,
+    key: 'typeblock', name: '铅字块', type: 'fight', art: 'typeblock', stage: 3, tag: '普通', hp: 76, hpStep: 2, dmg: 12, moves: [{ k: 'def', v: 14 }, { k: 'atk', add: 1 }],
   },
   {
     key: 'compositor', name: '排字工', type: 'fight', art: 'examiner', stage: 3, tag: '普通', hp: 70, hpStep: 2, dmg: 13, moves: [{ k: 'atk' }, { k: 'jam', n: 2 }], mech: 'pierce', hue: 205,
@@ -101,10 +119,19 @@ export const FOES: FoeTpl[] = [
     key: 'carbon', name: '复写纸', type: 'fight', art: 'moth', stage: 3, tag: '普通', hp: 63, hpStep: 2, dmg: 12, moves: [{ k: 'atk', add: 1 }, { k: 'atk', add: 1 }], hue: 205,
   },
   {
+    key: 'inkroller', name: '滚墨兽', type: 'fight', art: 'inkroller', stage: 3, tag: '普通', hp: 71, hpStep: 2, dmg: 12, moves: [{ k: 'def', v: 11 }, { k: 'atk', add: 4 }],
+  },
+  {
+    key: 'typeswarm', name: '游字群', type: 'fight', art: 'typeswarm', stage: 3, tag: '普通', hp: 66, hpStep: 2, dmg: 12, moves: [{ k: 'atk', add: -7, times: 3 }, { k: 'def', v: 9 }, { k: 'jam', n: 1 }],
+  },
+  {
     key: 'duplex', name: '双面印刷机', type: 'elite', art: 'examiner', stage: 3, tag: '精英', hp: 123, hpStep: 3, dmg: 15, moves: [{ k: 'atk', add: -7, times: 3 }, { k: 'def', v: 16 }], mech: 'thorns', mechV: 3, hue: 210,
   },
   {
     key: 'stereotype', name: '铅版巨人', type: 'elite', art: 'inquisitor', stage: 3, tag: '精英', hp: 132, hpStep: 3, dmg: 16, moves: [{ k: 'atk', add: 4 }, { k: 'buff', v: 2 }], mech: 'haste', hue: 205,
+  },
+  {
+    key: 'rotary', name: '轮转机', type: 'elite', art: 'rotary', stage: 3, tag: '精英', hp: 128, hpStep: 3, dmg: 15, moves: [{ k: 'def', v: 15 }, { k: 'atk', add: -6, times: 2 }, { k: 'atk', add: 5 }],
   },
   {
     key: 'imprinter', name: '压印之主', type: 'boss', art: 'imprinter', stage: 3, tag: 'BOSS', hp: 162, hpStep: 4, dmg: 17, moves: [{ k: 'atk' }, { k: 'atk', add: -8, times: 3 }, { k: 'def', v: 18 }], mech: 'thorns', mechV: 3, hue: 195,
@@ -121,13 +148,22 @@ export const FOES: FoeTpl[] = [
     key: 'leathercover', name: '皮革封面', type: 'fight', art: 'shard', stage: 4, tag: '普通', hp: 100, hpStep: 2, dmg: 14, moves: [{ k: 'def', v: 18 }, { k: 'atk', add: 3 }], mech: 'bulwark', mechV: 10, hue: 25,
   },
   {
-    key: 'gluepot', name: '熔胶炉', type: 'fight', art: 'oblivion', stage: 4, tag: '普通', hp: 80, hpStep: 2, dmg: 15, moves: [{ k: 'atk', add: 3 }, { k: 'atk', add: 3 }], hue: 30,
+    key: 'gluepot', name: '熔胶炉', type: 'fight', art: 'gluepot', stage: 4, tag: '普通', hp: 80, hpStep: 2, dmg: 15, moves: [{ k: 'atk', add: 3 }, { k: 'atk', add: 3 }],
+  },
+  {
+    key: 'waxcrab', name: '封蜡蟹', type: 'fight', art: 'waxcrab', stage: 4, tag: '普通', hp: 93, hpStep: 2, dmg: 14, moves: [{ k: 'def', v: 16 }, { k: 'atk', add: -5, times: 2 }],
+  },
+  {
+    key: 'needlejack', name: '针线人偶', type: 'fight', art: 'needlejack', stage: 4, tag: '普通', hp: 84, hpStep: 2, dmg: 14, moves: [{ k: 'atk', add: 2 }, { k: 'def', v: 12 }, { k: 'atk', add: -8, times: 3 }],
   },
   {
     key: 'binder', name: '装订师', type: 'elite', art: 'examiner', stage: 4, tag: '精英', hp: 147, hpStep: 3, dmg: 17, moves: [{ k: 'atk', add: 3 }, { k: 'def', v: 18 }, { k: 'atk', add: -7, times: 2 }], mech: 'bulwark', mechV: 12, hue: 25,
   },
   {
     key: 'press', name: '压书机', type: 'elite', art: 'inquisitor', stage: 4, tag: '精英', hp: 157, hpStep: 3, dmg: 18, moves: [{ k: 'atk', add: 5 }, { k: 'buff', v: 3 }], mech: 'haste', hue: 20,
+  },
+  {
+    key: 'seamcutter', name: '裁书剪', type: 'elite', art: 'seamcutter', stage: 4, tag: '精英', hp: 152, hpStep: 3, dmg: 17, moves: [{ k: 'atk', add: 6 }, { k: 'def', v: 15 }, { k: 'atk', add: -6, times: 2 }],
   },
   {
     key: 'bound', name: '装订之兽', type: 'boss', art: 'bound', stage: 4, tag: 'BOSS', hp: 201, hpStep: 4, dmg: 19, moves: [{ k: 'atk' }, { k: 'def', v: 20 }, { k: 'atk', add: -7, times: 2 }], mech: 'bulwark', mechV: 14, hue: 25,
@@ -147,10 +183,19 @@ export const FOES: FoeTpl[] = [
     key: 'fgotten', name: '遗忘的读者', type: 'fight', art: 'moth', stage: 5, tag: '普通', hp: 95, hpStep: 1, dmg: 16, moves: [{ k: 'atk' }, { k: 'jam', n: 2 }, { k: 'atk' }], mech: 'lethe', hue: 320,
   },
   {
+    key: 'lockbox', name: '锁链书匣', type: 'fight', art: 'lockbox', stage: 5, tag: '普通', hp: 108, hpStep: 2, dmg: 16, moves: [{ k: 'def', v: 18 }, { k: 'atk', add: 5 }, { k: 'jam', n: 1 }],
+  },
+  {
+    key: 'redactor', name: '遮字抄本', type: 'fight', art: 'redactor', stage: 5, tag: '普通', hp: 101, hpStep: 2, dmg: 16, moves: [{ k: 'jam', n: 1 }, { k: 'atk', add: -6, times: 2 }, { k: 'def', v: 14 }],
+  },
+  {
     key: 'silencer', name: '缄默者', type: 'elite', art: 'inquisitor', stage: 5, tag: '精英', hp: 172, hpStep: 3, dmg: 19, moves: [{ k: 'atk', add: 3 }, { k: 'atk', add: -6, times: 2 }], mech: 'siphon', hue: 320,
   },
   {
     key: 'lethe', name: '忘川', type: 'elite', art: 'lethe', stage: 5, tag: '精英', hp: 182, hpStep: 3, dmg: 19, moves: [{ k: 'atk' }, { k: 'jam', n: 2 }, { k: 'atk', add: -7, times: 2 }, { k: 'buff', v: 2 }], mech: 'lethe',
+  },
+  {
+    key: 'sandkeeper', name: '漏刻守夜人', type: 'elite', art: 'sandkeeper', stage: 5, tag: '精英', hp: 178, hpStep: 3, dmg: 19, moves: [{ k: 'def', v: 19 }, { k: 'atk', add: 6 }, { k: 'atk', add: -9, times: 3 }],
   },
   {
     key: 'oblivion', name: '遗忘', type: 'boss', art: 'oblivion', stage: 5, tag: 'BOSS', hp: 270, hpStep: 4, dmg: 22, moves: [{ k: 'atk' }, { k: 'atk', add: -9, times: 2 }, { k: 'buff', v: 2 }], mech: 'oblivion',
@@ -162,65 +207,65 @@ export const FOES: FoeTpl[] = [
  */
 export const POWERS: PowerDef[] = [
   {
-    id: 'librarycard', icon: '借', name: '借书证', color: '#9dbf9a',
+    id: 'librarycard', name: '借书证', color: '#9dbf9a',
     scope: 'always',
     card: '每次答对，退回 1 点行动力',
     desc: '没有它时，答对不退行动力。',
   },
   {
-    id: 'hourglass', icon: '时', name: '沙漏', color: '#e8b64c',
+    id: 'hourglass', name: '沙漏', color: '#e8b64c',
     scope: 'always',
     card: '每场战斗的第一回合，行动力 +1',
   },
   {
-    id: 'index', icon: '索', name: '索引卡', color: '#6f9ee8',
+    id: 'index', name: '索引卡', color: '#6f9ee8',
     scope: 'always',
     card: '手牌少于 3 张时，每回合多抽 2 张',
     desc: '打空之后，下一回合补回来。',
   },
   {
-    id: 'binder', icon: '订', name: '装订线', color: '#4fd6cf',
+    id: 'binder', name: '装订线', color: '#4fd6cf',
     scope: 'fight',
     card: '每场第一次答错，伤害减「费用 × 2」，格挡减「费用 × 5」',
     // 削减不等于"这次不算答错"：退款、错题簿、弃牌照旧。
     desc: '这一手仍然算答错：不退行动力，牌照样进弃牌堆。',
   },
   {
-    id: 'mirrorcard', icon: '镜', name: '双面镜', color: '#a78bfa',
+    id: 'mirrorcard', name: '双面镜', color: '#a78bfa',
     scope: 'always',
     card: '每回合第一次答对，抽 1 张',
     desc: '抽到的牌当回合就能打。',
   },
   {
-    id: 'lamp', icon: '灯', name: '长明灯', color: '#e8c86c',
+    id: 'lamp', name: '长明灯', color: '#e8c86c',
     scope: 'always',
     card: '每回合开始获得 1 点格挡',
     desc: '和卡牌给的格挡叠加。',
   },
   {
-    id: 'marker', icon: '笔', name: '荧光笔', color: '#d06fa8',
+    id: 'marker', name: '荧光笔', color: '#d06fa8',
     scope: 'fight',
     card: '每场战斗第一次答对，退回的行动力 +1',
     // 「退 2 点」只在有借书证时成立；测试开局没有借书证，那一场只退 1 点。
     desc: '没有借书证也能退 1 点。',
   },
   {
-    id: 'paperweight', icon: '镇', name: '镇纸', color: '#8fb0c8',
+    id: 'paperweight', name: '镇纸', color: '#8fb0c8',
     scope: 'always',
     card: '每场战斗开局多 2 点格挡',
   },
   {
-    id: 'dogear', icon: '折', name: '折角', color: '#d8a24c',
+    id: 'dogear', name: '折角', color: '#d8a24c',
     scope: 'always',
     card: '每场战斗第一回合多抽 2 张',
   },
   {
-    id: 'bookmark', icon: '签', name: '书签', color: '#7fc4a8',
+    id: 'bookmark', name: '书签', color: '#7fc4a8',
     scope: 'fight',
     card: '每场战斗第一次答对，获得 2 点格挡',
   },
   {
-    id: 'eraser', icon: '擦', name: '橡皮', color: '#d98b8b',
+    id: 'eraser', name: '橡皮', color: '#d98b8b',
     scope: 'fight',
     card: '每场战斗第一次答错，补 3 点格挡',
     // 「补的格挡挡不了这一下」会被读成"挡不了敌人这一下"—— 正好相反，
@@ -228,30 +273,30 @@ export const POWERS: PowerDef[] = [
     desc: '作废的这一手救不回来，这 3 点是给敌人回合的。',
   },
   {
-    id: 'syllabus', icon: '课', name: '课表', color: '#9aa7d8',
+    id: 'syllabus', name: '课表', color: '#9aa7d8',
     scope: 'always',
     card: '每回合第一次打出基础牌，获得 1 点格挡',
   },
   {
-    id: 'sticky', icon: '贴', name: '便签', color: '#e6d05a',
+    id: 'sticky', name: '便签', color: '#e6d05a',
     scope: 'always',
     card: '战后选卡从三张变四张',
     desc: '也可以跳过。',
   },
   /* ── 第二批：拆答错线（书套 / 草稿纸 / 放大镜），另补答对与硬仗 ── */
   {
-    id: 'slipcase', icon: '套', name: '书套', color: '#b58fb8',
+    id: 'slipcase', name: '书套', color: '#b58fb8',
     scope: 'fight',
     card: '每场战斗第一次答错的那道题，不记进错题簿',
     desc: '「遗忘」按错题簿挑主题；这一题不算。',
   },
   {
-    id: 'scratch', icon: '稿', name: '草稿纸', color: '#c8b08f',
+    id: 'scratch', name: '草稿纸', color: '#c8b08f',
     scope: 'fight',
     card: '每场战斗第一次答错，补抽 1 张',
   },
   {
-    id: 'loupe', icon: '镜', name: '放大镜', color: '#6fc4d8',
+    id: 'loupe', name: '放大镜', color: '#6fc4d8',
     scope: 'fight',
     card: '每场战斗第一次答题，去掉一个错误选项',
     // 内置题库全是四选一，但导入的题库可以只有两个选项 —— 那种题不动它，
@@ -259,19 +304,19 @@ export const POWERS: PowerDef[] = [
     desc: '划掉的是错误选项。两个选项的题跳过，名额留给下一道。',
   },
   {
-    id: 'margin', icon: '注', name: '批注', color: '#e08a5c',
+    id: 'margin', name: '批注', color: '#e08a5c',
     scope: 'fight',
     card: '每场战斗第一次答对，这张牌多攒 1 次免答',
     desc: '和这次答对本身攒的那次一起算。',
   },
   {
-    id: 'corner', icon: '角', name: '护角', color: '#9d8fb8',
+    id: 'corner', name: '护角', color: '#9d8fb8',
     scope: 'always',
     card: '精英 / 首领战开局多 4 点格挡',
     desc: '和镇纸、开局那 4 点叠加。',
   },
   {
-    id: 'mend', icon: '胶', name: '修书胶', color: '#c49a6c',
+    id: 'mend', name: '修书胶', color: '#c49a6c',
     scope: 'always',
     // 复习点是固定 45 点，这一张加到 55。是加 10 点，不是乘 1.18。
     card: '复习点多回 10 点生命',
@@ -279,19 +324,19 @@ export const POWERS: PowerDef[] = [
 
   /* ── 常驻：每张牌、每一击 ── */
   {
-    id: 'press', icon: '压', name: '压书石', color: '#a89078',
+    id: 'press', name: '压书石', color: '#a89078',
     scope: 'always',
     card: '每张牌的伤害 +1',
     desc: '多段伤害的每一段都算，基础牌也算。',
   },
   {
-    id: 'code', icon: '规', name: '校规', color: '#8fa8c0',
+    id: 'code', name: '校规', color: '#8fa8c0',
     scope: 'always',
     card: '每张牌的格挡 +1',
     desc: '纯攻击牌不加。',
   },
   {
-    id: 'nightlight', icon: '夜', name: '夜灯', color: '#c8b46c',
+    id: 'nightlight', name: '夜灯', color: '#c8b46c',
     scope: 'always',
     card: '每次受到攻击，伤害 -1',
     // 原来写着"多段攻击的每一下都减"，代码从来只减一次 —— 一句补出来的解释
@@ -299,25 +344,25 @@ export const POWERS: PowerDef[] = [
     desc: '先减伤，再算格挡。',
   },
   {
-    id: 'board', icon: '板', name: '板书', color: '#7f9e88',
+    id: 'board', name: '板书', color: '#7f9e88',
     scope: 'always',
     card: '每回合多抽 1 张',
   },
   {
-    id: 'tab', icon: '页', name: '索引贴', color: '#c8a0b8',
+    id: 'tab', name: '索引贴', color: '#c8a0b8',
     scope: 'always',
     card: '回合结束时保留 2 点格挡',
     desc: '格挡只在这一处跨回合。',
   },
   {
-    id: 'stamp', icon: '印', name: '藏书印', color: '#b08c6c',
+    id: 'stamp', name: '藏书印', color: '#b08c6c',
     scope: 'always',
     // 一场只有一个敌人，"每击杀一个"是在承诺一件不会发生的事；而 desc 又写
     // "一场最多触发一次"，两句话互相否认。说清一次就够。
     card: '击杀敌人时，回复 3 点生命',
   },
   {
-    id: 'tea', icon: '茶', name: '茶', color: '#c0a878',
+    id: 'tea', name: '茶', color: '#c0a878',
     scope: 'always',
     card: '过幕时最大生命额外 +10',
     // 原来写「和过幕的 +14 叠加」—— 14 是 `BAL.stageMaxHp` 的手抄副本，改数值就骗人。
@@ -325,13 +370,13 @@ export const POWERS: PowerDef[] = [
     desc: '加上限的同时回满，这 10 点当场就是血。',
   },
   {
-    id: 'shelf', icon: '挡', name: '书挡', color: '#8c9ea8',
+    id: 'shelf', name: '书挡', color: '#8c9ea8',
     scope: 'always',
     // 上限只管知识卡：基础牌本来就有 4 张同名的，那是牌组底座不是收集品。
     card: '同一种知识卡的上限 +1',
   },
   {
-    id: 'polish', icon: '亮', name: '抛光布', color: '#c8c09a',
+    id: 'polish', name: '抛光布', color: '#c8c09a',
     scope: 'instant',
     // card 原来写「精炼一张牌的加成 +2」，desc 写「之后每次精炼都多 +2」——
     // 一句像一次性的，一句像常驻的。代码是 `G.upGrade`，常驻。
@@ -340,50 +385,50 @@ export const POWERS: PowerDef[] = [
 
   /* ── 每场一次：答对 / 答错之外的时机 ── */
   {
-    id: 'gluepot', icon: '壶', name: '胶水壶', color: '#a8b090',
+    id: 'gluepot', name: '胶水壶', color: '#a8b090',
     scope: 'fight',
     card: '每场战斗第一次答错，那张牌留在手里',
     desc: '这一回合还能再打；回合结束进弃牌堆。',
   },
   {
-    id: 'seal', icon: '蜡', name: '封蜡', color: '#b87878',
+    id: 'seal', name: '封蜡', color: '#b87878',
     scope: 'fight',
     card: '每场战斗第一次受到攻击，伤害 -8',
     desc: '多段攻击按这次的总伤害减 8，不是每段各减一次。',
   },
   {
-    id: 'clip', icon: '针', name: '回形针', color: '#9aa8b8',
+    id: 'clip', name: '回形针', color: '#9aa8b8',
     scope: 'fight',
     card: '每场战斗第一次打出 3 费及以上的牌，退回 2 点行动力',
     // card 写「及以上」、desc 写「以上」，同一个门槛两种口径。留下真正装不下的那条。
     desc: '3 费也算。',
   },
   {
-    id: 'whistle', icon: '哨', name: '口哨', color: '#c8b880',
+    id: 'whistle', name: '口哨', color: '#c8b880',
     scope: 'fight',
     card: '每场战斗第一回合，敌人的第一次攻击落空',
     desc: '首动不是攻击则不触发。',
   },
   {
-    id: 'felt', icon: '毡', name: '毡垫', color: '#a09a88',
+    id: 'felt', name: '毡垫', color: '#a09a88',
     scope: 'fight',
     card: '每场战斗第一次洗牌时，清掉弃牌堆里的 2 张杂念',
     desc: '弃牌堆里没有杂念就不算用过。',
   },
   {
-    id: 'brush', icon: '毫', name: '毛笔', color: '#b89070',
+    id: 'brush', name: '毛笔', color: '#b89070',
     scope: 'fight',
     card: '每场战斗第一次答对，这张牌额外结算一次',
   },
 
   /* ── 每幕一次 ── */
   {
-    id: 'ledger', icon: '账', name: '账本', color: '#a89478',
+    id: 'ledger', name: '账本', color: '#a89478',
     scope: 'stage',
     card: '每幕第一次战后奖励多一个选项，并让选中的牌直接精炼',
   },
   {
-    id: 'atlas', icon: '图', name: '地图册', color: '#8898a8',
+    id: 'atlas', name: '地图册', color: '#8898a8',
     scope: 'stage',
     card: '每幕第一次复习，额外回复 15 点生命',
     // 它和复习本身的回复合成一个总量再一次给出，不是"另给 15 点血"。
@@ -392,66 +437,66 @@ export const POWERS: PowerDef[] = [
 
   /* ── 整局一次 ── */
   {
-    id: 'wish', icon: '愿', name: '许愿条', color: '#d8b8d0',
+    id: 'wish', name: '许愿条', color: '#d8b8d0',
     scope: 'run',
     card: '整局一次：致死时以 30 点生命活下来',
   },
 
   /* ── 拾取即结算：不挂时机，直接改这一局的底盘 ── */
   {
-    id: 'spine', icon: '脊', name: '书脊', color: '#a08c78',
+    id: 'spine', name: '书脊', color: '#a08c78',
     scope: 'instant',
     card: '最大生命 +18，并立即回复 18 点',
   },
   {
-    id: 'exlibris', icon: '票', name: '藏书票', color: '#c8a888',
+    id: 'exlibris', name: '藏书票', color: '#c8a888',
     scope: 'instant',
     card: '立即获得 2 张随机知识卡',
     desc: '每种卡有上限，牌池挑不满时给到的会少于 2 张。',
   },
   {
-    id: 'slim', icon: '刀', name: '裁纸刀', color: '#a8b0b8',
+    id: 'slim', name: '裁纸刀', color: '#a8b0b8',
     scope: 'instant',
     card: '立即移除 2 张基础牌',
     desc: '牌组不会删到 5 张以下。',
   },
   {
-    id: 'resin', icon: '脂', name: '树脂', color: '#b8a070',
+    id: 'resin', name: '树脂', color: '#b8a070',
     scope: 'instant',
     card: '所有基础牌立即精炼',
   },
 
   /* ── 第四批：挂在局内动作顺序上（结束回合、打第几张、洗牌、先打哪种牌） ── */
   {
-    id: 'feather', icon: '羽', name: '羽毛', color: '#d8c8a8',
+    id: 'feather', name: '羽毛', color: '#d8c8a8',
     scope: 'always',
     card: '回合结束时若没有格挡，获得 2 点格挡',
     // 玩家容易把「回合结束」读成"敌人已经打完了" —— 这 2 点是在敌人出招前补的。
     desc: '在敌人出招之前补上，挡得住这一下。',
   },
   {
-    id: 'ink', icon: '墨', name: '墨水瓶', color: '#7f8fa8',
+    id: 'ink', name: '墨水瓶', color: '#7f8fa8',
     scope: 'always',
     card: '每回合第 3 张牌打出时，抽 1 张',
     desc: '一回合只数一次。',
   },
   {
-    id: 'archive', icon: '档', name: '档案盒', color: '#a89a78',
+    id: 'archive', name: '档案盒', color: '#a89a78',
     scope: 'always',
     card: '每次洗牌，获得 2 点格挡',
   },
   {
-    id: 'pulse', icon: '拍', name: '节拍器', color: '#d08a6c',
+    id: 'pulse', name: '节拍器', color: '#d08a6c',
     scope: 'fight',
     card: '每场战斗第一次一回合打出 3 张牌，退回 1 点行动力',
   },
   {
-    id: 'varnish', icon: '油', name: '亮油', color: '#c8b878',
+    id: 'varnish', name: '亮油', color: '#c8b878',
     scope: 'fight',
     card: '每场战斗第一次打出 0 费牌，抽 1 张',
   },
   {
-    id: 'seed', icon: '种', name: '种纸', color: '#8fb08a',
+    id: 'seed', name: '种纸', color: '#8fb08a',
     scope: 'fight',
     card: '每场战斗第一次打出攻击牌，获得 2 点格挡',
   },

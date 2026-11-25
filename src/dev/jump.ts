@@ -75,7 +75,7 @@ export function devJump() {
       const tpl = FOES.find((f) => f.key === arg);
       if (tpl) {
         Object.assign(G.enemy, {
-          key: tpl.key, name: tpl.name, art: tpl.art, hue: tpl.hue,
+          key: tpl.key, name: tpl.name, art: tpl.art, hue: tpl.hue, type: tpl.type,
           tag: tpl.tag, mech: tpl.mech, mechV: tpl.mechV,
           moves: tpl.moves, mv: 0,
         });
@@ -168,7 +168,7 @@ export function devJump() {
       e.ok = ok;
       e.bad = bad;
       e.q = {};
-      for (let j = 0; j < bad; j++) e.q[`q_demo_${i}_${j}`] = { ok: 0, bad: 1 };
+      for (let j = 0; j < bad; j++) e.q[`q_demo_${i}_${j}`] = { ok: 0, bad: 1, attempts: [1] };
     });
     G.answerDraws = 14;
     G.runOk = 12;

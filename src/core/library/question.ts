@@ -20,12 +20,13 @@ import { shuffle } from '../infra/util';
 export function shuffleOptions(q: Question): QView {
   const options = q.options.slice();
   const answer = q.answer;
+  const originalIndices = options.map((_, i) => i);
   // 选项不足、答案越界、或题库显式声明了固定顺序时，原样返回
   if (q.noShuffle || options.length < 2 || answer < 0 || answer >= options.length) {
-    return { options, answer };
+    return { options, answer, originalIndices };
   }
 
   // 洗的是下标，答案索引跟着一起换算；和 `infra/util.shuffle` 共用一份 Fisher-Yates。
-  const idx = shuffle(options.map((_, i) => i));
-  return { options: idx.map((i) => options[i]), answer: idx.indexOf(answer) };
+  const idx = shuffle(originalIndices);
+  return { options: idx.map((i) => options[i]), answer: idx.indexOf(answer), originalIndices: idx };
 }

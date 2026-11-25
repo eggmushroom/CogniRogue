@@ -1,23 +1,20 @@
-import { g, roundRect, VH, VW, wrapText } from '../gfx/canvas';
-import { C, font, FONT_TITLE, FONT_UI, SCRIM, withAlpha } from '../gfx/theme';
+import { g, roundRect, VW, wrapText } from '../gfx/canvas';
+import { C, font, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { action, bar, panel, text } from '../gfx/ui';
+import { drawPowerIcon } from '../gfx/art/powers';
 import { POWER_BY_ID, stageOf } from '../core/model';
 import { backToTitle, restart } from '../core/journey';
 import type { ReportData } from '../core/model';
 import { downloadStudySnapshot } from './studyio';
 
 export function drawReport(d: ReportData) {
-  g.fillStyle = `rgba(3,4,8,${SCRIM})`;
-  g.fillRect(0, 0, VW, VH);
-
   const w = 1360;
   const h = 772;
   const x = (VW - w) / 2;
   const y = 64;
 
-  panel(x, y, w, h, { r: 18, fill: 'rgba(12,15,22,.98)', stroke: withAlpha(d.win ? C.gold : C.line, 0.55) });
-
   const accent = d.win ? C.gold : C.red;
+  panel(x, y, w, h, { accent, stroke: withAlpha(accent, 0.55) });
   const st = stageOf(d.stage);
   text(d.win ? '你走到了档案馆的尽头' : `这次倒在了第 ${d.floor} 层 · ${st.name}`, x + 48, y + 68, {
     size: 34, weight: 700, family: FONT_TITLE, color: accent,
@@ -43,22 +40,22 @@ export function drawReport(d: ReportData) {
     text(k, sx, y + 192, { size: 12, color: C.dim });
   });
 
-  // 这一局捡到的增益。它们不进牌组，所以只展示名字，不和牌组张数混成一栏
+  // 增益不进牌组，所以单独列出。
   let rx = x + 48;
   for (const id of d.powers) {
     const p = POWER_BY_ID[id];
     const name = p?.name ?? id;
     const col = p?.color ?? C.gold;
-    const label = `◆ ${name}`;
     g.font = font(13, 600, FONT_UI);
-    const cw = g.measureText(label).width + 26;
+    const cw = g.measureText(name).width + (p ? 40 : 22);
     roundRect(rx, y + 212, cw, 28, 14);
     g.fillStyle = withAlpha(col, 0.12);
     g.fill();
     g.strokeStyle = withAlpha(col, 0.4);
     g.lineWidth = 1;
     g.stroke();
-    text(label, rx + cw / 2, y + 226, { size: 13, color: col, align: 'center', weight: 600 });
+    if (p) drawPowerIcon(rx + 7, y + 217, 18, p.id);
+    text(name, rx + (p ? 29 : 11), y + 226, { size: 13, color: col, weight: 600 });
     rx += cw + 10;
   }
 

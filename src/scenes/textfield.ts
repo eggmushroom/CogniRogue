@@ -28,24 +28,15 @@ export function drawField(
     rightGap?: number;
   },
 ) {
-  // 凹槽而不是浅色方块：比面板底色更深一档，看起来才像"能往里写字的地方"，
-  // 而不是又一颗按钮。焦点用金色描边 + 一点外发光，和面板的金属边框同一套语言。
-  roundRect(x, y, w, h, 7);
-  g.fillStyle = opts.focused ? 'rgba(9,12,19,.95)' : 'rgba(5,8,13,.75)';
+  // 输入槽比面板深一档；焦点只改变描边，不给相邻字段染色。
+  roundRect(x, y, w, h, 8);
+  g.fillStyle = C.bg;
   g.fill();
   if (opts.focused) {
-    // 一点暖色底 + 金色描边：焦点在哪一格，扫一眼就知道，不用去找光标
-    roundRect(x, y, w, h, 7);
-    g.fillStyle = 'rgba(232,182,76,.055)';
-    g.fill();
-    g.save();
-    g.shadowColor = 'rgba(232,182,76,.32)';
-    g.shadowBlur = 16;
     g.strokeStyle = C.gold;
-    g.lineWidth = 1.5;
-    roundRect(x, y, w, h, 7);
+    g.lineWidth = 1;
+    roundRect(x, y, w, h, 8);
     g.stroke();
-    g.restore();
   } else {
     g.strokeStyle = 'rgba(255,255,255,.09)';
     g.lineWidth = 1;
@@ -57,7 +48,7 @@ export function drawField(
   const pad = 14;
   const avail = w - pad * 2 - (opts.rightGap ?? 0);
   const caretAt = opts.masked ? shown.length : f.caret;
-  const baseY = y + h / 2 + 5;
+  const baseY = y + h / 2;
 
   g.save();
   roundRect(x, y, w, h, 7);

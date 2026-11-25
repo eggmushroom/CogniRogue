@@ -8,7 +8,7 @@ import {
   EVENTS, G, answer, askCard, canAsk, canPay, canPayHp, cancelPanel, ackCardGet, chooseEventOption, clearRun, defOf,
   dismissFeedback, endTurn, forgetCard, intentText, playBasic,
   runSaveInfo, skipReward, takeCard, startBattle, startTurn, upgradeCard, openReward, openPowerDrop,
-  loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf, LEGACY_CARD_IDS,
+  loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf,
   allQuestions, stageMemOf, resetStageMemory, recordAnswer, studySnapshot, STUDY_SNAPSHOT_V,
   rightCount, runPool, isRetired, buildRunPool, nextQuestions, sourceBank,
   cardKind, BASICS, drawBattleQuestions,  askOf, costOf, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
@@ -17,7 +17,8 @@ import {
   grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
   lastFeedback, onFx, effFace, planStrike, setScheduler, panelOf, buildSettlement,
   parseQuestionBank, questionId, shuffleOptions, SNAP_V, SAVE_KEY, drawEvent, MAP_COLS,
-  isBasicId, baseIdOf, mechAmt, mechNote, endRun, takeAnswerUpload, runAnswers,
+  isBasicId, baseIdOf, mechAmt, mechNote, endRun, takeAnswerUpload, finishAnswerUpload,
+  answerHistory, archiveAnswerRun,
 } from '../src/core';
 
 // 结构检查用同步调度，core 的演出延时不会真的挂住测试。
@@ -41,9 +42,34 @@ for (const s of STAGES) {
   const n = mine.filter((f) => f.type === 'fight').length;
   const e = mine.filter((f) => f.type === 'elite').length;
   const b = mine.filter((f) => f.type === 'boss').length;
-  ok(n >= 3 && e >= 2 && b === 1, `第 ${s.i} 幕 ${s.name}：${n} 普通 / ${e} 精英 / ${b} Boss`);
+  ok(n >= 6 && e >= 3 && b === 1, `第 ${s.i} 幕 ${s.name}：${n} 普通 / ${e} 精英 / ${b} Boss`);
 }
 ok(new Set(FOES.map((f) => f.key)).size === FOES.length, `敌人 key 不重复（共 ${FOES.length} 种）`);
+{
+  startRun();
+  const realRandom = Math.random;
+  try {
+    for (const s of STAGES) {
+      G.stage = s.i;
+      const map = genStage(s.i);
+      for (const type of ['fight', 'elite', 'boss'] as const) {
+        const nd = map.flat().find((node) => node.type === type)!;
+        const expected = FOES.filter((f) => f.stage === s.i && f.type === type);
+        const drawn = new Set<string | undefined>();
+        // 落在每个抽样区间的正中，避免随机覆盖把漏掉的怪藏起来。
+        for (let i = 0; i < expected.length; i++) {
+          Math.random = () => (i + 0.5) / expected.length;
+          startBattle(nd);
+          drawn.add(G.enemy?.key);
+        }
+        Math.random = realRandom;
+        ok(expected.every((f) => drawn.has(f.key)), `第 ${s.i} 幕 ${type} 节点能抽到全部 ${expected.length} 种对应敌人`);
+      }
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+}
 
 // ── 2. 地图 ──
 const m = genStage(3);
@@ -245,14 +271,15 @@ function battle(stage: number, key: string) {
 {
   battle(3, 'ghostprint');
   const before = G.hp;
-  // 必须挑一张**真的造成伤害**的牌：格挡牌打出去不算"攻击"，影印不反伤。
-  // 原来只筛 `canAsk && canPay`，于是抽到 guard 牌时这条断言会偶发失败
-  // （约 1/6，取决于起手手牌），而读数 `40 → 40` 看着像"反伤丢了"。
-  const i = G.hand.findIndex((c) => canAsk(c) && canPay(defOf(c))
-    && effFace(planStrike(c, { noBoost: true })).per > 0);
-  if (i < 0) throw new Error('反伤测试：手里没有能答的攻击牌');
+  const strike = PACK.cards.find((card) => card.kind === 'knowledge' && card.eff === 'strike'
+    && card.cost === 1 && card.atk > 0 && !card.mods?.selfHp)!;
+  G.hand = [strike.id];
+  G.ap = 3;
+  const i = 0;
+  ok(canAsk(G.hand[i]) && canPay(defOf(G.hand[i])), '反伤测试固定使用可答、可支付的攻击牌');
   askCard(i);
   if (G.panel.k === 'question') answer(G.panel.view.answer);
+  ok(!G.busy, '答题结算完成后解除战斗锁');
   if (G.panel.k === 'feedback') dismissFeedback();
   ok(G.hp < before, `影印：反伤落地（${before} → ${G.hp}）`);
 }
@@ -268,6 +295,7 @@ function battle(stage: number, key: string) {
       const v = G.panel.view;
       answer((v.answer + 1) % v.options.length);
     }
+    ok(!G.busy, '答错结算完成后解除战斗锁');
     if (G.panel.k === 'feedback') dismissFeedback();
   }
   ok(e.block > 0, `皮革封面：答错后它叠了 ${e.block} 格挡`);
@@ -1336,32 +1364,23 @@ function missGain(eff: string) {
 }
 
 {
-  // 概念主键：题号按「主题 + 概念」派生，于是改写题干不会丢学习历史 ——
-  // 这是「按错题重生成」那条闭环的前提。而老题库没写 `~`，所以必须仍然按题干算，
-  // 否则 400 道题的题号一次性漂移，玩家跨局攒的错题记录全部作废。
+  // 逐题题号与知识点 ID 分离：变式题题号不同，知识点相同。
   const a = parseQuestionBank('### 二分最坏情况：问法一\n~ algo/binary-worst\nA) 甲\nB) 乙\n= B\n').byTopic['未分类']?.[0];
   const b = parseQuestionBank('### 完全不同的一种问法\n~ algo/binary-worst\nA) 甲\nB) 乙\n= B\n').byTopic['未分类']?.[0];
-  const c = parseQuestionBank('### 另一个知识点\n~ algo/binary-best\nA) 甲\nB) 乙\n= B\n').byTopic['未分类']?.[0];
-  ok(!!a && !!b && !!c && a.qid === b.qid && a.qid !== c.qid,
-    `概念主键：换问法仍同号（${a?.qid}/${b?.qid}），换概念换号（${c?.qid}）`);
+  ok(!!a && !!b && a.qid !== b.qid && a.knowledgeId === b.knowledgeId,
+    `题号独立、知识点共用（${a?.qid}/${b?.qid}；${a?.knowledgeId}）`);
 
   const plain = parseQuestionBank('### 普通题\nA) 甲\nB) 乙\n= B\n').byTopic['未分类']?.[0];
-  ok(plain?.qid === questionId('未分类', '普通题'),
-    '没写 ~ 的题，题号仍按题干算（老题库不漂移）');
+  ok(plain?.qid === questionId('未分类', '普通题'), '没写题号时按主题和题干生成独立 qid');
 
   const loaded = allQuestions();
-  ok(loaded.length > 0 && loaded.every((x) => x.qid === questionId(x.topic, x.concept ?? x.q)),
-    `当前题库 ${loaded.length} 道题的题号都能由「主题 + 概念」复算出来`);
+  ok(loaded.length > 0 && loaded.every((x) => x.qid.startsWith('q_')),
+    `当前题库 ${loaded.length} 道题都具有独立题号`);
 
-  // 概念是学习历史的单位：同一概念两道题，会把「这个知识点我错了几次」劈成两笔
   const dup = parseQuestionBank('## 池\n### 问法一\n~ k1\nA) 甲\nB) 乙\n= B\n### 问法二\n~ k1\nA) 甲\nB) 乙\n= B\n');
-  ok(dup.byTopic['池']?.length === 1, `同一概念只留第一道（剩 ${dup.byTopic['池']?.length ?? 0} 道）`);
-
-  // 空概念会把不相干的题撞成一个；`~` 落在题外面说明写错了位置
-  const empty = parseQuestionBank('### 空概念\n~\nA) 甲\nB) 乙\n= B\n');
-  const stray = parseQuestionBank('~ 没有题目\n### 题\nA) 甲\nB) 乙\n= B\n');
-  ok(empty.issues.length === 1 && stray.issues.length === 1,
-    `空概念与错位的 ~ 都被拒绝（${empty.issues.length}/${stray.issues.length} 条）`);
+  ok(dup.byTopic['池']?.length === 2 && dup.byTopic['池']?.[0]?.knowledgeId === dup.byTopic['池']?.[1]?.knowledgeId
+    && dup.byTopic['池']?.[0]?.qid !== dup.byTopic['池']?.[1]?.qid,
+    `同一 knowledgeId 可以挂不同题目（剩 ${dup.byTopic['池']?.length ?? 0} 道）`);
 }
 
 {
@@ -2242,8 +2261,12 @@ function missGain(eff: string) {
   G.hp = 40;
   e.block = 999;
   const before = G.hp;
-  const i = G.hand.findIndex((c) => canAsk(c) && canPay(defOf(c)));
-  if (i < 0) throw new Error('反伤测试：手里没有能答的牌');
+  const strike = PACK.cards.find((card) => card.kind === 'knowledge' && card.eff === 'strike'
+    && card.cost === 1 && card.atk > 0 && !card.mods?.selfHp)!;
+  G.hand = [strike.id];
+  G.ap = 3;
+  const i = 0;
+  ok(canAsk(G.hand[i]) && canPay(defOf(G.hand[i])), '反伤测试固定使用可答、可支付的攻击牌');
   askCard(i);
   const p1 = panelOf('question');
   if (!p1) throw new Error('反伤测试：没弹题');
@@ -2358,7 +2381,7 @@ function missGain(eff: string) {
     qPicked: {}, onceStage: [], onceRun: [], upGrade: 0,
     // 一局的主题与临时题库也要在断点里；缺了它们读档后题目会对不上
     topics: [Object.keys(sourceBank().byTopic)[0] ?? '未分类'],
-    runQueue: [], runCursor: 0, qSolved: {},
+    runQueue: [], runQuestions: [], runBankId: 'words', runId: 'run-stagecheck', runCursor: 0, qSolved: {},
   };
   const put = (snap: unknown) => {
     clearRun();
@@ -2367,6 +2390,14 @@ function missGain(eff: string) {
 
   put(base);
   ok(runSaveInfo()?.stage === 1, '合法存档可读');
+  const savedQuestion = allQuestions()[0] as Question;
+  put({ ...base, runQueue: [savedQuestion.qid], runQuestions: [savedQuestion], runBankId: 'test-doc' });
+  resumeRun();
+  ok(G.runQuestions[0]?.qid === savedQuestion.qid, '服务端题目快照随断点恢复');
+  recordAnswer({ stageTopic: savedQuestion.topic, qid: savedQuestion.qid, right: false, choice: 2 });
+  ok(answerHistory().at(-1)?.bankId === 'test-doc', '续档作答归到原题库，而非当前题库');
+  put({ ...base, runBankId: '' });
+  ok(runSaveInfo() === null, '缺少来源题库的存档被拒绝');
   put({ ...base, v: SNAP_V - 1 });
   ok(runSaveInfo() === null, '旧版本号存档被拒绝');
   put({ ...base, qPicked: { q_demo: -1 } });
@@ -2385,9 +2416,9 @@ function missGain(eff: string) {
   ok(G.stageOk === 3 && G.stageBad === 1,
     `本章答题计数随断点存回来（${G.stageOk} / ${G.stageBad}）`);
 
-  const oldId = Object.keys(LEGACY_CARD_IDS)[0];
+  const oldId = 'legacy-card-id';
   put({ ...base, deck: [oldId] });
-  ok(runSaveInfo() !== null, '旧卡 id 存档迁移到新 card id');
+  ok(runSaveInfo() === null, '旧卡 id 存档被当前版本拒绝');
 
   // 精炼后缀要能原样读回。
   put({ ...base, deck: ['base:strike+', 'base:strike'] });
@@ -2464,7 +2495,7 @@ function missGain(eff: string) {
   ok(runSaveInfo() === null, '牌组里的杂念被拒绝');
 
   put({ ...base, deck: ['pow:log', 'base:strike'] });
-  ok(runSaveInfo() !== null, '旧存档里的错题本被迁移掉，不丢掉整局');
+  ok(runSaveInfo() === null, '已删除的卡牌 id 使存档被拒绝');
 
   const badKey = genStage(1);
   badKey[0][0].key = '9:9';
@@ -2934,14 +2965,15 @@ C) 3
   // 导出错题：玩家侧数据离开浏览器的唯一一条路。它必须带上**每道题**的对错，
   // 否则生成工具只知道"这一章错得多"，不知道是哪几道 —— 那正好是它要重写的东西。
   resetStageMemory();
-  recordAnswer({ stageTopic: '快照章', qid: 'q_a', right: true });
-  recordAnswer({ stageTopic: '快照章', qid: 'q_a', right: false });
-  recordAnswer({ stageTopic: '快照章', qid: 'q_b', right: false });
+  recordAnswer({ stageTopic: '快照章', qid: 'q_a', right: true, choice: 1 });
+  recordAnswer({ stageTopic: '快照章', qid: 'q_a', right: false, choice: 2 });
+  recordAnswer({ stageTopic: '快照章', qid: 'q_b', right: false, choice: 1 });
   const snap = studySnapshot();
   const t = snap.topics['快照章'];
   ok(snap.v === STUDY_SNAPSHOT_V && t?.ok === 1 && t?.bad === 2
-      && t?.q['q_a']?.ok === 1 && t?.q['q_a']?.bad === 1 && t?.q['q_b']?.bad === 1,
-    `导出快照带上每道题的对错（${t?.ok} 对 / ${t?.bad} 错 / ${Object.keys(t?.q ?? {}).length} 道）`);
+      && t?.q['q_a']?.ok === 1 && t?.q['q_a']?.bad === 1 && t?.q['q_b']?.bad === 1
+      && JSON.stringify(t?.q['q_a']?.attempts) === '[1,2]' && JSON.stringify(t?.q['q_b']?.attempts) === '[1]',
+    `导出快照带上逐题对错和选择顺序（${t?.ok} 对 / ${t?.bad} 错 / ${Object.keys(t?.q ?? {}).length} 道）`);
   // 生成工具拿到的是文本，不是内存对象：往返一圈数字必须不变
   const round = JSON.parse(JSON.stringify(snap)) as typeof snap;
   ok(round.topics['快照章']?.q['q_a']?.bad === 1 && round.topics['快照章']?.ok === 1,
@@ -2981,7 +3013,7 @@ C) 3
 
   // 退役在**建池时**生效；局内不再筛，否则池子会提前见底
   const first = byId.get(queue[0] as string)!;
-  for (let i = 0; i < BAL.retireAt; i++) recordAnswer({ stageTopic: first.topic, qid: first.qid, right: true });
+  for (let i = 0; i < BAL.retireAt; i++) recordAnswer({ stageTopic: first.topic, qid: first.qid, right: true, choice: first.answer + 1 });
   ok(rightCount(first.topic, first.qid) === BAL.retireAt,
     `答对 ${BAL.retireAt} 次，计数就是 ok = ${rightCount(first.topic, first.qid)}`);
   ok(isRetired(first), '这道题被判退役');
@@ -2990,7 +3022,7 @@ C) 3
 
   // 整章答满：退回该主题全部的题，而不是建出空池 —— 空池会让知识卡变成点不开的死牌
   for (const q of allQuestions()) {
-    for (let i = 0; i < BAL.retireAt; i++) recordAnswer({ stageTopic: q.topic, qid: q.qid, right: true });
+    for (let i = 0; i < BAL.retireAt; i++) recordAnswer({ stageTopic: q.topic, qid: q.qid, right: true, choice: q.answer + 1 });
   }
   ok(live(topics) === 0, '两个主题的活题都是 0（这就是"该补题了"的信号）');
   buildRunPool(topics);
@@ -3037,45 +3069,47 @@ C) 3
   ok(takeQuestion()?.qid !== head.qid, '答对之后，同一道题不再发给玩家');
 }
 
-// ── 一局的答题记录要能交回服务端 ──
+// ── 答题记录即时持久化、可归档并可独立同步 ──
 {
-  // 前面的检查结算过几局，先把这个队列倒空，否则下面分不清是谁排的
-  takeAnswerUpload();
-
-  // 一局打完 = 结算时打包：答题 → endRun → 取包交给 main.ts
+  const [same] = allQuestions();
+  const duplicateOptions = { ...same, options: ['same', 'same'], answer: 1 };
+  for (const noShuffle of [true, false]) {
+    const view = shuffleOptions({ ...duplicateOptions, noShuffle });
+    ok(view.originalIndices[view.answer] === 1 && new Set(view.originalIndices).size === 2,
+      '同文案选项的原始序号不会混淆');
+  }
+  let oldUpload = takeAnswerUpload();
+  while (oldUpload) {
+    finishAnswerUpload(oldUpload, true);
+    oldUpload = takeAnswerUpload();
+  }
+  const before = answerHistory().length;
   startRun(null, [], [Object.keys(sourceBank().byTopic)[0]]);
   const topic = G.topics[0];
   const qs = sourceBank().byTopic[topic];
-  ok(takeAnswerUpload() === null, '结算之前没有包可交');
-
-  recordAnswer({ stageTopic: topic, qid: qs[0].qid, right: true });
-  recordAnswer({ stageTopic: topic, qid: qs[1].qid, right: false });
-  recordAnswer({ stageTopic: topic, qid: qs[0].qid, right: true });
+  recordAnswer({ stageTopic: topic, qid: qs[0].qid, right: true, choice: 1 });
+  recordAnswer({ stageTopic: topic, qid: qs[1].qid, right: false, choice: 2 });
+  recordAnswer({ stageTopic: topic, qid: qs[0].qid, right: true, choice: 1 });
   G.runOk = 2;
   G.runBad = 1;
-  ok(runAnswers().length === 3, `一局记了 ${runAnswers().length} 手流水`);
+  const recent = answerHistory().slice(before);
+  ok(recent.length === 3 && recent.every((row) => row.type === 'answer'), '每次作答立即进入同一份记录日志');
 
   endRun(false);
   const up = takeAnswerUpload();
-  ok(!!up, '结算之后排出了要交给服务端的包');
-  ok(up?.answers.length === 3, `包里带上了这一局的 ${up?.answers.length} 手`);
-  ok(up?.answers[1].qid === qs[1].qid && up?.answers[1].right === false,
-    '包里那道答错的题，题号与对错都对得上');
-  ok(up?.ok === 2 && up?.bad === 1, `包里的对错合计是 ${up?.ok}/${up?.bad}`);
-  ok(up?.win === false && up?.stage === G.stage && up?.topics[0] === topic,
-    '包里带上了结果、幕数与本局主题');
-  ok(up?.bank === sourceBank().name, `包里带上了题库名「${up?.bank}」`);
-  ok(takeAnswerUpload() === null, '同一个包不会交两次');
-  ok(runAnswers().length === 0, '交出去之后流水清空，不会滚进下一局');
-
-  // 流水封顶：无头模拟跑几千局、每局几百手，不封顶就是一路涨的内存
-  for (let i = 0; i < 700; i += 1) recordAnswer({ stageTopic: topic, qid: qs[0].qid, right: true });
-  ok(runAnswers().length === 600, `流水封顶在 ${runAnswers().length} 手`);
-
-  // 一道题都没答的一局不排队：空记录不值得往服务端写一行
-  startRun(null, [], [topic]);
-  endRun(false);
-  ok(takeAnswerUpload() === null, '没答题的一局不排队');
+  ok(!!up && up.events.some((event) => event.id === recent[0].id), '同步批次直接从未确认记录派生');
+  ok(answerHistory().slice(before).every((row) => !row.archived), '结束游戏不会自动归档记录');
+  archiveAnswerRun(G.runId);
+  ok(answerHistory().slice(before).every((row) => row.archived), '手动归档整局答题记录');
+  ok(!!up?.events[0].qid.length, '同步事件保留题号');
+  finishAnswerUpload(up!, true);
+  const retry = takeAnswerUpload();
+  const archive = retry?.events.find((event) => event.type === 'archive');
+  ok(archive?.runId === G.runId && retry?.events[0].id === up?.events[0].id, '旧上传确认不会清掉随后排队的归档');
+  finishAnswerUpload(retry!, false);
+  const afterFailure = takeAnswerUpload(Date.now() + 6000);
+  ok(!!archive && afterFailure?.events.some((event) => event.id === archive.id) === true, '同步失败后保留同一条归档指令');
+  finishAnswerUpload(afterFailure!, true);
 }
 
 console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 结构检查通过');

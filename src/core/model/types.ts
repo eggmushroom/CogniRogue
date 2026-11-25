@@ -1,18 +1,13 @@
 /** 领域模型。这一层不认识 canvas，也不认识 DOM。 */
 
 export interface Question {
-  /** 稳定题号：按「主题 + 概念」生成，不能退回数组下标。 */
+  /** 单道题的稳定编号，作答记录按它保存。 */
   qid: string;
-  /** 这道题属于哪一章。题和卡解耦之后，统计只认它。 */
+  /** 这道题属于哪一章。 */
   topic: string;
-  /**
-   * 概念主键：同一个知识点换一种问法，仍然指回同一道题。
-   *
-   * 题号按它派生，所以重新生成题干不会让**学习历史**对不上号 ——
-   * 这是「按错题重生成」那条闭环的前提。不写就回落到题干本身，
-   * 于是老题库的题号一个都不变。
-   */
-  concept?: string;
+  topicTitle?: string;
+  /** 同一主题的不同题目可以共用一个知识点。 */
+  knowledgeId?: string;
   q: string;
   options: string[];
   answer: number;
@@ -27,6 +22,7 @@ export interface Question {
 /** 每次出题打乱选项后的视图；题面、判定、反馈必须读同一份。 */
 export interface QView {
   options: string[];
+  originalIndices: number[];
   answer: number;
 }
 
@@ -107,8 +103,6 @@ export type PowerScope = 'always' | 'fight' | 'stage' | 'run' | 'instant';
 
 export interface PowerDef {
   id: PowerId;
-  /** 徽记里的一个字 */
-  icon: string;
   name: string;
   /**
    * 卡面那句 `card` 装不下的**边界**：每场一次、只对基础牌、划掉的不含正确答案。
@@ -116,7 +110,7 @@ export interface PowerDef {
    * 那三行字一旦开始解释设计，就成了作者在自言自语。
    */
   desc?: string;
-  /** 徽记面上的效果句，两行以内 */
+  /** 增益的效果句 */
   card: string;
   color: string;
   /** 多久兑现一次。见 `PowerScope` */
@@ -278,13 +272,15 @@ export interface StageDef {
   mix: { fight: number; event: number; rest: number; elite: number };
 }
 
-/**
- * 敌人立绘。全部是"纯黑底 + 发光主体"的 jpg，screen 混合后黑即透明；
- * 同一立绘换 hue 就是一个新怪：但新机制值得配新皮，别全靠调色。
- */
+/** 敌人的版画造型。旧怪可共用一套造型；各造型的动作在表现层定义。 */
 export type ArtKey =
   | 'shard' | 'examiner' | 'oblivion'   // 初代三件套
   | 'moth' | 'grub' | 'inquisitor' | 'tide' | 'lethe'
+  | 'indexkite' | 'puncher' | 'bellwarden'
+  | 'shelfspider' | 'moldcap' | 'shelfmantis'
+  | 'inkroller' | 'typeblock' | 'typeswarm' | 'rotary'
+  | 'waxcrab' | 'gluepot' | 'needlejack' | 'seamcutter'
+  | 'lockbox' | 'redactor' | 'sandkeeper'
   // 幕 Boss 的专属立绘
   | 'cataloguer' | 'devourer' | 'imprinter' | 'bound';
 
@@ -448,6 +444,7 @@ export interface ModelForm {
   field: number;
   /** 密钥是否明文。 */
   reveal: boolean;
+  connection: boolean;
 }
 
 export type Panel =
@@ -458,7 +455,7 @@ export type Panel =
    * 开局选主题。`picks` 是**勾选顺序**，不是集合：先勾的先出题，
    * 所以顺序有语义，别改成排序后存。
    */
-  | { k: 'topic'; mode: ModeId | null; picks: string[] }
+  | { k: 'topic'; mode: ModeId | null; picks: string[]; msg?: string; loading?: boolean }
   /** `q` 是点开那一刻抽到的题目快照，答题期间不随题库变。 */
   | { k: 'question'; idx: number; qid: string; topic: string; q: Question; view: QView }
   | { k: 'feedback'; fb: Feedback }
@@ -482,16 +479,28 @@ export type Panel =
   | { k: 'event'; ev: EventDef }
   | { k: 'deck' }
   | { k: 'pile'; kind: 'draw' | 'discard' }
-  | { k: 'help' }
-  | { k: 'pack'; msg: string; ok: boolean }
+  | { k: 'help'; fromSettings?: { msg: string; ok: boolean } }
+  | { k: 'pack'; msg: string; ok: boolean; loading?: boolean;
+    page?: BankPage;
+    deletion?: { id: string; name: string; fromDocument: boolean; pending: boolean } }
 | { k: 'settings'; msg: string; ok: boolean; form?: ModelForm }
-  | { k: 'plan'; data: PlanView }
+  | { k: 'plan'; data: PlanView; returnPage?: BankPage }
   | { k: 'report'; data: ReportData };
+
+export interface BankPage {
+  bankId: string;
+  bank: QuestionBank;
+  topic?: string;
+  question?: string;
+  lastTopic?: string;
+}
 
 /** 划分计划里的一节：候选主题。 */
 export interface PlanTopicView {
   title: string;
   chars: number;
+  pageFrom?: number;
+  pageTo?: number;
   summary: string;
   /** 摘要来自模型还是回落到首句 —— 界面上要标出来，不然玩家以为摘要一定准。 */
   summarized: 'model' | 'none';
@@ -501,13 +510,7 @@ export interface PlanTopicView {
   sim?: number;
 }
 
-/**
- * 一份**待确认**的划分：文档切成哪几节、每节叫什么、每节多大。
- *
- * 它出现在出题之前，是因为切分方式会决定整份题库长什么样，而这件事没法在
- * 生成之后补救：切错了只能重跑，重跑要花模型额度。`busy` 表示这一步是否还在跑
- * （划分要调模型，出题也要），界面据此把按钮换成进度。
- */
+/** 预览与题库复用同一份主题清单；只有已导入的计划可以提交出题。 */
 export interface PlanView {
   docId: string;
   name: string;
@@ -519,7 +522,9 @@ export interface PlanView {
   notes: string[];
   /** 没有目录时还能让模型分章；配了模型才有这条路。 */
   canAgentic: boolean;
-  busy: 'plan' | 'gen' | '';
+  imported: boolean;
+  selected: Set<number>;
+  busy: 'plan' | 'submit' | '';
   msg: string;
   ok: boolean;
   /** 服务端那份计划的 id，出题时要带回去。 */
@@ -572,6 +577,11 @@ export interface GameState {
   topics: string[];
   /** 本局临时题库：题号队列，按主题连续排列。开局建一次，整局只消费不重建。 */
   runQueue: string[];
+  runQuestions: Question[];
+  /** 来源题库固定到本局，避免切换题库后续档时把作答归到别处。 */
+  runBankId: string;
+  /** 本局答题记录的分组键；续档时保持不变。 */
+  runId: string;
   /** 队列游标。它是**唯一的**消耗位置，抽题只许往前走。 */
   runCursor: number;
   /**

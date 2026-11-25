@@ -72,6 +72,10 @@ function scan(md: string): Tok[] {
   const out: Tok[] = [];
   let fence: string | null = null;
   md.split(/\r?\n/).forEach((raw, line) => {
+    if (/^<!--\s*cognirogue-page:\s*\d+\s*-->$/.test(raw.trim())) {
+      out.push({ line, text: '', kind: 'blank', level: 0 });
+      return;
+    }
     if (isFence(raw)) {
       const mark = raw.trim().slice(0, 3);
       if (!fence) fence = mark;

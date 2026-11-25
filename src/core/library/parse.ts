@@ -1,4 +1,5 @@
 import type { Question, QuestionBank } from '../model/types';
+import { closesFence, codeFence } from './markdown';
 
 /**
  * 题库 DSL：纯文本。
@@ -6,21 +7,23 @@ import type { Question, QuestionBank } from '../model/types';
  *   # 题库名                 可选
  *   ## 任意主题              可选，题池名不校验
  *   ### 题干
- *   ~ 概念名                 可选：题号按它派生，换问法不丢历史
+ *   ~ 知识点 ID              可选：不同题可以共用
+ *   ^ q_题号                 可选：缺省时按主题和题干派生
  *   A) 选项 / B) 选项
  *   = B                      答案字母
  *   + 解析                   可选
  *   ! 固定顺序               可选：选项语义依赖位置，出题时不打乱
  *   ? 同一池的另一道题        `? 理解:` 这类前缀会被剥掉，只留题干
  *
+ * 题干、选项、解析可以续行：比字段标记再缩进两个空格，多出的缩进属于 Markdown。
+ * 围栏内的行不作 DSL 标记处理。
+ *
  * 主题不限，格式要过：题干非空、2–4 个选项、答案在范围内。
  * 选项顺序默认每局打乱（免得玩家背字母）；含「以上都对」这类位置依赖
  * 选项的题必须自己写 `! 固定顺序`，解析器在校验期就拒绝没声明的题，
  * 而不是等出题时靠正则猜选项文案。
  * 违规题进 `issues`，由 `loadQuestionBank` 整体拒绝。
- * 每题生成稳定题号 `qid`（主题 + 概念；没写概念就是规范化题干）。
- * 同一个主题里概念相同的题只留第一道：概念是**学习历史的单位**，
- * 一个概念两道题会让"这道题我错了几次"分成两笔。
+ * 逐题作答记录按 `qid`，生成器按 `knowledgeId` 汇总复练记录。
  * `@ 卡名` / `% 攻 挡 效果` 是旧包遗留行，解析时忽略。
  * 卡面在 `cards/catalog.ts`，导入题库换不掉卡池。
  */
@@ -30,7 +33,7 @@ export const MAX_OPTIONS = 4;
 /** 界面上给写题人的一句话格式说明。 */
 export const QUESTION_FORMAT = `每道题要有非空题干、${MIN_OPTIONS}–${MAX_OPTIONS} 个选项、= 答案字母（不能越过选项数）；选项里有「以上都对」这类依赖位置的写法时，必须写「! 固定顺序」`;
 
-/** 题干里的空白不该影响题号：同一个知识点换行/多空格仍然指回同一道题。 */
+/** 题干里的排版空白不该影响缺省题号。 */
 const normStem = (s: string) => s.trim().replace(/\s+/g, ' ');
 
 /**
@@ -51,15 +54,15 @@ export function hash32(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-/** 题号 = 主题 + 概念。概念相同的两道题会被 `push` 去重。 */
-export const questionId = (topic: string, concept: string): string =>
-  `q_${hash32(topic + '\u0000' + normStem(concept))}`;
+export const questionId = (topic: string, stem: string): string =>
+  `q_${hash32(topic + '\u0000' + normStem(stem))}`;
 
-/**
- * 这道题的概念主键。没写 `~ ` 就回落到题干 —— 于是老题库的题号一个都不变，
- * 而写了概念的题在改写题干之后仍然指回同一笔学习历史。
- */
-const conceptOf = (q: Question) => q.concept?.trim() || q.q;
+/** Generated packs carry an identity; hand-authored groups can still be plain headings. */
+export function topicHeading(value: string) {
+  const match = /^(.*?)\s+<!-- topic: (t_[a-f0-9]{24}) -->$/.exec(value.trim());
+  const title = (match ? match[1].trim() : value.trim()) || '未分类';
+  return { id: match?.[2] ?? title, title };
+}
 
 const newQ = (s: string): Question => ({ qid: '', topic: '', q: s, options: [], answer: -1, explain: '' });
 
@@ -80,77 +83,132 @@ function diagnose(q: Question | null, lineNo: number): string | null {
   if (q.options.some((o) => POSITIONAL_HINT.test(o)) && !q.noShuffle) {
     return `${tag}：有依赖位置的选项，但未写「! 固定顺序」——打乱后会变成错题`;
   }
-  if (q.concept !== undefined && !q.concept.trim()) {
-    return `${tag}：「~」后面要写概念名，空概念会让它和别的空概念撞成一个`;
-  }
+  if (q.knowledgeId !== undefined && !q.knowledgeId.trim()) return `${tag}：~ 后面要写知识点 ID`;
   return null;
 }
 
-/** 把一道合格的题放进题池；同主题概念相同的题只保留第一道。 */
-function push(bank: QuestionBank, topic: string, q: Question) {
+/** 把一道合格的题放进题池；只按单题 qid 去重。 */
+function push(bank: QuestionBank, topic: string, q: Question, seen: Set<string>, where: string) {
   q.topic = topic;
-  q.qid = questionId(topic, conceptOf(q));
-  const pool = (bank.byTopic[topic] ??= []);
-  if (!pool.some((x) => x.qid === q.qid)) pool.push(q);
+  const explicit = !!q.qid;
+  q.qid ||= questionId(topic, q.q);
+  if (seen.has(q.qid)) {
+    if (explicit) bank.issues.push(`${where}：题号 ${q.qid} 重复`);
+    return;
+  }
+  seen.add(q.qid);
+  (bank.byTopic[topic] ??= []).push(q);
 }
 
 export function parseQuestionBank(text: string): QuestionBank {
-  const bank: QuestionBank = { name: '未命名题库', byTopic: {}, issues: [] };
+  const bank: QuestionBank = { name: '未命名题库', byTopic: Object.create(null), issues: [] };
   let topic = '未分类';
+  let topicTitle: string | undefined;
   let q: Question | null = null;
   let qLine = 0;
+  let append: ((line: string) => void) | undefined;
+  const seen = new Set<string>();
+  let fieldIndent = 0;
+  let fence: { marker: string; indent: number; line: number } | undefined;
+  const openFence = (value: string, indent: number, line: number) => {
+    const match = codeFence(value);
+    if (match) fence = { marker: match[2], indent, line };
+  };
 
   const flushQ = () => {
     if (q) {
+      q.q = q.q.trim();
+      q.options = q.options.map((option) => option.trim());
+      q.explain = q.explain.trim();
       const issue = diagnose(q, qLine);
       if (issue) bank.issues.push(issue);
-      else push(bank, topic, q);
+      else push(bank, topic, q, seen, `第 ${qLine} 行`);
     }
     q = null;
+    append = undefined;
   };
 
   let lineNo = 0;
   for (const raw of text.split(/\r?\n/)) {
     lineNo++;
+    const leading = raw.match(/^ */)![0].length;
+    if (fence) {
+      const content = raw.slice(Math.min(fence.indent, leading));
+      append?.(content);
+      if (closesFence(content, fence.marker)) fence = undefined;
+      continue;
+    }
+    if (append && (leading >= fieldIndent + 2 || codeFence(raw))) {
+      const indent = leading >= fieldIndent + 2 ? fieldIndent + 2 : Math.min(fieldIndent, leading);
+      const content = raw.slice(indent);
+      append(content);
+      openFence(content, indent, lineNo);
+      continue;
+    }
     const line = raw.trim();
-    if (!line || line.startsWith('>')) continue;
+    if (!line || line.startsWith('>')) {
+      if (!line) append?.('');
+      continue;
+    }
 
     if (line.startsWith('# ')) { flushQ(); bank.name = line.slice(2).trim(); continue; }
     // `##` 是可选分组：名字随便写，空缺就回落到「未分类」
     if (line.startsWith('## ')) {
       flushQ();
-      topic = line.slice(3).trim() || '未分类';
+      const heading = topicHeading(line.slice(3));
+      topic = heading.id;
+      topicTitle = heading.title;
       continue;
     }
 
     // `###` 与 `?` 都只是「这个池里的下一道题」，不再是"一张卡"
-    if (line.startsWith('### ') || line.startsWith('? ')) {
+    if (line === '###' || line.startsWith('### ') || line.startsWith('? ')) {
       flushQ();
       qLine = lineNo;
       const s = line.startsWith('? ') ? line.slice(2).trim() : line.slice(4).trim();
       const m = s.match(/^(识记|理解|迁移|回忆|应用|挑战|进阶|变式)\s*[:：]\s*(.+)$/);
       q = newQ(m ? m[2].trim() : s);
+      if (topicTitle && topicTitle !== topic) q.topicTitle = topicTitle;
+      const question = q;
+      fieldIndent = leading;
+      append = (value) => { question.q += '\n' + value; };
+      openFence(q.q, leading, lineNo);
       continue;
     }
 
-    const om = line.match(/^([A-Za-z])[).、:：]\s*(.+)$/);
+    const om = line.match(/^([A-Za-z])[).、:：](?:\s*(.+))?$/);
     if (om) {
       // 题干没写就先落选项：造一个空题干的题，让 diagnose 报出「缺少题干」
-      (q ??= newQ('')).options.push(om[2].trim());
+      const options = (q ??= newQ('')).options;
+      const index = options.push(om[2]?.trim() ?? '') - 1;
+      fieldIndent = leading;
+      append = (value) => { options[index] += '\n' + value; };
+      openFence(options[index], leading, lineNo);
       if (!q.q) qLine = lineNo;
       continue;
     }
 
     const am = line.match(/^=\s*([A-Za-z])/);
     if (am) {
+      append = undefined;
       if (q) q.answer = am[1].toUpperCase().charCodeAt(0) - 65;
       else bank.issues.push(`第 ${lineNo} 行：= 答案字母前面没有题目`);
       continue;
     }
 
-    if (line.startsWith('+ ')) { if (q) q.explain = line.slice(2).trim(); continue; }
+    if (line === '+' || line.startsWith('+ ')) {
+      if (q) {
+        const question = q;
+        question.explain = line.slice(2).trim();
+        fieldIndent = leading;
+        append = (value) => { question.explain += '\n' + value; };
+        openFence(question.explain, leading, lineNo);
+      }
+      continue;
+    }
 
     if (line.startsWith('! ')) {
+      append = undefined;
       const flag = line.slice(2).trim();
       if (flag !== '固定顺序') {
         bank.issues.push(`第 ${lineNo} 行：未知标记「! ${flag}」，只认「! 固定顺序」`);
@@ -162,17 +220,19 @@ export function parseQuestionBank(text: string): QuestionBank {
       continue;
     }
 
-    // 概念主键：接在这一道题上，决定它的题号
-    if (line.startsWith('~')) {
-      const name = line.slice(1).trim();
-      if (q) q.concept = name;
-      else bank.issues.push(`第 ${lineNo} 行：~ 概念 前面没有题目`);
+    if (line.startsWith('~') || line.startsWith('^')) {
+      append = undefined;
+      const value = line.slice(1).trim();
+      if (!q || !value) bank.issues.push(`第 ${lineNo} 行：${line[0]} 需要跟在题目后并填写 ID`);
+      else if (line.startsWith('~')) q.knowledgeId = value;
+      else q.qid = value;
       continue;
     }
 
     // 旧知识包的卡面行：卡面现在内置，这些行不影响任何东西
     if (line.startsWith('@ ') || line.startsWith('% ')) continue;
   }
+  if (fence) bank.issues.push(`第 ${fence.line} 行：代码块未闭合`);
   flushQ();
   return bank;
 }
@@ -196,30 +256,25 @@ export function parseAnyQuestionBank(text: string): QuestionBank {
   }
 
   const bank: QuestionBank = { name: j.name ?? '自定义题库', byTopic: {}, issues: [] };
+  const seen = new Set<string>();
 
-  const normalize = (list: JsonQ[], topic: string, where: string): Question[] => {
-    const out: Question[] = [];
+  const normalize = (list: JsonQ[], topic: string, where: string): void => {
     (list ?? []).forEach((x, i) => {
       const q: Question = {
-        qid: '', topic,
-        concept: x.concept,
+        qid: x.qid ?? '', topic,
+        knowledgeId: x.knowledgeId,
         q: x.q ?? '', options: x.options ?? [], answer: x.answer ?? -1,
         explain: x.explain ?? '', noShuffle: x.noShuffle,
       };
       const issue = diagnose(q, 0);
       if (issue) bank.issues.push(`${where}[${i}]：${issue.slice(issue.indexOf('：') + 1)}`);
-      else {
-        q.qid = questionId(topic, conceptOf(q));
-        if (!out.some((y) => y.qid === q.qid)) out.push(q);
-      }
+      else push(bank, topic, q, seen, `${where}[${i}]`);
     });
-    return out;
   };
 
   if (j.byTopic) {
     for (const topic of Object.keys(j.byTopic)) {
-      const pool = normalize(j.byTopic[topic] ?? [], topic, `byTopic.${topic}`);
-      if (pool.length) bank.byTopic[topic] = pool;
+      normalize(j.byTopic[topic] ?? [], topic, `byTopic.${topic}`);
     }
   } else {
     const byTopic: Record<string, JsonQ[]> = {};
@@ -230,8 +285,7 @@ export function parseAnyQuestionBank(text: string): QuestionBank {
       (byTopic[topic] ??= []).push(...raw);
     }
     for (const topic of Object.keys(byTopic)) {
-      const pool = normalize(byTopic[topic], topic, `cards[${topic}]`);
-      if (pool.length) bank.byTopic[topic] = pool;
+      normalize(byTopic[topic], topic, `cards[${topic}]`);
     }
   }
   return bank;

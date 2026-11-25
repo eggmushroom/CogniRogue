@@ -1,27 +1,35 @@
 import './style.css';
-import { SHIPPED_PACKS } from './core/builtin';
+import { SHIPPED_PACK } from './core/builtin';
 import { EFFS, POWER_BY_ID } from './core/model';
 import { beginFrame, g, initCanvas, toLogic } from './gfx/canvas';
 import { loadArt } from './gfx/assets';
 import * as FX from './gfx/fx';
-import { bindInput, beginInput, clearWheel, endInput, hover, keyHandler, setInputLock } from './input';
+import { beginTransition, drawTransition, reduceMotion } from './gfx/motion';
+import { bindInput, beginInput, clearWheel, consumeDragY, endInput, inputScope, keyHandler, setInputLock, setWheelShield } from './input';
 import { C } from './gfx/theme';
 import { G, onFx } from './core/infra';
+import type { Foe, Panel } from './core/model';
 import { after } from './core/infra/schedule';
-import { initBanks, refreshRemoteBanks, sendAnswers, setServiceBase, takeAnswerUpload } from './core/library';
-import { answer, cancelPanel, endTurn } from './core/combat';
-import { ackCardGet, ackPower, cancelPreview, dismissFeedback } from './core/journey';
+import { finishAnswerUpload, initBank, refreshDocuments, refreshRemoteBanks, sendAnswers, setServiceBase, takeAnswerUpload } from './core/library';
+import { answer, endTurn, setSettleHandler } from './core/combat';
+import { ackCardGet, ackPower, dismissFeedback, settlePending } from './core/journey';
 import {
-  DISCARD_TO, ENEMY, ENEMY_GROUND, HERO, heroHand,
-  resetBattleView, syncBattle,
+  DISCARD_TO, ENEMY, HERO, enemyHand, heroHand,
+  animateFeedbackClose, animateQuestion, closeFeedback, feedbackLeaving,
+  questionCard, questionReturning, resetBattleView, syncBattle,
 } from './scenes/battle';
-import { drawOverlay, quizFrame } from './scenes/overlay';
-import { drawSceneBackdrop, drawSceneWorld, worldLayer } from './scenes/layers';
+import { drawOverlay } from './scenes/overlay';
+import { drawSceneBackdrop, drawSceneScrim, drawSceneWorld, worldLayer } from './scenes/layers';
 import { settingsKey } from './scenes/settings';
-import { closePlan } from './scenes/plangen';
+import { leavePanel } from './scenes/navigation';
+import { closeTaskbar, drawTaskbar, taskbarExit, taskbarOpen } from './scenes/taskbar';
+import { tickJobs } from './scenes/jobstate';
+import { answerbarExit, answerbarOpen, closeAnswerbar, drawAnswerbar } from './scenes/answerbar';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game');
 if (!canvas) throw new Error('#game 不存在');
+
+const standalone = location.protocol === 'file:';
 
 initCanvas(canvas);
 bindInput(canvas, toLogic);
@@ -45,28 +53,10 @@ let panelHold = 0;
  */
 let quizSettling = false;
 let quizReveal = 0;
-let lastPanelKind = '';
-let wasSettling = false;
+let lastPanel: Panel | undefined;
+let panelOpenedAt = 0;
 /** 调试用：下一块判定面板要停在"答案已出、结果未展开"多久。 */
 let quizHoldBoost = 0;
-
-/** 结算面板的软自动推进：指针停在面板上时暂停，用墙钟而不是 dt 计时。 */
-const AUTO_MS = 4200;
-let autoRemain = AUTO_MS;
-let autoLast = 0;
-let autoCancelled = false;
-/** 自动化 / 截图：整页都不自动收判定面板，免得脚本还没读到它就走了。 */
-let autoHold = false;
-let autoPaused = false;
-let autoIn = 0;
-
-function resetAuto() {
-  autoRemain = AUTO_MS;
-  autoLast = performance.now();
-  autoCancelled = autoHold;
-  autoPaused = false;
-  autoIn = AUTO_MS / 1000;
-}
 
 /**
  * 上一帧面板是否开着。面板开着时滚轮归面板，关掉那一帧要把剩余增量清掉，
@@ -77,9 +67,39 @@ let panelWasOpen = false;
 /** 敌人动作演出剩余时间，用来锁输入：core 的 endTurn 是同步的。 */
 let enemyHold = 0;
 
+const DEFEAT_OUT = 0.28;
+let victory: { foe: Foe; elapsed: number } | null = null;
+const battleWon = () => G.screen === 'battle' && (G.pending === 'clear' || G.pending === 'win');
+const victoryLocked = () => victory !== null || (G.busy && battleWon() && !modalOpen());
+const victoryProgress = () => victory ? victory.elapsed / DEFEAT_OUT : null;
+
+// 无头运行仍直接结算；浏览器等最后一击和退场，答错时先保留原有的判定面板。
+setSettleHandler(() => {
+  if (!battleWon() || !G.enemy) { settlePending(); return; }
+  if (G.panel.k === 'feedback' || victory?.foe === G.enemy) return;
+  G.panel = { k: 'none' };
+  victory = { foe: G.enemy, elapsed: 0 };
+  setInputLock(true);
+});
+
+function advanceVictory(dt: number) {
+  if (!victory) return;
+  if (!battleWon() || G.enemy !== victory.foe) { victory = null; return; }
+  if (G.busy || FX.playerStrikeActive()) return;
+  if (reduceMotion() || victory.elapsed >= DEFEAT_OUT) {
+    victory = null;
+    settlePending();
+  } else {
+    victory.elapsed = Math.min(DEFEAT_OUT, victory.elapsed + dt);
+  }
+}
+
 /** 组合根交给世界层的两个入口；场景自己不认识浮层状态。 */
 const SCENE_HOOKS = {
-  openPack: () => { G.panel = { k: 'pack', msg: '', ok: true }; },
+  openPack: () => {
+    G.panel = { k: 'pack', msg: '', ok: true };
+    if (!standalone) void refreshDocuments();
+  },
   openSettings: () => { G.panel = { k: 'settings', msg: '', ok: true }; },
 };
 
@@ -92,10 +112,10 @@ onFx((e) => {
       const fly = kind === 'pierce' ? 0.15 : 0.2;
       FX.attack({
         from: heroHand(),
-        // 起点每帧跟着提灯走：光刃是从手上甩出去的，不是从一张定住的位置射出来的
+        // 轨迹跟着刀锋离手，蓄力时不会留在旧位置。
         follow: heroHand,
         to: {
-          x: ENEMY.x + (Math.random() - 0.5) * 80,
+          x: ENEMY.x - (e.absorbed > 0 && e.n === 0 ? 92 : 0) + (Math.random() - 0.5) * 40,
           y: ENEMY.y + (Math.random() - 0.5) * 90,
         },
         color: EFFS[kind].color,
@@ -126,6 +146,7 @@ onFx((e) => {
         n: e.n, absorbed: e.absorbed, seq: e.seq, times: e.times, totalAbsorbed: e.totalAbsorbed,
         from: { x: ENEMY.x, y: ENEMY.y },
         to: { x: HERO.x, y: HERO.y },
+        follow: enemyHand,
       });
       enemyHold = Math.max(enemyHold, dur);
       break;
@@ -136,13 +157,12 @@ onFx((e) => {
         from: { x: ENEMY.x, y: ENEMY.y },
         to: { x: HERO.x, y: HERO.y },
         discard: DISCARD_TO,
-        ground: ENEMY_GROUND,
       });
       enemyHold = Math.max(enemyHold, dur);
       break;
     }
     case 'blk':
-      if (!panelShown()) FX.gainBlock(HERO.x, HERO.y - 30, e.n);
+      FX.heroBlock({ x: HERO.x + 90, y: HERO.y - 30 }, e.n, !panelShown());
       break;
     case 'heal':
       if (!panelShown()) FX.heal(HERO.x, HERO.y - 40, e.n);
@@ -168,27 +188,22 @@ onFx((e) => {
   }
 });
 
+const homeToolsVisible = () => G.screen === 'title' && !modalOpen();
+const sidePanelOpen = () => homeToolsVisible() && (taskbarOpen() || answerbarOpen());
+let navigationReady = true;
+
 keyHandler((k) => {
-  // 玩家一旦用键盘接管，就把自动推进交还给他
-  autoCancelled = true;
-  const p = G.panel;
-  if (panelHold > 0 || enemyHold > 0) return;
-  if (k === 'escape') {
-    if (G.screen === 'atlas') { G.screen = 'title'; return; }
-    // 精炼预览是面板里的第二层：Esc 先退回列表，再按一次才连代价一起取消。
-    // 一次 Esc 就从"看结果"跳到"关掉整个面板"会白丢一次精炼机会。
-    if (p.k === 'cardpick' && p.pick !== undefined) { cancelPreview(); return; }
-    // 到手的那张卡没有"取消"可言：它已经进牌组了，Esc 就等于"知道了"。
-    if (p.k === 'cardget') { ackCardGet(); return; }
-    // 划分计划是一条独立的路：Esc 退回题库面板，不会把玩家扔回标题
-    if (p.k === 'plan') { closePlan(); return; }
-    // cardpick 也要能按 Esc 退出：取消后回到事件 / 复习面板，账一起清掉。
-    if (p.k === 'question' || p.k === 'deck' || p.k === 'pile' || p.k === 'cardpick'
-        || p.k === 'help' || p.k === 'pack' || p.k === 'settings' || p.k === 'boon' || p.k === 'topic') cancelPanel();
+  if (questionReturning() || feedbackLeaving()) return;
+  if (k !== 'escape' && (!navigationReady || (G.panel !== lastPanel && questionCard()))) return;
+  if (sidePanelOpen()) {
+    if (k === 'escape') (answerbarExit() ?? taskbarExit())?.run();
     return;
   }
+  const p = G.panel;
+  if (panelHold > 0 || enemyHold > 0 || victoryLocked()) return;
+  if (k === 'escape') { leavePanel(); return; }
   if (k === 'confirm') {
-    if (p.k === 'feedback') dismissFeedback();
+    if (p.k === 'feedback') closeFeedback();
     // 掉落面板只有一个出口，回车就是"知道了"
     else if (p.k === 'powerdrop') ackPower();
     else if (p.k === 'cardget') ackCardGet();
@@ -202,23 +217,27 @@ keyHandler((k) => {
     if (card) answer(i);
   }
   // 输入框拿着焦点时，按键先过它 —— 见 scenes/settings.ts 的 settingsKey
-}, settingsKey);
+}, (key) => navigationReady && settingsKey(key), sidePanelOpen);
 
 let t = 0;
 let last = performance.now();
+let nextAnswerSync = 0;
 
 function frame(now: number) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   t += dt;
 
-  beginFrame();
   beginInput();
-
-  // 一局打完：这一局的答题记录交回本机服务。取走即出队，所以每局只发一次；
-  // 服务不在（双击打开的单个文件就是）请求失败，这里不重试也不提示。
-  const upload = takeAnswerUpload();
-  if (upload) void sendAnswers(upload);
+  if (!standalone) tickJobs(now);
+  const showHomeTools = homeToolsVisible();
+  if (!showHomeTools && taskbarOpen()) closeTaskbar(true);
+  if (!showHomeTools && answerbarOpen()) closeAnswerbar(true);
+  if (!standalone && now >= nextAnswerSync) {
+    nextAnswerSync = now + 2000;
+    const upload = takeAnswerUpload();
+    if (upload) void sendAnswers(upload).then((ok) => finishAnswerUpload(upload, ok));
+  }
 
   // 面板刚关掉：把面板期间攒下的滚轮增量丢掉
   if (panelWasOpen && !modalOpen()) clearWheel();
@@ -230,32 +249,40 @@ function frame(now: number) {
   if (enemyHold > 0) enemyHold = Math.max(0, enemyHold - dt);
 
   // 答对没有可看的判定面板：这一手的效果早就结算了，留着它只是给打击演出锁输入。
-  // 演出（panelHold）一结束就收掉，玩家不用再点一次「继续」——
-  // 打死敌人的那一手也因此能看见最后一击，而不是被奖励面板当场盖住。
+  // 演出（panelHold）一结束就收掉，玩家不用再点一次「继续」。
   if (G.panel.k === 'feedback' && G.panel.fb.right && panelHold <= 0) dismissFeedback();
+  advanceVictory(dt);
+  const quizExit = animateFeedbackClose(dt);
+  const quizEntry = animateQuestion(G.panel === lastPanel ? t - panelOpenedAt : 0, dt);
 
   // 面板换屏时重置答题面板的时钟；同一块面板只推进 reveal
-  if (G.panel.k !== lastPanelKind) {
+  if (G.panel !== lastPanel) {
+    panelOpenedAt = t;
     if (G.panel.k === 'feedback') {
       quizReveal = 0;
-      resetAuto();
       if (quizHoldBoost > 0) { panelHold = Math.max(panelHold, quizHoldBoost); quizHoldBoost = 0; }
     }
-    lastPanelKind = G.panel.k;
+    lastPanel = G.panel;
   }
   quizSettling = G.panel.k === 'feedback' && panelHold > 0;
-  // 倒计时从结果真的展开那一刻起算
-  if (wasSettling && !quizSettling && G.panel.k === 'feedback') {
-    autoRemain = AUTO_MS;
-    autoLast = performance.now();
-    autoCancelled = false;
-    autoPaused = false;
-    autoIn = AUTO_MS / 1000;
-  }
-  wasSettling = quizSettling;
   if (G.panel.k === 'feedback' && !quizSettling) quizReveal += dt;
-  // 放在 boost 之后：调试拉长判定时那一帧也必须锁输入
-  setInputLock(panelHold > 0 || enemyHold > 0);
+  const panel = G.panel;
+  const age = t - panelOpenedAt;
+  const sheet = panel.k === 'none' ? ''
+    : panel.k === 'settings' ? `settings:${!!panel.form}:${!!panel.form?.connection}`
+    : panel.k === 'pack' ? `pack:${panel.deletion ? 'delete' : panel.page?.topic ? 'questions' : panel.page ? 'topics' : 'list'}`
+    : panel.k === 'cardpick' ? `cardpick:${panel.mode}:${panel.pick !== undefined}`
+    : panel.k;
+  // 答题与判定沿用原有演出；导航不能截住光刃或敌人的动作。
+  const combatHold = panelHold > 0 || enemyHold > 0;
+  const exitLocked = victoryLocked();
+  navigationReady = beginTransition(G.screen, sheet, now,
+    !sidePanelOpen() && panel.k !== 'question' && panel.k !== 'feedback' && !combatHold)
+    && (quizEntry?.ready ?? true) && !quizExit;
+  setInputLock(combatHold || exitLocked || !navigationReady);
+  setWheelShield(sidePanelOpen() || exitLocked || !navigationReady);
+  if (exitLocked || !navigationReady) { clearWheel(); consumeDragY(); }
+  beginFrame();
 
   const sh = FX.shakeOffset();
   const layer = worldLayer(G.panel.k);
@@ -267,53 +294,42 @@ function frame(now: number) {
   drawSceneBackdrop(G.screen, t);
   if (layer === 'full') {
     if (G.screen !== 'atlas' && G.screen !== 'title' && G.screen !== 'map') syncBattle();
-    drawSceneWorld(G.screen, t, dt, SCENE_HOOKS);
+    inputScope(0, 0, navigationReady && !exitLocked,
+      () => drawSceneWorld(G.screen, t, dt, SCENE_HOOKS, victoryProgress() ?? 0));
     // 特效和战场在同一层：光刃端点用 HERO/ENEMY 坐标，场景震动时它得跟着走。
     FX.draw();
   }
   g.restore();
 
   FX.drawFlash();
-  // 面板最后画，别跟着震动位移走：按钮会抖，和逻辑坐标的热区错开。
-  if (G.panel.k !== 'none') {
-    drawOverlay(t, {
-      settling: quizSettling, reveal: quizReveal,
-      autoProgress: 1 - autoIn / (AUTO_MS / 1000), autoPaused, autoCancelled,
-    });
-  }
+  if (layer === 'backdrop') drawSceneScrim();
+  drawTransition(() => inputScope(0, 0, navigationReady, () => {
+    // 浮层不跟屏幕震动；只跟随导航位移，同时移动对应热区。
+    if (modalOpen()) {
+      drawOverlay(t, {
+        settling: quizSettling, reveal: quizReveal, entry: quizEntry, exit: quizExit,
+      }, age);
+    }
+    if (showHomeTools) {
+      if (!standalone) drawTaskbar(dt, t, () => closeAnswerbar(true));
+      drawAnswerbar(dt, () => closeTaskbar(true));
+    }
+  }));
   // 只留背景时不画残留特效，但按 4 倍速散掉：关掉面板时画面已经是干净的。
-  FX.update(dt * (layer === 'backdrop' || panelShown() ? 4 : 1));
+  FX.update(dt * (layer === 'backdrop' ? 4 : 1));
 
-  // 自动推进只在结果展开、指针不在面板上、玩家没按过键时走
-  if (G.panel.k === 'feedback' && !quizSettling && quizReveal > 0.3) {
-    const box = quizFrame().geom;
-    const nowMs = performance.now();
-    const stepMs = Math.max(0, nowMs - autoLast);
-    autoLast = nowMs;
-    const paused = autoCancelled || hover(box.x, box.y, box.w, box.h);
-    autoPaused = paused;
-    if (!paused) autoRemain = Math.max(0, autoRemain - stepMs);
-    autoIn = autoRemain / 1000;
-    if (!paused && autoRemain <= 0) dismissFeedback();
-  } else if (G.panel.k === 'feedback') {
-    // 演出 / 展开这几帧不计时
-    autoLast = performance.now();
-    autoPaused = true;
-  }
 
   endInput();
   requestAnimationFrame(frame);
 }
 
 async function boot() {
-  // 页面从服务器来（开发服务器 / npm run serve）就同源调 /api；双击打开的单文件
-  // 没有同源可谈，保持默认的本机端口。
-  if (location.protocol !== 'file:') setServiceBase('');
+  // 页面由开发 / 发布服务提供时同源调 /api；双击文件时不访问本机服务。
+  setServiceBase(standalone ? 'file://' : '');
 
-  // 卡面在 cards/catalog.ts 里，启动时只把题库灌进 BANK（随程序的几份 + 玩家导入的）
-  initBanks(SHIPPED_PACKS);
-  // 本机服务在就再问一次它还有哪些题库。不等它：没服务也要能立刻开局。
-  void refreshRemoteBanks();
+  // 卡面在 cards/catalog.ts 里，启动时只把英语内置题库灌进 BANK。
+  initBank(SHIPPED_PACK.id, SHIPPED_PACK.md);
+  if (!standalone) void refreshRemoteBanks();
   if (import.meta.env.DEV) {
     // 开发 / 截图入口：生产构建不会执行这个分支。
     const { devJump } = await import('./dev/jump');
@@ -323,9 +339,9 @@ async function boot() {
       holdPanel: (s) => { panelHold = Math.max(panelHold, s); },
       holdEnemy: (s) => { enemyHold = Math.max(enemyHold, s); },
       setQuizHold: (s) => { quizHoldBoost = Math.max(0, s); },
-      setAutoHold: (on) => { autoHold = on; autoCancelled = on; },
-      quizClock: () => ({ settling: quizSettling, reveal: quizReveal, autoIn, autoPaused }),
-      locked: () => enemyHold > 0 || panelHold > 0,
+      quizClock: () => ({ settling: quizSettling, reveal: quizReveal }),
+      locked: () => !navigationReady || enemyHold > 0 || panelHold > 0 || victoryLocked(),
+      victoryProgress,
     });
   }
   loadArt().then(() => {

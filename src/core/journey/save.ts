@@ -2,8 +2,7 @@ import { G, newRunState } from '../infra/state';
 import { readStore, writeStore } from '../infra/storage';
 import { MODE_BY_ID, NODE_META, POWER_BY_ID, STAGES, STAGE_ROWS } from '../model/data';
 import { MAP_COLS, floorOf } from '../map';
-import { baseIdOf, isKnownCardId } from '../cards/registry';
-import { LEGACY_CARD_IDS } from '../cards/legacy';
+import { isKnownCardId } from '../cards/registry';
 import { runLabel } from '../library/stage';
 import type { GameState, MapNode, ModeId, PowerId } from '../model/types';
 
@@ -14,14 +13,14 @@ import type { GameState, MapNode, ModeId, PowerId } from '../model/types';
  * `v: 8` + 字符串 key，升版本时全都要跟着改，漏一处就变成"合法存档读不出来"。
  * 版本号只有这里一处真值，谁能读到就引用它。
  */
-export const SNAP_V = 10;
+export const SNAP_V = 14;
 export const SAVE_KEY = `cognirogue.run.v${SNAP_V}`;
 
 /** 断点里要保存的 GameState 字段；`Pick` 让新增字段要么显式纳入，要么明确不存。 */
 type SavedFields = Pick<GameState,
   | 'stage' | 'mode' | 'hp' | 'maxHp' | 'deck' | 'powers' | 'map' | 'pos' | 'seen'
   | 'topicWrong' | 'floors' | 'runOk' | 'runBad' | 'answerDraws' | 'upGrade' | 'eventsSeen'
-  | 'qPicked' | 'stageOk' | 'stageBad' | 'topics' | 'runQueue' | 'runCursor' | 'qSolved'
+  | 'qPicked' | 'stageOk' | 'stageBad' | 'topics' | 'runQueue' | 'runQuestions' | 'runBankId' | 'runId' | 'runCursor' | 'qSolved'
 >;
 
 interface Snapshot extends SavedFields {
@@ -71,10 +70,12 @@ export function saveRun() {
     stageBad: G.stageBad,
     answerDraws: G.answerDraws,
     qPicked: G.qPicked,
-    // 临时题库存**题号队列**，不存题目正文：一百多道题的正文塞进存档太重，
-    // 而且题库一更新，存下来的旧正文就成了幽灵。读档时按 qid 回题库里取。
+    // 本局题目和消费队列一起快照，题库更新或服务离线都不改变已经开始的一局。
     topics: G.topics,
     runQueue: G.runQueue,
+    runQuestions: G.runQuestions,
+    runBankId: G.runBankId,
+    runId: G.runId,
     runCursor: G.runCursor,
     qSolved: G.qSolved,
     onceStage: usedIds(G.onceStage),
@@ -130,8 +131,8 @@ export function resumeRun(): boolean {
     upGrade: s.upGrade,
     runOk: s.runOk, runBad: s.runBad, stageOk: s.stageOk, stageBad: s.stageBad, floors: s.floors,
     // 主题与临时题库都要复原：重建一份池子会让读档后的题和存档前不一样
-    topics: s.topics, runQueue: s.runQueue, runCursor: s.runCursor,
-    qSolved: s.qSolved,
+    topics: s.topics, runQueue: s.runQueue, runQuestions: s.runQuestions, runCursor: s.runCursor,
+    qSolved: s.qSolved, runBankId: s.runBankId, runId: s.runId,
     stageTopic: runLabel(s.topics),
   });
   return true;
@@ -203,15 +204,7 @@ function readSnapshot(): Snapshot | null {
   }
   if (!Array.isArray(s.deck) || !s.deck.length) return null;
   if (!s.deck.every(isCardId)) return null;
-  // 旧题库 id 迁移要在剥 + 后缀之前做
-  s.deck = s.deck.map((id) => {
-    const up = id.endsWith('+');
-    const base = up ? id.slice(0, -1) : id;
-    const mapped = LEGACY_CARD_IDS[base] ?? base;
-    return up ? mapped + '+' : mapped;
-  });
-  s.deck = s.deck.filter((id) => baseIdOf(id) !== 'pow:log');
-  if (!s.deck.length || !s.deck.every((id) => isKnownCardId(id))) return null;
+  if (!s.deck.every((id) => isKnownCardId(id))) return null;
   // 增益只能是认识的 id 且不重复
   if (!Array.isArray(s.powers)) return null;
   if (!s.powers.every((id) => typeof id === 'string' && !!POWER_BY_ID[id])) return null;
@@ -220,6 +213,15 @@ function readSnapshot(): Snapshot | null {
   // 只要求形状：见过的事件 id 不参与规则，题库里删掉一个事件也不该让整局读不回来
   if (!Array.isArray(s.eventsSeen) || !s.eventsSeen.every((id) => typeof id === 'string')) return null;
   if (!isNonNegRecord(s.qPicked)) return null;
+  if (typeof s.runBankId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(s.runBankId)) return null;
+  if (typeof s.runId !== 'string' || !/^run-[A-Za-z0-9_-]+$/.test(s.runId)) return null;
+  if (!Array.isArray(s.runQueue) || !Array.isArray(s.runQuestions)
+    || !s.runQuestions.every((q) => isRecord(q) && typeof q.qid === 'string'
+      && typeof q.topic === 'string' && typeof q.q === 'string' && Array.isArray(q.options)
+      && q.options.every((x) => typeof x === 'string') && Number.isInteger(q.answer)
+      && typeof q.explain === 'string')) return null;
+  if (s.runQueue.length !== s.runQuestions.length
+    || s.runQueue.some((qid, i) => qid !== s.runQuestions[i]?.qid)) return null;
   // 不认识的 id 直接判坏档，静默忽略会让那张牌读档后再可用
   for (const key of ['onceStage', 'onceRun'] as const) {
     const v = s[key];

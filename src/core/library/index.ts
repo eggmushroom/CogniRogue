@@ -10,3 +10,4 @@ export * from './stage';
 export * from './stagemem';
 export * from './answers';
 export * from './question';
+export * from './pool';

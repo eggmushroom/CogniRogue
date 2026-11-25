@@ -1,51 +1,107 @@
-import { G } from '../core/infra';
-import { after } from '../core/infra/schedule';
+import { G, panelOf } from '../core/infra';
 import type { PlanView } from '../core/model';
 import {
-  countQuestions, jobState, listBanks, refreshRemoteBanks, serviceInfo, sourceBank,
-  startGenerate, startPlan, uploadDoc, useRemoteBank,
+  importDocumentTopics, readBank, refreshDocuments, serviceInfo, remoteDocument, startGenerate, startPlan, uploadDoc,
 } from '../core/library';
 import type { PlanRemote } from '../core/library';
 import { pickFile } from './filepick';
-
-/**
- * 「从文档建题库」的三步：上传 → **确认划分** → 出题。
- *
- * 中间那一步是新加的，因为切分决定整份题库长什么样，而它没法在出题之后补救：
- * 切错了只能重跑，重跑要花模型额度。所以先让玩家看见「会切成哪几节、每节多大、
- * 哪些节被合并了」，确认之后再开始出题。
- *
- * 划分一律在服务里跑（它要调模型），所以这里是「起任务 → 轮询 → 换面板」。
- */
-const wait = (ms: number) => new Promise<void>((r) => after(ms, r));
+import { jobsSnapshot, registerJobs, watchJob } from './jobstate';
 
 const fresh = (docId: string, name: string): PlanView => ({
   docId, name, tier: '', chars: 0, topics: [], notes: [],
-  canAgentic: false, busy: '', msg: '', ok: true, planId: '',
+  canAgentic: false, imported: false, selected: new Set(), busy: '', msg: '', ok: true, planId: '',
 });
 
 /** 面板上的数据一直是同一份对象：界面每帧重画，改它就是刷新。 */
 function show(v: PlanView) {
-  G.panel = { k: 'plan', data: v };
+  G.panel = { k: 'plan', data: v, returnPage: panelOf('pack')?.page };
 }
 
-/** 退出计划面板：回到题库面板，什么也没变。 */
+function fail(v: PlanView, msg: string) {
+  v.busy = '';
+  v.ok = false;
+  v.msg = msg;
+}
+
+/** 回到原题库预览；任务可能已经追加题目，不继续用打开工作台前的原文。 */
 export function closePlan() {
-  if (G.panel.k !== 'plan') return;
-  if (G.panel.data.busy) return;
-  G.panel = { k: 'pack', msg: '', ok: true };
+  const p = panelOf('plan');
+  if (!p) return;
+  const page = p.returnPage;
+  const parent = G.panel = { k: 'pack', msg: '', ok: true, page };
+  if (page && p.data.docId === page.bankId) {
+    void readBank(page.bankId).then((result) => {
+      if (result.ok && G.panel === parent && parent.page === page) page.bank = result.bank;
+    });
+  }
+}
+
+/** 已上传文档从档案恢复；读档不触发划分或模型调用。 */
+export async function openSavedDocument(docId: string) {
+  const v = fresh(docId, '');
+  v.busy = 'plan';
+  v.msg = '读取文档…';
+  show(v);
+  await loadDocument(v);
+}
+
+async function loadDocument(v: PlanView) {
+  const [saved, info] = await Promise.all([remoteDocument(v.docId), serviceInfo()]);
+  if (!saved) { fail(v, '文档暂时无法读取，请重试'); return; }
+  v.name = saved.name;
+  v.chars = saved.chars;
+  v.canAgentic = !!info?.canGenerate;
+  if (saved.plan) {
+    apply(v, saved.plan, saved.planId);
+    v.imported = !!saved.planId && saved.importedPlanId === saved.planId;
+  }
+  if (saved.job) {
+    v.busy = 'plan';
+    v.msg = saved.job.title;
+    const result = await watchJob(saved.job.id, (job) => { v.msg = job.progress?.label ?? job.title; });
+    v.busy = '';
+    if (!result || result.state === 'fail') { fail(v, '任务未完成，可从已保存的文档重试'); return; }
+    await loadDocument(v);
+    return;
+  }
+  v.busy = '';
+  if (!saved.plan) v.msg = '尚未划分主题';
 }
 
 /** 换一种切法。`agentic` 会调模型，所以只有玩家点它才会走到这儿。 */
 export async function replan(mode: 'auto' | 'fixed' | 'agentic') {
-  if (G.panel.k !== 'plan' || G.panel.data.busy) return;
+  if (G.panel.k !== 'plan' || G.panel.data.busy || G.panel.data.imported) return;
   await runPlan(G.panel.data, mode);
 }
 
-/** 按当前计划出题。 */
-export async function approvePlan() {
-  if (G.panel.k !== 'plan' || G.panel.data.busy) return;
-  await generate(G.panel.data);
+export async function approvePlan(v: PlanView) {
+  if (v.busy || v.imported || !v.planId || !v.topics.length) return;
+  v.busy = 'submit';
+  v.msg = '正在保存主题…';
+  const result = await importDocumentTopics(v.docId, v.planId);
+  if (!result.ok) { fail(v, result.error ?? '主题导入失败'); return; }
+  v.imported = true;
+  v.busy = '';
+  v.ok = true;
+  v.msg = '';
+  void refreshDocuments();
+}
+
+export function documentJobs(v: PlanView) {
+  return jobsSnapshot().filter((job) => job.bankId === v.docId);
+}
+
+export async function generateSelectedTopics(v: PlanView, selected: number[]) {
+  if (v.busy || !v.imported || !v.canAgentic || !selected.length) return;
+  v.busy = 'submit';
+  v.msg = '提交出题任务…';
+  const result = await startGenerate(v.docId, v.planId, selected);
+  if (!result.ok || !result.jobs?.length) { fail(v, result.error ?? '无法提交出题任务'); return; }
+  registerJobs(result.jobs);
+  v.selected.clear();
+  v.busy = '';
+  v.ok = true;
+  v.msg = `已提交 ${result.jobs.length} 个主题的出题任务`;
 }
 
 /** 入口：选一份文档，上传，然后自动跑一次「有目录按目录、没有按固定大小」。 */
@@ -60,64 +116,55 @@ export async function startDocFlow() {
 
   const up = await uploadDoc(f.name, await f.arrayBuffer());
   if (!up.ok || !up.docId) {
-    v.busy = '';
-    v.ok = false;
-    v.msg = up.error ?? '上传失败。';
+    fail(v, up.error ?? '上传失败。');
     return;
   }
   v.docId = up.docId;
   v.chars = up.chars ?? 0;
-  // 没有模型时，"让模型分章"这条路要藏起来：点下去只会报错
-  const info = await serviceInfo();
-  v.canAgentic = !!info?.canGenerate;
+  void refreshDocuments();
+  await loadDocument(v);
+  if (v.planId || !v.ok || G.panel.k !== 'plan' || G.panel.data !== v) return;
   await runPlan(v, 'auto');
 }
 
 async function runPlan(v: PlanView, mode: 'auto' | 'fixed' | 'agentic') {
   v.busy = 'plan';
   v.ok = true;
-  const label = mode === 'agentic' ? '让模型分章' : mode === 'fixed' ? '按固定大小切' : '解析目录';
+  const label = mode === 'agentic' ? '模型分章' : '解析文档主题';
   v.msg = `${label}…`;
-  show(v);
-
   const started = await startPlan(v.docId, mode, v.name);
   if (!started.ok || !started.job) {
-    v.busy = '';
-    v.ok = false;
-    v.msg = started.error ?? '划分任务起不来。';
+    fail(v, started.error ?? '划分任务起不来。');
     return;
   }
 
-  for (;;) {
-    await wait(900);
-    const st = await jobState(started.job);
-    if (!st) {
-      v.busy = '';
-      v.ok = false;
-      v.msg = '服务没有回答，任务状态取不到 —— 看看服务的终端。';
-      return;
-    }
-    if (st.state === 'running') {
-      v.msg = `${label}… ${Math.round(st.ms / 1000)} 秒`;
-      continue;
-    }
-    if (st.state === 'fail' || !st.plan) {
-      v.busy = '';
-      v.ok = false;
-      v.msg = `${label}失败：` + (st.tail || '没有更多信息');
-      return;
-    }
-    apply(v, st.plan, started.planId ?? '');
+  const st = await watchJob(started.job, (job) => {
+    v.msg = `${label}… ${Math.round(job.ms / 1000)} 秒`;
+  });
+  if (!st) {
+    fail(v, '暂时无法获取进度，请稍后查看任务');
     return;
   }
+  if (st.state === 'fail' || !st.plan) {
+    fail(v, `${label}失败，请重试或更换文档`);
+    return;
+  }
+  apply(v, st.plan, started.planId ?? '');
+  if (st.plan.tier === 'fixed') {
+    if (mode === 'auto') v.msg = '未识别到目录主题，已按段落划分';
+    if (mode === 'agentic') v.msg = '模型未能划分主题，已按段落划分';
+  }
+  void refreshDocuments();
 }
 
 function apply(v: PlanView, plan: PlanRemote, planId: string) {
   v.tier = plan.tier;
   v.chars = plan.chars || v.chars;
   v.topics = plan.topics.map((t) => ({
+    id: t.id,
     title: t.title,
     chars: t.chars,
+    ...(t.pageFrom ? { pageFrom: t.pageFrom, pageTo: t.pageTo } : {}),
     summary: t.summary,
     summarized: t.summarized,
     ...(t.merged && t.merged > 1 ? { merged: t.merged } : {}),
@@ -128,66 +175,4 @@ function apply(v: PlanView, plan: PlanRemote, planId: string) {
   v.busy = '';
   v.ok = true;
   v.msg = '';
-  show(v);
-}
-
-async function generate(v: PlanView) {
-  v.busy = 'gen';
-  v.ok = true;
-  v.msg = '出题中…（每节一次调用，节越多越久）';
-  show(v);
-
-  const job = await startGenerate(v.docId, 20, v.planId);
-  if (!job.ok || !job.job) {
-    v.busy = '';
-    v.ok = false;
-    v.msg = job.error ?? '起不了生成任务。';
-    return;
-  }
-
-  for (;;) {
-    await wait(2000);
-    const st = await jobState(job.job);
-    if (!st) {
-      v.busy = '';
-      v.ok = false;
-      v.msg = '服务没有回答，任务状态取不到 —— 看看服务的终端。';
-      return;
-    }
-    if (st.state === 'running') {
-      v.msg = `出题中… ${Math.round(st.ms / 1000)} 秒`;
-      continue;
-    }
-    if (st.state === 'fail') {
-      v.busy = '';
-      v.ok = false;
-      v.msg = '生成失败：' + (st.tail || '没有更多信息');
-      return;
-    }
-
-    // 生成物已经在服务的题库目录里了，重新问一遍清单就能看到它
-    const n = await refreshRemoteBanks();
-    const bank = listBanks().find((b) => b.id === st.bankId);
-    if (!bank) {
-      v.busy = '';
-      v.ok = false;
-      v.msg = `生成完了，但清单里没有它（服务现在有 ${n} 份）。`;
-      return;
-    }
-    const r = await useRemoteBank(bank.id);
-    // 服务的退出码只说明"跑完了"，不说明"出题了"：0 道题也是正常退出
-    const produced = countQuestions(sourceBank());
-    if (!r.ok || !produced) {
-      v.busy = '';
-      v.ok = false;
-      v.msg = '生成回来是空的：服务跑完了，但一道题也没出。多半是这份文档里没有能出题的段落 —— 看看服务终端的输出。';
-      return;
-    }
-    G.panel = {
-      k: 'pack',
-      msg: `已生成「${bank.name}」：${bank.total} 道题 / ${bank.topics} 个主题，已切过去。`,
-      ok: true,
-    };
-    return;
-  }
 }

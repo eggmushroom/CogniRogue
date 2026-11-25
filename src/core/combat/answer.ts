@@ -2,6 +2,7 @@ import { BAL } from '../model/data';
 import type { CardDef, CardId, Feedback, QView, Question } from '../model/types';
 import { G, checkPending, topTopic } from '../infra/state';
 import { onPlayerMiss } from './foe';
+import { requestSettle } from './pending';
 import { defOf } from '../cards/registry';
 import { askOf } from '../cards/ask';
 import { onceThisFight, rulesOf } from '../cards/powers';
@@ -110,8 +111,7 @@ function resolveWrong(ctx: AnswerCtx) {
     ctx.backToHand = true;
     addNote(ctx.s, '胶水壶：这张牌没有离开手牌，这一回合还能再打它。');
   } else {
-    // 默认：进弃牌堆，要等洗牌才回来。
-    addNote(ctx.s, '它进了弃牌堆，要等洗牌才回来。');
+    addNote(ctx.s, '卡牌进入弃牌堆。');
   }
 
   // 草稿纸：这一场第一次答错补一张。
@@ -193,7 +193,9 @@ function finishAnswer(ctx: AnswerCtx) {
   // 章节记忆按题号记；跨局的卡牌熟练度表已经删掉，这里只留会影响出题的那一份。
   // 主题取题目自己的 `topic`，不取 `G.stageTopic`：题池回退到全部题目时两者不同，
   // 按幕的主题记账会把别的主题的题记到这一章上。
-  recordAnswer({ stageTopic: ctx.q.topic, qid: ctx.qid, right: ctx.right });
+  recordAnswer({ stageTopic: ctx.q.topic, qid: ctx.qid, right: ctx.right,
+    // 记原题选项序号而不是洗牌后的屏幕序号。
+    choice: ctx.view.originalIndices[ctx.choice] + 1 });
   // 答对即出局：这一局不再抽它，把位置让给还没学会的题。
   // 只有"对"才出局 —— 答错的题必须回来，否则错题就再也见不到了。
   if (ctx.right) G.qSolved[ctx.qid] = true;
@@ -202,8 +204,6 @@ function finishAnswer(ctx: AnswerCtx) {
   // 同步这一刻只判玩家侧的即时死亡；敌人是否被打死要等最后一段落地，
   // 由执行器再判一次。
   checkPending();
-
-  settle(ctx.s);
 
   const fb: Feedback = {
     idx: ctx.idx, qid: ctx.qid, choice: ctx.choice, right: ctx.right,
@@ -221,6 +221,7 @@ function finishAnswer(ctx: AnswerCtx) {
    * 不需要玩家再点一次「继续」。
    */
   G.panel = { k: 'feedback', fb };
+  settle(ctx.s, { onDone: () => { G.busy = false; requestSettle(); } });
 }
 
 export function answer(choice: number) {

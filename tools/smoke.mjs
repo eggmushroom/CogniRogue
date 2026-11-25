@@ -116,7 +116,7 @@ function send(method, params = {}) {
 
 async function evalJs(expression) {
   const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (r.exceptionDetails) throw new Error(r.exceptionDetails.text);
+  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
   return r.result.value;
 }
 
@@ -146,6 +146,14 @@ async function clickPoint(p) {
   await sleep(70); // 真人不会在 0ms 内松手，帧一定会在这中间重画
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
   await sleep(140); // 等下一帧把状态画出来
+}
+
+/** 用逻辑画布坐标点一次，用于验证抽屉覆盖区。 */
+async function clickLogical(x, y) {
+  const point = await evalJs(`cog.toScreen(${x}, ${y})`);
+  const before = await evalJs('(cog.lastClick() || { n: 0 }).n');
+  await clickPoint(point);
+  return waitClick(before);
 }
 
 /** 等一次"新鲜的"点击落地：n 比点之前大，才说明这一下真的被接受了。 */
@@ -387,6 +395,15 @@ async function waitFor(label, ms = 20000) {
   return false;
 }
 
+async function waitGone(label, ms = 3000) {
+  const started = Date.now();
+  while (Date.now() - started < ms) {
+    if (!await evalJs(`cog.hots().some((h) => h.label === ${JSON.stringify(label)})`)) return true;
+    await sleep(40);
+  }
+  return false;
+}
+
 /** 等开局三个模式里出现任意一个，返回它的完整 label（`mode:<id>`）。 */
 async function waitBoon(ms = 20000) {
   const t0 = Date.now();
@@ -408,6 +425,13 @@ async function pickTopicsThenStart() {
   await clickLabel('topic:0');
   await clickLabel('topic:1');
   await clickLabel('开始这一局');
+  // 本局题池由服务异步返回，点击落地不代表开局已经完成。
+  const started = Date.now();
+  while (Date.now() - started < 20000) {
+    if (await S('cog.state.screen') === 'map' && await S('cog.state.panel.k') === 'none') return;
+    await sleep(60);
+  }
+  throw new Error('开局未完成：' + JSON.stringify(await S('({ screen: cog.state.screen, panel: cog.state.panel })')));
 }
 
 const S = (path) => evalJs(`(${path})`);
@@ -425,6 +449,82 @@ if (CPU_RATE > 0) {
 
 await boot();
 
+await step('任务抽屉可交互，栏外点击关闭', async () => {
+  await clickLabel('后台任务');
+  if (!await waitFor('×')) throw new Error('任务侧栏没有打开');
+  const inside = await clickLogical(1570, 800);
+  if (inside?.label !== '任务抽屉面板') throw new Error('任务栏空白处未被抽屉拦截：' + JSON.stringify(inside));
+  if (!await waitFor('×')) throw new Error('点击任务栏内部后抽屉意外关闭');
+  const outside = await clickLogical(800, 80);
+  if (outside?.label !== '任务抽屉遮罩') throw new Error('栏外点击没有触发任务抽屉关闭：' + JSON.stringify(outside));
+  if (!await waitGone('任务抽屉遮罩')) throw new Error('栏外点击后任务抽屉没有关闭');
+  await clickLabel('后台任务');
+  if (!await waitFor('×')) throw new Error('任务侧栏无法重新打开');
+  await clickLabel('×');
+}, async () => !!(await waitFor('后台任务')) && !(await waitFor('×', 500)));
+
+await step('抽屉过渡：热区随动、退出停止响应、快速反向与减少动态效果', async () => {
+  await evalJs(`(() => {
+    window.__drawerXs = [];
+    let frames = 0;
+    const tick = () => {
+      const close = cog.hots().find((h) => h.label === '×');
+      if (close) __drawerXs.push(close.x);
+      if (++frames < 60) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })()`);
+  const settle = () => evalJs(`new Promise((resolve) => {
+    let frames = 0;
+    const tick = () => {
+      const x = cog.hots().find((h) => h.label === '×')?.x;
+      if (x === 376 || ++frames >= 60) resolve(x === 376);
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
+  await clickLabel('答题记录');
+  if (!await settle()) throw new Error('抽屉未落位');
+  const xs = await evalJs('__drawerXs');
+  if (!xs.some((x) => x < 376) || xs.some((x, i) => i > 0 && x < xs[i - 1])) {
+    throw new Error('抽屉热区没有沿入场方向平滑落位：' + JSON.stringify(xs));
+  }
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await nextFrames(2);
+  const exiting = await evalJs(`({
+    button: cog.hots().some((h) => h.label === '×'),
+    mask: cog.hots().some((h) => h.label === '答题记录遮罩'),
+  })`);
+  if (exiting.button || !exiting.mask) throw new Error('退场没有隔离点击：' + JSON.stringify(exiting));
+  await clickLabel('答题记录');
+  if (!await settle()) throw new Error('退出过程中反向打开未落位');
+  await pressKey('Escape', 'Escape', 27);
+  for (let n = 0; n < 20 && await evalJs('cog.hots().some((h) => h.label === "答题记录遮罩")'); n++) await nextFrames(2);
+  if (await evalJs('cog.hots().some((h) => h.label === "答题记录遮罩")')) throw new Error('关闭后残留遮罩');
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  try {
+    await clickLabel('答题记录');
+    if (await evalJs('cog.hots().find((h) => h.label === "×")?.x') !== 376) throw new Error('减少动态效果未立即打开抽屉');
+    const hasShield = await evalJs(`new Promise((resolve) => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      requestAnimationFrame(() => resolve(cog.hots().some((h) => h.label === '答题记录遮罩')));
+    })`);
+    if (hasShield) throw new Error('减少动态效果未立即关闭抽屉');
+  } finally {
+    await send('Emulation.setEmulatedMedia', { features: [] });
+  }
+  await clickLabel('答题记录');
+  if (!await settle()) throw new Error('答题记录抽屉未落位');
+  const inside = await clickLogical(415, 800);
+  if (inside?.label !== '答题记录面板') throw new Error('答题记录栏空白处未被抽屉拦截：' + JSON.stringify(inside));
+  if (await evalJs('document.body.style.cursor') !== 'default') throw new Error('答题记录抽屉空白处仍显示可选择光标');
+  if (!await waitFor('×')) throw new Error('点击答题记录栏内部后抽屉意外关闭');
+  const outside = await clickLogical(800, 80);
+  if (outside?.label !== '答题记录遮罩') throw new Error('栏外点击没有触发答题记录抽屉关闭：' + JSON.stringify(outside));
+  if (!await waitGone('答题记录遮罩')) throw new Error('栏外点击后答题记录抽屉没有关闭');
+}, async () => true);
+
 /**
  * 首页只该有三个入口。这条同时守住"题库不再是一张单独的卡片"和
  * "玩法说明搬进设置"：多了少了都是版式回来了。
@@ -436,10 +536,60 @@ await step('首页三个入口，设置能开能关', async () => {
     if (!got.includes(w)) throw new Error(`首页没有「${w}」：${got.join(' / ')}`);
   }
   await clickLabel('设置');
-  if (!await waitFor('打开 ›')) throw new Error('设置面板没打开');
+  if (!await waitFor('玩法说明')) throw new Error('设置面板没打开');
   await pressKey('Escape', 'Escape', 27);
-  if (await waitFor('打开 ›', 800)) throw new Error('Esc 关不掉设置面板');
+  if (await waitFor('玩法说明', 800)) throw new Error('Esc 关不掉设置面板');
 }, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
+await step('菜单过渡：旧热区退场、落位后可操作，减少动态效果立即切换', async () => {
+  const firstFrame = (kind, staleLabel) => evalJs(`new Promise((resolve) => {
+    const deadline = performance.now() + 5000;
+    const frame = () => {
+      const labels = cog.hots().map((h) => h.label);
+      if (cog.state.panel.k === ${JSON.stringify(kind)} && !labels.includes(${JSON.stringify(staleLabel)})) {
+        resolve({ locked: cog.locked(), labels });
+      } else if (performance.now() < deadline) requestAnimationFrame(frame);
+      else resolve(null);
+    };
+    requestAnimationFrame(frame);
+  })`).catch(() => null);
+  const early = firstFrame('settings', '设置');
+  await clickLabel('设置');
+  const entry = await early;
+  if (!entry?.locked || entry.labels.length) throw new Error('旧画面尚在时仍有可点击热区');
+  if (!await waitFor('出题模型')) throw new Error('设置面板未交还输入');
+  await nextFrames(4);
+  const settingsClose = await S('cog.hots().find((h) => h.label === "×")');
+
+  // 关页和采样放在同一个浏览器任务里，节流时 CDP 往返可能错过短暂的退场帧。
+  const exit = await evalJs(`new Promise((resolve) => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    requestAnimationFrame(() => resolve({
+      kind: cog.state.panel.k, locked: cog.locked(), labels: cog.hots().map((h) => h.label),
+    }));
+  })`);
+  if (exit.kind !== 'none' || !exit.locked || exit.labels.length) throw new Error('关闭设置后的首帧不该注册首页热区');
+  if (!await waitFor('设置')) throw new Error('关闭后首页未交还输入');
+
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  try {
+    const immediate = firstFrame('pack', '题库');
+    await clickLabel('题库');
+    const pack = await immediate;
+    if (!pack || pack.locked || !pack.labels.includes('×')) throw new Error('减少动态效果时仍等待转场');
+    await nextFrames(2);
+    const packClose = await S('cog.hots().find((h) => h.label === "×")');
+    if (!settingsClose || !packClose
+      || settingsClose.x !== packClose.x || settingsClose.y !== packClose.y
+      || settingsClose.w !== packClose.w || settingsClose.h !== packClose.h) {
+      throw new Error('题库和设置窗口尺寸不一致');
+    }
+    await pressKey('Escape', 'Escape', 27);
+    if (!await waitFor('题库')) throw new Error('关闭后未返回首页');
+  } finally {
+    await send('Emulation.setEmulatedMedia', { features: [] });
+  }
+}, async () => true);
 
 /**
  * 模型参数是画布里的输入框，按键必须先归它 —— 否则 Tab/空格会被当成快捷键，
@@ -447,61 +597,107 @@ await step('首页三个入口，设置能开能关', async () => {
  */
 await step('设置 › 出题模型：能打字、Esc 退一层', async () => {
   await clickLabel('设置');
-  if (!await waitFor('打开 ›')) throw new Error('设置面板没打开');
-  await clickLabel('修改 ›');
+  if (!await waitFor('玩法说明')) throw new Error('设置面板没打开');
+  await clickLabel('出题模型');
   if (!await waitFor('保存')) throw new Error('模型表单没打开');
-  const before = await evalJs('cog.state.panel.form.base.value');
+  if (await evalJs('cog.state.panel.form.connection')) throw new Error('连接设置默认没有折叠');
+  const before = await evalJs('cog.state.panel.form.model.value');
   await typeText('abc');
-  const after = await evalJs('cog.state.panel.form.base.value');
+  const after = await evalJs('cog.state.panel.form.model.value');
   if (after !== before + 'abc') throw new Error(`输入框没收到按键：${JSON.stringify(before)} → ${JSON.stringify(after)}`);
   await pressKey('Tab', 'Tab', 9);
-  if (await evalJs('cog.state.panel.form.field') !== 1) throw new Error('Tab 没换到下一格');
+  if (await evalJs('cog.state.panel.form.field') !== 2) throw new Error('Tab 没换到密钥');
+  await pressKey('Tab', 'Tab', 9);
+  if (await evalJs('cog.state.panel.form.field') !== 1) throw new Error('Tab 没跳过隐藏的接口地址');
+  await clickLabel('连接设置');
+  await pressKey('Tab', 'Tab', 9);
+  await pressKey('Tab', 'Tab', 9);
+  if (await evalJs('cog.state.panel.form.field') !== 0) throw new Error('展开后无法用 Tab 到接口地址');
+  await clickLabel('连接设置');
+  if (await evalJs('cog.state.panel.form.field') !== 1) throw new Error('收起后焦点留在隐藏输入框');
   await pressKey('Escape', 'Escape', 27);
   if (await waitFor('保存', 800)) throw new Error('Esc 退不出模型表单');
-  if (!await waitFor('打开 ›')) throw new Error('Esc 之后没回到设置列表');
+  if (!await waitFor('玩法说明')) throw new Error('Esc 之后没回到设置列表');
+  await clickLabel('玩法说明');
+  if (!await waitFor('返回') || await waitFor('×', 150)) throw new Error('玩法说明没有唯一的返回入口');
+  await clickLabel('返回');
+  if (!await waitFor('出题模型')) throw new Error('从玩法说明返回后没有回到设置列表');
+  await clickLabel('出题模型');
+  if (!await waitFor('返回')) throw new Error('模型表单没有返回入口');
+  await clickLabel('返回');
+  if (!await waitFor('玩法说明')) throw new Error('模型表单的返回按钮没有回到设置列表');
   await pressKey('Escape', 'Escape', 27);
-  if (await waitFor('打开 ›', 800)) throw new Error('Esc 关不掉设置面板');
+  if (await waitFor('玩法说明', 800)) throw new Error('Esc 关不掉设置面板');
 }, async () => !(await evalJs('!!cog.state.panel.form')));
 
-/**
- * 题库面板要能真的翻到题：切主题换一列题、点开一条看选项。
- * 断言只读界面上的热区（标签与行高），不读面板内部变量 —— 内部怎么改都不该让这条红。
- */
-await step('题库：切主题换题、点开看选项', async () => {
+const libraryHits = () => S('cog.hots().map((h) => h.label)');
+
+await step('题库逐级打开：题库列表 → 主题 → 题目，逐级返回', async () => {
   await clickLabel('题库');
-  const firstQ = () => evalJs(
-    '(cog.hots().filter((h) => h.label.startsWith("q:"))[0] || {}).label || ""',
-  );
-  let a = '';
-  for (let i = 0; i < 80 && !a; i++) { a = await firstQ(); if (!a) await sleep(80); }
-  if (!a) throw new Error('题库面板里一道题都没画出来');
-
-  const topics = await evalJs('cog.hots().map((h) => h.label).filter((l) => l.startsWith("topic:"))');
-  if (topics.length < 2) throw new Error(`主题列只有 ${topics.length} 个，切不动`);
+  if (!await waitFor('bank:words')) throw new Error('入口没有显示题库列表');
+  let hits = await libraryHits();
+  if (hits.some((label) => label.startsWith('topic:') || label.startsWith('q:'))) {
+    throw new Error('题库列表提前显示了主题或题目');
+  }
+  await clickLabel('bank:words');
+  if (!await waitFor('返回') || await waitFor('×', 150)) throw new Error('主题列表没有唯一的返回入口');
+  const hitsAtHeader = await S('cog.hots()');
+  const back = hitsAtHeader.find(h => h.label === '返回');
+  const firstTopic = hitsAtHeader.find(h => h.label.startsWith('topic:'));
+  if (!back || !firstTopic || back.x !== 264 || back.y + back.h >= firstTopic.y) {
+    throw new Error('主题列表的返回按钮不在左上角');
+  }
+  hits = await libraryHits();
+  const topics = hits.filter((label) => label.startsWith('topic:'));
+  if (topics.length < 2 || hits.some((label) => label.startsWith('bank:') || label.startsWith('q:'))) {
+    throw new Error('主题页的内容层级不正确');
+  }
   await clickLabel(topics[1]);
+  if (!await waitFor('返回')) throw new Error('题目列表没有返回入口');
+  hits = await libraryHits();
+  const first = hits.find((label) => label.startsWith('q:'));
+  if (!first || hits.some((label) => label.startsWith('bank:') || label.startsWith('topic:'))) {
+    throw new Error('题目页的内容层级不正确');
+  }
+  const height = (label) => S(`cog.hots().find((h) => h.label === ${JSON.stringify(label)})?.h ?? 0`);
+  const initialHeight = await height(first);
+  const trackHeight = () => evalJs(`(() => {
+    const heights = window.__questionHeights = [];
+    const sample = () => {
+      if (heights !== window.__questionHeights) return;
+      const h = cog.hots().find(h => h.label === ${JSON.stringify(first)})?.h;
+      if (h !== undefined) heights.push(h);
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  })()`);
+  await trackHeight();
+  await clickLabel(first);
+  await nextFrames(24);
+  const fullHeight = await height(first);
+  const opening = await S('window.__questionHeights');
+  if (!opening.some(h => h > initialHeight && h < fullHeight)) throw new Error('题目展开没有经过中间高度');
+  await trackHeight();
+  await clickLabel(first);
+  await nextFrames(24);
+  const closing = await S('window.__questionHeights');
+  await evalJs('delete window.__questionHeights');
+  if ((await height(first)) !== initialHeight || !closing.some(h => h > initialHeight && h < fullHeight)) {
+    throw new Error('题目没有平滑收起');
+  }
 
-  let b = a;
-  for (let i = 0; i < 60 && b === a; i++) { await sleep(80); b = await firstQ(); }
-  if (b === a) throw new Error(`换了主题，题目列还是同一道：${a}`);
-
-  const height = (label) => evalJs(
-    `(() => { const h = cog.hots().find((q) => q.label === ${JSON.stringify(label)}); return h ? h.h : 0; })()`,
-  );
-  const h0 = await height(b);
-  await clickLabel(b);
-  let h1 = h0;
-  for (let i = 0; i < 60 && h1 <= h0; i++) { await sleep(80); h1 = await height(b); }
-  if (h1 <= h0) throw new Error(`点开题目之后这一行没变高：${h0} → ${h1}`);
-
-  // 排序与重置：同一个主题里造三笔历史 —— 答错三次那道该沉到最后，答错一次那道该排到最前
+  await pressKey('Escape', 'Escape', 27);
+  if (!await waitFor(topics[0])) throw new Error('Esc 没有返回主题列表');
   await clickLabel(topics[0]);
-  const t0 = topics[0].replace('topic:', '');
+  if (!await waitFor('返回')) throw new Error('另一个主题没有返回入口');
+  if ((await libraryHits()).includes(first)) throw new Error('换主题后仍显示原题目');
+  const t0 = topics[0].slice('topic:'.length);
   const hist = JSON.parse(await evalJs(`(async () => {
     const m = await import('/src/core/library/index.ts');
     const t = ${JSON.stringify(t0)};
     const qs = m.sourceBank().byTopic[t];
-    for (let i = 0; i < 3; i++) m.recordAnswer({ stageTopic: t, qid: qs[0].qid, right: true });
-    m.recordAnswer({ stageTopic: t, qid: qs[1].qid, right: false });
+    for (let i = 0; i < 3; i++) m.recordAnswer({ stageTopic: t, qid: qs[0].qid, right: true, choice: qs[0].answer + 1 });
+    m.recordAnswer({ stageTopic: t, qid: qs[1].qid, right: false, choice: qs[1].answer === 0 ? 2 : 1 });
     return JSON.stringify({ t, done: qs[0].qid, bad: qs[1].qid });
   })()`));
   await sleep(200);
@@ -519,28 +715,398 @@ await step('题库：切主题换题、点开看选项', async () => {
   })()`);
   if (left !== 0) throw new Error(`重置之后还留着 ${left} 次记录`);
 
+  await clickLabel('返回');
+  if (!await waitFor(topics[0])) throw new Error('返回按钮跳过了主题列表');
+  await clickLabel('返回');
+  if (!await waitFor('bank:words')) throw new Error('返回按钮没有回到题库列表');
   await pressKey('Escape', 'Escape', 27);
-  if (!await waitFor('开始游戏', 3000) && !await waitFor('继续这一局', 3000)) {
-    throw new Error('Esc 关不掉题库面板');
+}, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
+await step('题库：超过一屏的长题目仍可展开和收起', async () => {
+  await clickLabel('题库');
+  await clickLabel('bank:words');
+  const topic = (await libraryHits()).find((label) => label.startsWith('topic:'));
+  await clickLabel(topic);
+  if (!await waitFor('返回')) throw new Error('题目页没有返回入口');
+  await nextFrames(12);
+  const first = await evalJs('cog.hots().find((h) => h.label.startsWith("q:"))');
+  const label = first.label;
+  if (first.h > 48) await clickLabel(label);
+  await evalJs(`(async () => {
+    const m = await import('/src/core/library/index.ts');
+    const q = Object.values(m.sourceBank().byTopic).flat().find((q) => 'q:' + q.qid === ${JSON.stringify(label)});
+    globalThis.__menuLong = { q, old: { q: q.q, options: q.options, explain: q.explain } };
+    q.q = ['请判断这段代码：', String.fromCharCode(96).repeat(3) + 'js',
+      ...Array.from({ length: 32 }, (_, i) => '  console.log(' + i + ');'), String.fromCharCode(96).repeat(3)].join('\\n');
+    q.options = q.options.map(() => '这个选项描述所有权转移后原变量能否继续使用。'.repeat(8));
+    q.explain = '变量离开作用域后会释放其拥有的资源。'.repeat(16);
+  })()`);
+  try {
+    await clickLabel(label);
+    await nextFrames();
+    const expanded = await evalJs(`cog.hots().find((h) => h.label === ${JSON.stringify(label)})`);
+    if (!expanded || expanded.h <= 48) throw new Error('长题目展开后失去点击区域');
+    if (expanded.y < 234 || expanded.y + expanded.h > 770) throw new Error('长题目热区越过列表边界');
+    await clickLabel(label);
+    await nextFrames(24);
+    const collapsed = await evalJs(`cog.hots().find((h) => h.label === ${JSON.stringify(label)})`);
+    if (!collapsed || collapsed.h !== 48) throw new Error('长题目无法收起');
+  } finally {
+    await evalJs('Object.assign(__menuLong.q, __menuLong.old); delete globalThis.__menuLong;');
+    await clickLabel('返回');
+    await clickLabel('返回');
+    await clickLabel('×');
   }
 }, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
 
-/**
- * 划分计划：出题之前那一屏。这里只验界面接线 —— 注入一份计划，不联网、不调模型：
- * 三种切法的按钮都在，Esc 退回题库面板，再 Esc 回首页。
- */
-await step('划分计划：三种切法与退回', async () => {
+// 模拟任务只在这一页的内存里，后面的开局流程从正常首页开始。
+await step('出题 Agent：首次出题、混合更新、显式选用与删除', async () => {
+  await evalJs(`(() => {
+    const fetch = window.fetch;
+    window.__restoreTopicMocks = () => { window.fetch = fetch; };
+    window.__topicRequests = [];
+    window.__deleteRequests = [];
+    let generated = false;
+    let bankRead = false;
+    let jobs = [];
+    const doc = { docId: 'saved-doc-test', name: '已保存文档.md', kind: 'md', chars: 100,
+      createdAt: '2026-11-20', planId: 'saved-plan', importedPlanId: 'saved-plan' };
+    const topics = ['基础', '进阶', '附录'].map(title => ({ title, chars: 100, summary: '已保存的正文', summarized: 'none' }));
+    window.__setTopicLiveText = (text) => {
+      const job = jobs.find(item => item.id === 'topic-job-0');
+      if (job?.modelOutput?.calls?.[1]) { job.modelOutput.calls[1].phase = 'live'; job.modelOutput.calls[1].text = text; }
+    };
+    window.__finishTopicJobs = () => {
+      jobs = jobs.map(job => ({ ...job, state: 'done', modelOutput: job.modelOutput && {
+        ...job.modelOutput, calls: job.modelOutput.calls.map(call => call.call === 2 ? { ...call, phase: 'complete' } : call),
+      } }));
+      generated = true;
+    };
+    window.__topicBankRead = () => bankRead;
+    window.fetch = (input, init) => {
+      const path = new URL(String(input), location.href).pathname;
+      const json = (data) => Promise.resolve(new Response(JSON.stringify(data)));
+      if (path === '/api/health') return json({ ok: true, apiVersion: 1, canGenerate: true });
+      if (path === '/api/docs') return json([doc]);
+      if (path === '/api/docs/saved-doc-test') return json({ ...doc, plan: { topics, tier: 'toc', notes: [] } });
+      if (path === '/api/banks') return json(generated ? [{ id: doc.docId, name: doc.name }] : []);
+      if (path === '/api/banks/delete') {
+        window.__deleteRequests.push(JSON.parse(init.body));
+        return new Promise(resolve => {
+          window.__finishDelete = () => { generated = false; resolve(json({ ok: true })); };
+        });
+      }
+      if (path === '/api/banks/saved-doc-test') {
+        bankRead = true;
+        return Promise.resolve(new Response(
+          '# 已保存文档\\n## 基础\\n### 示例题？\\nA) 正确\\nB) 错误\\n= A\\n'));
+      }
+      if (/^\\/api\\/jobs\\/[^/]+\\/events$/.test(path)) {
+        const id = decodeURIComponent(path.split('/')[3]);
+        let timer;
+        const stream = new ReadableStream({
+          start(controller) {
+            const emit = () => {
+              const job = jobs.find(item => item.id === id);
+              if (!job) { controller.close(); return; }
+              controller.enqueue(new TextEncoder().encode('event: job\\ndata: ' + JSON.stringify(job) + '\\n\\n'));
+              if (job.state === 'done' || job.state === 'fail') controller.close();
+              else timer = setTimeout(emit, 40);
+            };
+            emit();
+          },
+          cancel() { clearTimeout(timer); },
+        });
+        return Promise.resolve(new Response(stream, { headers: { 'content-type': 'text/event-stream' } }));
+      }
+      if (path === '/api/jobs') return json(jobs);
+      if (path === '/api/generate') {
+        const body = JSON.parse(init.body);
+        window.__topicRequests.push(body);
+        const prefix = window.__topicRequests.length === 1 ? 'topic-job-' : 'topic-update-';
+        jobs = body.topics.map((topic, i) => ({ id: prefix + topic, topic, planId: doc.planId, title: topics[topic].title,
+          bankId: doc.docId, state: i ? 'queued' : 'running', ms: 0, taskType: 'generate',
+          modelOutput: i ? undefined : { calls: [
+            { call: 1, phase: 'complete', text: '第一轮模型输出。', toolCalls: [
+              { id: 'jit-read', name: 'read_knowledge', arguments: '{"knowledgeId":"k-1"}', state: 'complete', detail: '读取了一个知识点。' },
+            ] },
+            { call: 2, phase: 'complete', text: '最终模型输出。' },
+          ] } }));
+        return json({ ok: true, jobs });
+      }
+      return fetch(input, init);
+    };
+    return true;
+  })()`);
+  try {
+    await clickLabel('题库');
+    const label = 'bank:saved-doc-test';
+    await clickLabel(label);
+    if (!await waitFor('select-topic:0', 5000)) throw new Error('已导入主题不可勾选');
+    if (await waitFor('生成所选主题', 200)) throw new Error('未选择时可以提交');
+    await clickLabel('全选');
+    await clickLabel('取消全选');
+    await clickLabel('select-topic:0');
+    await clickLabel('select-topic:2');
+    await clickLabel('生成所选主题');
+    const [body] = await S('window.__topicRequests');
+    if (!body || body.docId !== 'saved-doc-test' || body.plan !== 'saved-plan' || body.topics.join() !== '0,2') {
+      throw new Error('批量提交未使用勾选的主题');
+    }
+    await nextFrames();
+    const hits = await S('cog.hots().map((h) => h.label)');
+    if (hits.includes('select-topic:0') || hits.includes('select-topic:2') || !hits.includes('select-topic:1')) {
+      throw new Error('运行中和排队中的主题仍可重复勾选');
+    }
+    if (hits.includes('查看任务') || hits.includes('后台任务')) {
+      throw new Error('文档主题页不应出现任务入口');
+    }
+    await pressKey('Escape', 'Escape', 27);
+    await pressKey('Escape', 'Escape', 27);
+    await clickLabel('后台任务');
+    if (!await waitFor('任务:topic-job-0', 5000) || !await waitFor('任务:topic-job-2', 5000)) {
+      throw new Error('后台任务缺少各主题的独立记录');
+    }
+    await clickLabel('任务:topic-job-0');
+    if (!await waitFor('返回')) throw new Error('后台任务详情没有返回入口');
+    const oldModel = '工作步骤:topic-job-0:1:assistant';
+    const latestModel = '工作步骤:topic-job-0:2:assistant';
+    const jitTool = '工作步骤:topic-job-0:1:tool:jit-read';
+    if (!await waitFor(oldModel) || !await waitFor(latestModel) || !await waitFor(jitTool)) {
+      throw new Error('模型输出 / 工具调用没有可点击的步骤热区');
+    }
+    const latestLabel = JSON.stringify(latestModel);
+    const initialLatest = await evalJs(`cog.hots().find(h => h.label === ${latestLabel})`);
+    if (!initialLatest || initialLatest.h <= 46) throw new Error('最新模型输出没有默认展开');
+    await clickLabel(oldModel);
+    await clickLabel(oldModel);
+    await clickLabel(jitTool);
+    await clickLogical(1500, 810);
+    if (await evalJs('document.body.style.cursor') !== 'default') throw new Error('任务抽屉空白处仍显示可选择光标');
+    await evalJs(`window.__setTopicLiveText(${JSON.stringify('{"a":"新片段此刻可见。","b":1}')})`);
+    let latestExpanded = initialLatest;
+    const streamDeadline = Date.now() + 3000;
+    while (Date.now() < streamDeadline && latestExpanded.h <= initialLatest.h) {
+      await sleep(40);
+      latestExpanded = await evalJs(`cog.hots().find(h => h.label === ${latestLabel})`);
+    }
+    if (!latestExpanded || latestExpanded.h <= initialLatest.h) throw new Error('模型流更新没有在完成前重新布局');
+    await clickLabel(latestModel);
+    const latestCollapsed = await evalJs(`cog.hots().find(h => h.label === ${JSON.stringify(latestModel)})`);
+    if (!latestCollapsed || latestCollapsed.h >= latestExpanded.h) throw new Error('最新模型输出无法收起');
+    await clickLabel(latestModel);
+    const latestReopened = await evalJs(`cog.hots().find(h => h.label === ${JSON.stringify(latestModel)})`);
+    if (!latestReopened || latestReopened.h <= latestCollapsed.h) throw new Error('最新模型输出无法重新展开');
+    await pressKey('Escape', 'Escape', 27);
+    if (!await waitFor('任务:topic-job-0')) throw new Error('Esc 跳过了后台任务列表');
+    await clickLabel('任务:topic-job-0');
+    await clickLabel('返回');
+    if (!await waitFor('任务:topic-job-0')) throw new Error('返回按钮跳过了后台任务列表');
+    await clickLabel('×');
+    await evalJs('window.__finishTopicJobs(); true');
+    for (let i = 0; i < 100 && !await S('window.__topicBankRead()'); i++) await sleep(60);
+    if (!await S('window.__topicBankRead()')) throw new Error('后台任务完成后没有刷新题库');
+    await clickLabel('题库');
+    await clickLabel(label);
+    if (!await waitFor('文档主题', 5000)) throw new Error('生成结束后无法打开题库与文档主题');
+    const active = () => evalJs(`import('/src/core/library/index.ts').then(m => ({
+      id: m.activeBankId(), name: m.sourceBank().name, saved: localStorage.getItem('cognirogue.bank.active.v1')
+    }))`);
+    if (!await waitFor('选择此题库', 5000) || (await active()).id !== 'words') {
+      throw new Error('打开生成题库时未显示选择按钮，或已经自动切换');
+    }
+    await clickLabel('topic:基础');
+    if (!await waitFor('返回') || !await S('cog.hots().some(h => h.label.startsWith("q:"))')) {
+      throw new Error('未选中的题库无法预览题目');
+    }
+    await clickLabel('返回');
+    await clickLabel('返回');
+    if ((await active()).id !== 'words' || (await active()).saved === 'saved-doc-test') {
+      throw new Error('仅浏览题库就改变了当前使用或已保存的题库');
+    }
+    await clickLabel(label);
+    if (!await waitFor('选择此题库', 5000)) throw new Error('重新打开题库后无法选择');
+    const detailHits = await S('cog.hots()');
+    const select = detailHits.find(h => h.label === '选择此题库');
+    const detailBack = detailHits.find(h => h.label === '返回');
+    // 转场期间两个热区共用同一个纵向偏移。
+    if (!select || !detailBack || select.x + select.w !== 1312 || Math.abs(select.y - detailBack.y - 624) > 0.01) {
+      throw new Error('题库选择按钮不在右下角');
+    }
+    await clickLabel('选择此题库');
+    const selected = await active();
+    if (selected.id !== 'saved-doc-test' || selected.name !== '已保存文档' || selected.saved !== selected.id
+      || await waitFor('选择此题库', 200)) {
+      throw new Error('确认后没有切换题源、保存选择或隐藏选择按钮');
+    }
+    await clickLabel('返回');
+    await clickLabel('bank:words');
+    if (!await waitFor('选择此题库', 5000) || (await active()).id !== selected.id) {
+      throw new Error('内置题库不能预览并重新选用');
+    }
+    await clickLabel('选择此题库');
+    if ((await active()).id !== 'words') throw new Error('确认后未切回内置题库');
+    await clickLabel('返回');
+    await clickLabel(label);
+    if (!await waitFor('文档主题', 5000)) throw new Error('切回内置题库后不能再次打开生成题库');
+    await clickLabel('文档主题');
+    if (!await waitFor('select-topic:0', 5000)) throw new Error('生成结束后不能重新选择主题');
+    await clickLabel('select-topic:0');
+    await clickLabel('select-topic:1');
+    await clickLabel('生成所选主题');
+    const [, update] = await S('window.__topicRequests');
+    if (update?.topics.join() !== '0,1') throw new Error('混合提交未使用勾选的主题');
+    await evalJs('window.__finishTopicJobs(); true');
+    await pressKey('Escape', 'Escape', 27);
+    await clickLabel('删除生成题目');
+    if (!await waitFor('确认删除', 5000)) throw new Error('删除入口没有打开确认页');
+    if (await S('cog.hots().some(h => h.label.startsWith("bank:") || h.label === "文档主题")')) {
+      throw new Error('确认页背后仍可切换题库或打开文档');
+    }
+    await pressKey('Enter', 'Enter', 13);
+    await clickLabel('取消');
+    if (!await waitFor('删除生成题目', 5000)) throw new Error('取消后没有回到原题库');
+    await clickLabel('删除生成题目');
+    await pressKey('Escape', 'Escape', 27);
+    if (!await waitFor('删除生成题目', 5000)) throw new Error('Esc 后没有回到原题库');
+    if ((await S('window.__deleteRequests')).length) throw new Error('确认前提交了删除请求');
+    await clickLabel('删除生成题目');
+    await clickLabel('确认删除');
+    if (await waitFor('确认删除', 300)) throw new Error('提交中仍可重复确认');
+    const deletes = await S('window.__deleteRequests');
+    if (deletes.length !== 1 || deletes[0].id !== 'saved-doc-test') throw new Error('删除请求次数或题库编号不正确');
+    await evalJs('window.__finishDelete(); true');
+    if (!await waitFor(label, 5000)) throw new Error('删除后没有返回题库列表，或文档条目消失');
+    if (await S('cog.hots().some(h => h.label === "删除题库" || h.label === "删除生成题目")')) {
+      throw new Error('删除后没有回到内置题库');
+    }
+    await clickLabel(label);
+    if (!await waitFor('select-topic:0', 5000)) throw new Error('删除题目后无法使用文档主题');
+    await clickLabel('select-topic:0');
+    if (!await waitFor('生成所选主题')) throw new Error('删除题目后不能重新出题');
+    await pressKey('Escape', 'Escape', 27);
+    await pressKey('Escape', 'Escape', 27);
+  } finally {
+    await evalJs('window.__restoreTopicMocks(); delete window.__restoreTopicMocks; delete window.__topicRequests; delete window.__finishTopicJobs; delete window.__topicBankRead; delete window.__deleteRequests; delete window.__finishDelete; true');
+  }
+}, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
+await boot();
+await step('上传无目录文档：手动模型分章，导入主题后才可勾选', async () => {
+  await evalJs(`(() => {
+    const fetch = window.fetch;
+    const click = HTMLInputElement.prototype.click;
+    window.__restoreImportMocks = () => {
+      window.fetch = fetch;
+      HTMLInputElement.prototype.click = click;
+    };
+    const doc = { docId: 'new-doc-test', name: '无目录.md', kind: 'md', chars: 100, planId: '' };
+    const requests = window.__importRequests = [];
+    let savedPlan;
+    const plans = {
+      auto: { tier: 'fixed', topics: [{ title: '段落预览', chars: 100, summary: '原文首句', summarized: 'none' }] },
+      agentic: { tier: 'agentic', topics: [{ title: '模型主题', chars: 100, summary: '分章摘要', summarized: 'model' }] },
+    };
+    HTMLInputElement.prototype.click = function() {
+      if (this.type !== 'file') return click.call(this);
+      const data = new DataTransfer();
+      data.items.add(new File(['无目录的正文'], doc.name));
+      this.files = data.files;
+      this.dispatchEvent(new Event('change'));
+    };
+    window.fetch = (input, init) => {
+      const path = new URL(String(input), location.href).pathname;
+      const json = (data) => Promise.resolve(new Response(JSON.stringify(data)));
+      if (path === '/api/health') return json({ ok: true, apiVersion: 1, canGenerate: true });
+      if (path === '/api/docs' && init?.method === 'POST') {
+        requests.push({ path });
+        return json({ ok: true, ...doc });
+      }
+      if (path === '/api/docs') return json([doc]);
+      if (path === '/api/banks') return json([]);
+      if (path === '/api/docs/new-doc-test') return json({ ...doc, plan: savedPlan });
+      if (path === '/api/docs/new-doc-test/topics') {
+        const body = JSON.parse(init.body);
+        requests.push({ path, body });
+        doc.importedPlanId = body.plan;
+        return json({ ok: true });
+      }
+      if (path === '/api/plan') {
+        const body = JSON.parse(init.body);
+        requests.push({ path, body });
+        return json({ ok: true, job: 'split-' + body.mode, planId: body.mode + '-plan' });
+      }
+      if (path.startsWith('/api/jobs/split-')) {
+        const plan = plans[path.slice('/api/jobs/split-'.length)];
+        savedPlan = { ...plan, chars: 100, notes: [] };
+        doc.planId = path.slice('/api/jobs/split-'.length) + '-plan';
+        return json({ state: 'done', plan: savedPlan });
+      }
+      if (path === '/api/generate') {
+        requests.push({ path, body: JSON.parse(init.body) });
+        return json({ ok: false, error: '模拟生成请求' });
+      }
+      return fetch(input, init);
+    };
+    return true;
+  })()`);
+  try {
+    await clickLabel('题库');
+    await clickLabel('从文档建题库');
+    if (!await waitFor('确认主题划分', 8000)) throw new Error('上传后没有出现划分确认');
+    const fallback = await S('cog.state.panel.data');
+    if (fallback.tier !== 'fixed' || !fallback.msg.includes('未识别到目录主题')) {
+      throw new Error('没有标明目录解析回落');
+    }
+    if (await waitFor('select-topic:0', 200)) throw new Error('预览期间可以选择出题主题');
+    await clickLabel('模型分章');
+    if (!await waitFor('确认主题划分', 8000)) throw new Error('模型分章后没有恢复划分确认');
+    const prepared = await S('cog.state.panel.data');
+    const requests = await S('window.__importRequests');
+    if (prepared.tier !== 'agentic' || prepared.topics[0].title !== '模型主题'
+        || requests.map((r) => r.body?.mode ?? r.path).join() !== '/api/docs,auto,agentic') {
+      throw new Error('预览阶段请求错误：' + JSON.stringify(requests));
+    }
+    await clickLabel('确认主题划分');
+    if (!await waitFor('select-topic:0', 5000)) throw new Error('确认后未直接进入主题勾选');
+    const imported = await S('window.__importRequests.at(-1)');
+    if (imported.path !== '/api/docs/new-doc-test/topics' || imported.body.plan !== 'agentic-plan'
+        || await S('window.__importRequests.some((r) => r.path === "/api/generate")')) {
+      throw new Error('导入没有保存主题，或意外启动了出题');
+    }
+    await pressKey('Escape', 'Escape', 27);
+    if (!await waitFor('bank:new-doc-test', 5000)) throw new Error('确认主题后无法返回题库列表');
+    await pressKey('Escape', 'Escape', 27);
+  } finally {
+    await evalJs('window.__restoreImportMocks(); delete window.__restoreImportMocks; delete window.__importRequests; true');
+  }
+}, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
+await step('划分计划：主题操作与退回', async () => {
   await evalJs(`(() => {
     cog.state.panel = { k: 'plan', data: {
-      docId: 'x', name: '文档.md', tier: 'toc', chars: 100,
-      topics: [{ title: '第一节', chars: 100, summary: '一句话', summarized: 'model' }],
-      notes: [], canAgentic: true, busy: '', msg: '', ok: true, planId: '',
+      docId: 'words', name: '文档.md', tier: 'toc', chars: 100,
+      topics: Array.from({ length: 12 }, (_, i) => ({ title: '主题 ' + (i + 1), chars: 100, summary: '内容摘要', summarized: 'model' })),
+      notes: [], canAgentic: true, imported: true, selected: new Set(), busy: '', msg: '', ok: true, planId: 'existing-plan',
     } };
     return 1;
   })()`);
+  for (const w of ['全选', 'select-topic:0']) {
+    if (!await waitFor(w, 3000)) {
+      const labels = await evalJs('cog.hots().map((h) => h.label)');
+      throw new Error(`计划面板缺「${w}」：${labels.join(' / ')}`);
+    }
+  }
   const labels = await evalJs('cog.hots().map((h) => h.label)');
-  for (const w of ['按这份出题', '让模型分章', '按固定大小切', '换一份文档']) {
-    if (!labels.includes(w)) throw new Error(`计划面板缺「${w}」：${labels.join(' / ')}`);
+  if (labels.includes('按固定大小切')) throw new Error('技术切分选项仍暴露在界面上');
+  const hits = await S('cog.hots()');
+  const back = hits.find((h) => h.label === '返回');
+  if (!back || hits.some((h) => h.label === '×')) throw new Error('划分面板没有唯一的返回入口');
+  // 热区跟着浮层一起位移，按返回按钮推回面板原点。
+  const listTop = back.y - 16 + 184;
+  const buttons = hits.filter((h) => h.label.startsWith('select-topic:'));
+  if (!buttons.length || buttons.some((h) => h.y < listTop - 0.01 || h.y + h.h > listTop + 404.01)) {
+    throw new Error('屏幕外主题仍注册了选择热区：' + JSON.stringify({ listTop, buttons }));
   }
   await pressKey('Escape', 'Escape', 27);
   let k = await evalJs('cog.state.panel.k');
@@ -548,6 +1114,41 @@ await step('划分计划：三种切法与退回', async () => {
   if (k !== 'pack') throw new Error(`Esc 之后没退回题库面板：${k}`);
   await pressKey('Escape', 'Escape', 27);
 }, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
+await step('取消选题后忽略迟到的题池', async () => {
+  await evalJs(`(async () => {
+    const library = await import('/src/core/library/index.ts');
+    const fetch = window.fetch;
+    window.__restoreRunPool = () => { window.fetch = fetch; delete window.__releaseRunPool; };
+    window.fetch = (input, init) => {
+      const path = new URL(String(input), location.href).pathname;
+      if (path === '/api/health') return Promise.resolve(Response.json({ ok: true }));
+      if (path === '/api/run-pool') return new Promise((resolve) => {
+        const questions = library.sourceBank().byTopic[JSON.parse(init.body).topics[0]].slice(0, 1);
+        window.__releaseRunPool = () => resolve(Response.json({ ok: true, questions }));
+      });
+      return fetch(input, init);
+    };
+    await library.refreshServiceInfo();
+  })()`);
+  try {
+    await clickLabel('开始游戏');
+    await clickLabel(await waitBoon());
+    await clickLabel('topic:0');
+    await clickLabel('topic:1');
+    await clickLabel('开始这一局');
+    if (!await waitFor('准备题目…') || !await S('!!window.__releaseRunPool')) throw new Error('题池请求未进入等待');
+    if ((await libraryHits()).includes('topic:0')) throw new Error('等待题池时仍可修改所选主题');
+    await pressKey('Escape', 'Escape', 27);
+    if (!await waitBoon()) throw new Error('没有取消开局');
+    await evalJs('window.__releaseRunPool()');
+    await nextFrames();
+    if (await S('cog.state.panel.k') !== 'boon') throw new Error('迟到的题池响应启动了新局');
+    await pressKey('Escape', 'Escape', 27);
+  } finally {
+    await evalJs('window.__restoreRunPool()');
+  }
+}, () => waitFor('开始游戏'));
 
 await step('标题 → 选模式 → 选两个主题 → 开局', async () => {
   await clickLabel('开始游戏');
@@ -572,18 +1173,44 @@ await step('标题 → 选模式 → 选两个主题 → 开局', async () => {
 await step('地图 → 进节点', () => clickLabel('node'), async () => (await S('cog.state.screen')) === 'battle');
 // 点牌就是出题：中间不该再有任何浮层。这一步挂了就说明又退回了"先选档再看题"
 // 手牌里现在混着初始牌组（base:*），要挑一张知识卡点 —— 基础牌点下去不出题。
-await step('点一张知识卡 → 直接出题', async () => {
+await step('点一张知识卡 → 直接翻成题面，落位后可作答', async () => {
   // 开局的手牌是从牌堆飞进来的，飞行途中没有热区（点它等于点空气），必须等它落地
   if (!await waitHand()) throw new Error('手牌一直没落位');
   globalThis.__apBeforeAsk = await S('cog.state.ap');
-  // 优先挑 1 费的知识卡（这样"答对退回 1 点"正好抵消），挑不到就按实际费用断言 ——
-  // 起手只带 2 张随机知识卡，手牌里不一定有，缺了就先补一张。
-  globalThis.__askIdx = await ensureKnowledge();
+  // 固定一张会触发冲刺的 1 费知识卡，避免随机起手绕过答对后的攻击演出。
+  await ensureQuestions();
+  globalThis.__askIdx = 0;
+  await evalJs('cog.state.hand[0] = "c02"');
+  globalThis.__askId = await evalJs(`cog.state.hand[${globalThis.__askIdx}]`);
   globalThis.__askCost = await evalJs(`cog.costOf(cog.state.hand[${globalThis.__askIdx}])`);
+  const entryFrames = evalJs(`new Promise((resolve) => {
+    const values = [];
+    const deadline = performance.now() + 12000;
+    const frame = () => {
+      if (cog.state.panel.k === 'question') {
+        const quiz = cog.quiz();
+        if (quiz.phase === 'ask') {
+          const opts = cog.hots().some((h) => h.label === 'opt');
+          values.push({ entry: quiz.entry, opts, locked: cog.locked() });
+          if (quiz.entry === 'ready' && opts) { resolve(values); return; }
+        }
+        if (performance.now() >= deadline) { resolve(values); return; }
+      } else if (performance.now() >= deadline) { resolve(values); return; }
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  })`);
   await clickCard(globalThis.__askIdx);
+  globalThis.__questionEntryFrames = await entryFrames;
 }, async () => {
   const p = await S('cog.state.panel');
-  return p.k === 'question' && typeof p.qid === 'string' && Array.isArray(p.view.options);
+  const frames = globalThis.__questionEntryFrames ?? [];
+  const phases = [...new Set(frames.map((frame) => frame.entry))];
+  if (phases.join() !== 'front,question,ready'
+      || frames.some((frame) => frame.entry !== 'ready' && (frame.opts || !frame.locked))) {
+    throw new Error('题框入场顺序或输入锁异常：' + JSON.stringify(frames));
+  }
+  return p.k === 'question' && typeof p.qid === 'string' && Array.isArray(p.view.options) && frames.at(-1)?.opts;
 });
 
 // 押注机制已经整个拿掉：面板里只该有一道题 + 四个选项，不该再有任何"换档/押注"按钮。
@@ -592,6 +1219,39 @@ await step('答题面板里没有档位按钮', async () => {
   const n = await evalJs(`cog.hots().filter((h) => h.label === 'tier').length`);
   if (n !== 0) throw new Error(`还剩 ${n} 个档位按钮`);
 }, async () => true);
+
+await step('取消答题：关闭按钮与 Esc 都翻回原牌，退场期间不接收作答或回合输入', async () => {
+  const snapshot = () => S('JSON.stringify({ hand: cog.state.hand, ap: cog.state.ap, turn: cog.state.turn })');
+  const before = await snapshot();
+  for (const exit of [() => clickLabel('×'), () => pressKey('Escape', 'Escape', 27)]) {
+    const frames = evalJs(`new Promise(resolve => {
+      const deadline = performance.now() + 12000;
+      const seen = [];
+      const frame = () => {
+        if (cog.state.panel.k !== 'question' || performance.now() >= deadline) { resolve(seen); return; }
+        const phase = cog.quiz().entry;
+        if (phase !== 'ready') {
+          const blocked = cog.locked() && !cog.hots().some(h => ['opt', 'card', 'endturn'].includes(h.label));
+          seen.push({ phase, blocked });
+          if (seen.length === 1) for (const key of ['1', 'Enter', 'Escape']) {
+            window.dispatchEvent(new KeyboardEvent('keydown', { key }));
+          }
+        }
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    })`);
+    await exit();
+    const samples = await frames;
+    const phases = [...new Set(samples.map(sample => sample.phase))];
+    if (phases.join() !== 'question,front' || samples.some(sample => !sample.blocked)) {
+      throw new Error('取消翻牌顺序或退场热区异常：' + JSON.stringify(samples));
+    }
+    if (await snapshot() !== before || !await waitHand()) throw new Error('取消后原手牌或行动力改变');
+    await clickCard(globalThis.__askIdx);
+    if (!await waitFor('opt')) throw new Error('归位后原牌不能重新打开题面');
+  }
+}, async () => await S('cog.state.panel.k === "question"'));
 
 // 答对才会触发打击动画，所以这里点「正确答案」而不是第一个选项
 await step('选对 → 判定面板一帧都不画出来', async () => {
@@ -621,8 +1281,13 @@ await step('答对 → 不用点「继续」，自己回到可以出牌的状态
 await step('答对 → 按借书证退回行动力', async () => {},
   async () => {
     const back = Math.min(globalThis.__askCost, globalThis.__refund);
-    return (await S('cog.state.ap'))
-      === globalThis.__apBeforeAsk - globalThis.__askCost + back;
+    const actual = await S('cog.state.ap');
+    const expected = globalThis.__apBeforeAsk - globalThis.__askCost + back;
+    if (actual !== expected) throw new Error(JSON.stringify({
+      card: globalThis.__askId, before: globalThis.__apBeforeAsk, cost: globalThis.__askCost,
+      refund: back, expected, actual, powers: await S('cog.state.powers'),
+    }));
+    return true;
   });
 
 await step('结束回合 → 回合数前进，敌人真的演了动作且输入被锁', async () => {
@@ -666,12 +1331,76 @@ await step('五种敌人意图各演一次 → 每种都产生演出单元', asy
   return c.length === 5 && c.every((n) => n > 0);
 });
 
-// 增益是**掉落**，不是牌。它必须满足三件事：面板只有一张、没有"不要"、
+await boot(URL_ + '?dev=battle');
+await step('基础格挡与敌人防御 → 抬盾、合甲后恢复操作', async () => {
+  await evalJs(`cog.state.hand[0] = 'base:guard'`);
+  const block = await S('cog.state.block');
+  // Sample the pose during the click rather than assuming the click helper returns mid-animation.
+  const motion = evalJs(`new Promise((resolve) => {
+    const deadline = performance.now() + 12000;
+    const tick = () => {
+      if (cog.state.block > ${block} && cog.guardPose().hero > 0.5) resolve(true);
+      else if (performance.now() >= deadline) resolve(false);
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
+  await clickCard(0);
+  if (!await motion) throw new Error('Hero did not raise the book after gaining block');
+  await evalJs('cog.enemyAct("def")');
+  const deadline = Date.now() + 3500;
+  while (!await S('cog.guardPose().enemy > 0.5')) {
+    if (Date.now() >= deadline) throw new Error('Enemy did not close its ward panels');
+    await nextFrames(1);
+  }
+  if (!await waitReady()) throw new Error('Defense animation did not release input');
+}, async () => await S('cog.guardPose().hero < 0.5 && cog.guardPose().enemy < 0.5'));
+
+await boot(URL_ + '?dev=battle');
+await step('双方护盾：等命中后逐帧淡出，回合清除也不瞬间跳变', async () => {
+  await evalJs(`Object.assign(cog.state.enemy, { block: 1, dmg: 12, mech: undefined, moves: [{ k: 'atk' }], mv: 0 });
+    cog.state.turn = 2; cog.state.block = 1; cog.state.hand[0] = 'base:strike';`);
+  if (!await waitHand()) throw new Error('手牌未就绪');
+  const wardValue = (side) => S(`cog.wards().${side}`);
+  async function waitFull(side) {
+    const deadline = Date.now() + 10000;
+    while (await wardValue(side) < 1 && Date.now() < deadline) await nextFrames(1);
+    if (await wardValue(side) < 1) throw new Error(side + ' 护盾没出现');
+  }
+  async function verifyRelease(side, action, waitsForHit = true) {
+    await waitFull(side);
+    const sample = evalJs(`new Promise(resolve => {
+      const deadline = performance.now() + 12000;
+      const check = [];
+      const tick = () => {
+        const power = cog.wards().${side};
+        const block = ${side === 'hero' ? 'cog.state.block' : 'cog.state.enemy.block'};
+        if (!block) check.push(power);
+        if ((check.length && power === 0) || performance.now() > deadline) resolve(check);
+        else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    })`);
+    await action();
+    const values = await sample;
+    if ((waitsForHit && values[0] !== 1) || new Set(values.filter((n) => n > 0 && n < 1)).size < 2 || values.at(-1) !== 0) {
+      throw new Error(side + ' 护盾没有保留到命中并逐帧淡出：' + JSON.stringify(values));
+    }
+  }
+  await verifyRelease('enemy', () => clickCard(0));
+  if (!await waitReady()) throw new Error('打击演出没有结束');
+  await verifyRelease('hero', () => clickLabel('endturn'));
+  if (!await waitReady()) throw new Error('敌人演出没有结束');
+  await evalJs(`cog.state.block = 5; cog.state.enemy.moves = [{ k: 'def', v: 0 }];`);
+  await verifyRelease('hero', () => clickLabel('endturn'), false);
+}, async () => await S('cog.wards().hero === 0 && cog.wards().enemy === 0'));
+
+// 增益是**掉落**，不是牌。掉落面板只有确认按钮，不再有可点击的能力牌、
 // 面板出现时它已经在生效列表里（掉落即生效，这一屏只是收据）。
 // 这条挂了说明它又退化成"拿进牌组、要自己打出"，或者面板把玩家卡住
 // （掉落没有"拒绝"的语义，所以连 × 都不该有）。
 await boot(URL_ + '?dev=powerdrop');
-await step('掉落面板 → 一张、只有"知道了"、掉落即已生效', async () => {
+await step('增益掉落 → 无卡牌热区、只有「知道了」、掉落即已生效', async () => {
   const st = await S('({ k: cog.state.panel.k, id: cog.state.panel.id, pw: cog.state.powers.slice() })');
   if (st.k !== 'powerdrop') throw new Error('没有打开掉落面板：' + JSON.stringify(st));
   if (st.id !== 'lamp') throw new Error('掉落的不是长明灯：' + st.id);
@@ -680,6 +1409,7 @@ await step('掉落面板 → 一张、只有"知道了"、掉落即已生效', a
   // 面板上只有"知道了"一个按钮 —— 多出来的那个会是"不要/跳过"这类不该存在的出口
   const labels = await evalJs('cog.hots().filter((h) => h.label && h.label !== "card").map((h) => h.label)');
   if (!labels.includes('知道了')) throw new Error('掉落面板上没有「知道了」：' + labels.join(','));
+  if (labels.includes('powerdrop')) throw new Error('掉落面板仍有可点击的能力牌');
   if (labels.some((l) => /跳过|不要/.test(l))) throw new Error('掉落面板上出现了拒绝的出口：' + labels.join(','));
   globalThis.__pwBefore = st.pw.length;
   await clickLabel('知道了');
@@ -837,6 +1567,8 @@ await step('手牌与行动力都归零 → 结束回合仍然生效', async () 
   })()`);
   globalThis.__turnBefore = await S('cog.state.turn');
   await clickLabel('endturn');
+  // 多段攻击会跨 tick 结算；点击被接受不代表下一回合已经开始。
+  if (!await waitReady()) throw new Error('敌方回合未结算完');
 }, async () => (await S('cog.state.turn')) === globalThis.__turnBefore + 1);
 
 // 答错也要有演出，但**不能是攻击**：提灯焰一暗、屑在原地散掉，没有任何东西飞向敌人。
@@ -859,16 +1591,30 @@ await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一
     const v = cog.state.panel.view;
     return { wrong: (v.answer + 1) % v.options.length };
   })()`);
-  // 逐帧收集"这一帧有哪些牌正在飞、各去哪"。弃牌动画只有 0.3 秒，
-  // 答完再读一定读不到；而"飞向哪边"是这一步真正要验的东西之一。
+  // 从选错前开始采样，避免错过解析出现前误播的飞行。
   await evalJs(`(() => {
-    window.__modes = [];
-    window.__stop = false;
-    const tick = () => {
-      for (const m of cog.fx().discardModes) if (!window.__modes.includes(m)) window.__modes.push(m);
-      if (!window.__stop) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
+    const { x, y, w, h } = cog.quiz().geom;
+    const center = { x: x + w / 2, y: y + h / 2 };
+    const before = cog.state.discard.length;
+    window.__missFlight = new Promise((resolve) => {
+      const frames = [];
+      let early = false;
+      let gap = false;
+      const deadline = performance.now() + 10000;
+      const tick = () => {
+        const quiz = cog.quiz();
+        const closed = cog.state.panel.k === 'none';
+        if (cog.fx().discard > 0 && cog.lastClick()?.label !== '继续') early = true;
+        if (!closed && quiz.flipAt) {
+          frames.push({ at: quiz.flipAt, face: quiz.entry, locked: cog.locked(), buttons: cog.hots().some(h => h.label === '继续') });
+        } else if (frames.length && !closed) {
+          gap = true;
+        }
+        if (closed || performance.now() >= deadline) resolve({ center, frames, before, early, gap });
+        else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
   })()`);
   await clickLabel('opt', pick.wrong);
 }, async () => {
@@ -880,25 +1626,27 @@ await step('答错 → 没有攻击、敌人不掉血，反馈面板迟到但一
     && hp === globalThis.__foeHp;
 });
 
-// 弃牌动画：牌离手后要飞向牌堆，然后自己清掉。清不掉的话画面左下角会永远
-// 停着一张牌，而且每出一张牌就多留一张 —— 是那种"看起来没事、玩十分钟才花屏"的漏。
-//
-// 顺带钉住去处：答错的牌进**弃牌堆**，不回抽牌堆。这里只允许 discard / junk，
-// 谁把“回牌堆”的动画加回来，方向断言会立刻红。
-await step('答错的牌飞进弃牌堆，不回抽牌堆', async () => {
-  await sleep(900); // 飞行 0.3s + 落地淡出，留一倍余量
+await step('继续 → 解析框连续翻成牌面，落入弃牌堆', async () => {
+  if (await S('cog.state.panel.k') !== 'feedback') throw new Error('解析已被提前关闭');
+  await clickLabel('继续');
+  const { center, frames, before, early, gap } = await evalJs('window.__missFlight');
+  if (early) throw new Error('还在显示解析时就播放了弃牌飞行');
+  const first = frames[0];
+  const last = frames.at(-1);
+  if (gap || !first || first.face !== 'question' || last.face !== 'front'
+    || first.at.x !== center.x || first.at.y !== center.y
+    || frames.some((f, i) => !f.locked || f.buttons
+      || (i > 0 && (f.at.x > frames[i - 1].at.x || f.at.y < frames[i - 1].at.y)))) {
+    throw new Error('解析退场没有连续翻成牌面：' + JSON.stringify({ center, frames, gap }));
+  }
+  globalThis.__missDiscardBefore = before;
 }, async () => {
   const st = await evalJs(`({
     fx: cog.fx().discard,
-    dc: cog.state.discard.length,
-    back: cog.state.draw.includes(${JSON.stringify(globalThis.__missId)}),
+    added: cog.state.discard.slice(${globalThis.__missDiscardBefore}),
     hand: cog.state.hand.length,
   })`);
-  const modes = await evalJs('(window.__stop = true, window.__modes)');
-  if (modes.some((m) => m !== 'discard' && m !== 'junk')) {
-    throw new Error('答错的牌被画成了不该有的方向：' + modes.join(','));
-  }
-  return st.fx === 0 && st.dc >= 1 && st.back === false
+  return st.fx === 0 && st.added.length === 1 && st.added[0] === globalThis.__missId
     && st.hand === globalThis.__learnMissHand - 1;
 });
 
@@ -1324,7 +2072,7 @@ await step('事件选牌 → 取消回到事件，代价一起清掉', async () 
   await clickLabel('eventopt', 0);
   if ((await S('cog.state.panel.k')) !== 'cardpick') throw new Error('没有打开选牌面板');
   if ((await S('cog.state.pendingCost')) !== 10) throw new Error('待付代价没挂上');
-  await clickLabel('×');
+  await clickLabel('返回');
 }, async () => {
   const st = await S(`({
     panel: cog.state.panel.k, cost: cog.state.pendingCost,
@@ -1335,7 +2083,7 @@ await step('事件选牌 → 取消回到事件，代价一起清掉', async () 
   return true;
 });
 
-// 同一个面板再走一次键盘出口：Esc 和右上角的 × 必须等价。
+// 同一个面板再走一次键盘出口：Esc 和左上角的返回必须等价。
 await step('事件选牌 → Esc 也能取消，回到事件', async () => {
   await clickLabel('eventopt', 0);
   if ((await S('cog.state.panel.k')) !== 'cardpick') throw new Error('第二次没打开选牌面板');
@@ -1441,8 +2189,6 @@ async function playRightId(id) {
 }
 
 await boot(URL_ + '?dev=links');
-// 自动化要稳定地读判定面板，别让 4.2s 软自动推进把它先收掉。
-await evalJs('cog.pauseAuto()');
 await step('联动：四张牌的数值由战场状态现算，不是印死的', async () => {
   await waitHand();
 }, async () => {
@@ -1504,16 +2250,37 @@ await step('联动：护甲与抽牌数变化立刻改写攻击底数', async ()
 
 await boot(URL_ + '?dev=battle');
 // 判定面板现在只在答错时出现（答对不再打断战场），这三步盯着它：
-// 同一块面板、几何不跳、没有闪断。先停掉软自动推进；后面 ?dev=wrong
-// 会重新导航，那边的自动推进照常要验。
-await evalJs('cog.pauseAuto()');
+// 同一块面板、几何不跳、没有闪断。解析从正确答案起读，不沿用答题时的滚动位置。
 await step('答错 → 判定：同一块面板，几何不跳、没有闪断', async () => {
   await waitHand();
   const idx = await ensureKnowledge();
   await clickCard(idx);
   if (!await waitFor('opt')) throw new Error('没有出题');
+  await evalJs(`(() => {
+    const p = cog.state.panel;
+    const fence = String.fromCharCode(96).repeat(3);
+    const code = [fence + 'js', ...Array.from({ length: 28 }, (_, i) => '  console.log(' + i + ');'), fence].join('\\n');
+    p.q = { ...p.q, q: '**输出是什么？**\\n' + code, explain: code };
+  })()`);
+  await nextFrames();
   globalThis.__quizGeom = await S('cog.quiz().geom');
   const v = await S('cog.state.panel.view');
+  if (await S('cog.hots().some(h => h.label === "opt")')) throw new Error('不可见选项仍可点击');
+  const pt = await S(`(() => {
+    const thumb = cog.hots().find(h => h.label === 'scroll:quiz-body');
+    return thumb && cog.toScreen(thumb.x + thumb.w / 2, thumb.y + thumb.h / 2);
+  })()`);
+  if (!pt) throw new Error('长代码题没有滚动滑块');
+  const bottom = await S('cog.quiz().optionBottom');
+  const end = await S(`cog.toScreen(cog.quiz().geom.x, ${bottom - 1})`);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.x, y: pt.y, button: 'left', buttons: 1, clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pt.x, y: end.y, button: 'left', buttons: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.x, y: end.y, button: 'left', clickCount: 1 });
+  await nextFrames();
+  const options = await S('cog.hots().filter(h => h.label === "opt")');
+  if (options.length !== v.options.length || options.some((h) => h.y + h.h > bottom)) {
+    throw new Error('长代码题滚动后选项不可达，或热区越过内容区：' + JSON.stringify({ options, expected: v.options.length, pt }));
+  }
   // 把判定演出拉长，好稳定地验"面板没消失、结果还没展开"这一帧
   await evalJs('cog.holdQuiz(2.2)');
   await clickLabel('opt', (v.answer + 1) % v.options.length);
@@ -1527,55 +2294,40 @@ await step('答错 → 判定：同一块面板，几何不跳、没有闪断', 
   return q.phase === 'settle' && cont === 0 && opts === 0;
 });
 
-await step('判定演出结束 → 结果区展开，锚点不动、盒子按内容收起', async () => {
+await step('判定演出结束 → 解析共用答题面板尺寸与位置', async () => {
   if (!await waitFor('继续', 45000)) throw new Error('结果区没有展开');
 }, async () => {
-  // settle 态仍是答题那一整块（不换框）；result 态把 2×2 小片以外那段
-  // 四行选项带的空白收掉。要守的是「同一块面板」= 锚点与宽度不变，
-  // 不是高度全等 —— 高度全等恰恰是那片空白的成因。
   const q = await S('cog.quiz()');
-  const a = globalThis.__quizGeom;
-  return q.phase === 'result'
-    && q.geom.x === a.x && q.geom.y === a.y && q.geom.w === a.w
-    && q.geom.h <= a.h;
+  return q.phase === 'result' && JSON.stringify(q.geom) === JSON.stringify(globalThis.__quizGeom)
+    && !await S('cog.hots().some(h => h.label === "opt")');
 });
 
-await step('点击面板任意处 → 立刻继续，不必瞄准按钮', async () => {
+await step('长代码解析 → 正确答案与所选答案分开，继续按钮才退出', async () => {
   if (!await waitUnlocked()) throw new Error('输入还锁着');
   const p = await evalJs(`(() => {
     const g = cog.quiz().geom;
     return cog.toScreen(g.x + 60, g.y + 130);
   })()`);
   await clickPoint(p);
-}, async () => (await S('cog.state.panel.k')) === 'none');
+  if (await S('cog.state.panel.k') !== 'feedback') throw new Error('点击解析正文关闭了答错页');
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 0, y: 0 });
+  await nextFrames();
+  const review = await S('cog.quiz()');
+  const fb = await S('cog.state.panel.fb');
+  if (!review.manual || !review.review?.explained || review.review.answer !== fb.answer || review.review.choice !== fb.choice) {
+    throw new Error('长题解析未显示正确答案、所选答案和滚动区');
+  }
+  await clickLabel('继续');
+}, async () => waitReady());
 
 await boot(URL_ + '?dev=wrong');
-await step('结算不停顿：指针不在面板上时软自动推进已就绪', async () => {
-  // 判定演出按 dt 推进：CPU 节流 ×6 又连跑几十步之后，光是「结果区展开」
-  // 就可能要十几秒。按状态轮询，别拿固定 20 秒当上限，也别死等「继续」热区。
-  // 用 ?dev=wrong：答对那条路已经不再有判定面板，这里验的是答错这一屏。
-  const t0 = Date.now();
-  let ready = null;
-  while (Date.now() - t0 < 45000) {
-    const q = await S('cog.quiz()');
-    if (q.phase === 'result' && !q.autoPaused) { ready = q; break; }
-    await sleep(80);
-  }
-  if (!ready) throw new Error('软自动推进没就绪：' + JSON.stringify(await S('cog.quiz()')));
-  globalThis.__auto = ready;
-}, async () => globalThis.__auto.autoIn > 0
-  // 倒计时绝不能超过设定值：暂停段被误算成「页面启动至今」时这里会是 ~10 秒。
-  && globalThis.__auto.autoIn <= 4.21
-  && globalThis.__auto.autoPaused === false);
-
-await step('软自动推进真的把判定面板收掉', async () => {}, async () => {
-  const t0 = Date.now();
-  while (Date.now() - t0 < 20000) {
-    if ((await S('cog.state.panel.k')) !== 'feedback') return true;
-    await sleep(80);
-  }
-  return false;
-});
+await step('短解析也保留，直到玩家点击继续', async () => {
+  await expectFeedback('答错后');
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 0, y: 0 });
+  await sleep(4900); // 越过旧版的自动关闭时限，确认读题不被打断。
+  if (!await S('cog.state.panel.k === "feedback" && !!cog.quiz().review')) throw new Error('解析被提前关闭');
+  await clickLabel('继续');
+}, async () => waitReady());
 
 await boot(URL_ + '?dev=report');
 await step('结算 → 再来一局 → 重新选模式', async () => {
@@ -1589,6 +2341,147 @@ await step('结算 → 再来一局 → 重新选模式', async () => {
 }, async () => {
   const st = await evalJs(`({ p: cog.state.panel.k, floor: cog.state.floors, mode: cog.state.mode })`);
   return st.p === 'none' && st.floor === 0 && st.mode === globalThis.__mode2;
+});
+
+await step('答题记录和任务只在首页出现', async () => {
+  for (const scene of ['boon', 'map', 'battle', 'question', 'report']) {
+    await boot(URL_ + '?dev=' + scene);
+    const leaked = await evalJs(`cog.hots().some((h) => ['答题记录', '后台任务', '答题记录遮罩', '任务抽屉遮罩'].includes(h.label))`);
+    if (leaked) throw new Error(`${scene} 仍有首页工具热区`);
+  }
+  await boot(URL_);
+  if (!await waitFor('答题记录') || !await waitFor('后台任务')) throw new Error('首页工具没有恢复');
+}, async () => true);
+
+await step('首页答题记录：可查看、手动归档，结算不自动归档', async () => {
+  const created = await evalJs(`(async () => {
+    const m = await import('/src/core/library/index.ts');
+    const j = await import('/src/core/journey/index.ts');
+    const topic = Object.keys(cog.bank.byTopic)[0];
+    const q = cog.bank.byTopic[topic][0];
+    const qid = q.qid;
+    const correct = q.answer + 1;
+    const wrong = correct === 1 ? 2 : 1;
+    // 通过真实开局路径生成 runId，避免测试绕过游戏状态初始化。
+    j.startRun(null, [], [topic], [], 'words');
+    const otherRunId = cog.state.runId;
+    m.recordAnswer({ stageTopic: topic, qid, right: true, choice: correct });
+    const other = m.answerHistory().at(-1).id;
+    j.startRun(null, [], [topic], [], 'words');
+    const runId = cog.state.runId;
+    m.recordAnswer({ stageTopic: topic, qid, right: true, choice: correct });
+    const first = m.answerHistory().at(-1).id;
+    m.recordAnswer({ stageTopic: topic, qid, right: false, choice: wrong });
+    const second = m.answerHistory().at(-1).id;
+    j.backToTitle();
+    return { runId, otherRunId, clientIds: { other, first, second } };
+  })()`);
+  // 同步确认后浏览器会删掉临时事件，归档应检查服务端的记录。
+  let remote = null;
+  const syncStarted = Date.now();
+  while (!remote && Date.now() - syncStarted < 10000) {
+    const found = await evalJs(`(async () => {
+      const m = await import('/src/core/library/index.ts');
+      const rows = await m.remoteAnswerRuns(false);
+      return rows?.filter((r) => r.runId === ${JSON.stringify(created.runId)}) ?? [];
+    })()`);
+    remote = found.length === 1 ? found : null;
+    if (!remote) await sleep(100);
+  }
+  if (!remote) throw new Error('同局答题事件没有形成服务端局摘要');
+
+  const target = await evalJs(`(async () => { const m = await import('/src/core/library/index.ts'); return m.remoteAnswerRun('words', ${JSON.stringify(created.runId)}); })()`);
+  if (target.length !== 2) throw new Error('目标局答题明细没有找到');
+  const row = `答题局:words:${created.runId}`;
+  const otherRow = `答题局:words:${created.otherRunId}`;
+  await clickLabel('答题记录');
+  if (!await waitFor(row)) throw new Error('左侧记录列表没有显示刚玩的那局');
+  const otherY = () => evalJs(`cog.hots().find(h => h.label === ${JSON.stringify(otherRow)})?.y`);
+  const folded = await otherY();
+  await clickLabel(row);
+  if (await otherY() !== folded + 104) throw new Error('同局两道题没有一起展开');
+  await clickLabel(row);
+  if (await otherY() !== folded) throw new Error('同局两道题没有一起收起');
+  const buttonIndex = await evalJs(`(() => {
+    const hits = cog.hots();
+    const group = hits.find(h => h.label === ${JSON.stringify(row)});
+    return hits.filter(h => h.label === '归档本局').findIndex(h => Math.abs(h.y - group.y - 12) < 1);
+  })()`);
+  if (buttonIndex < 0) throw new Error('归档按钮没有独立热区');
+  await clickLabel('归档本局', buttonIndex);
+  let archived = null;
+  const archiveStarted = Date.now();
+  while ((!archived || !archived.archived) && Date.now() - archiveStarted < 5000) {
+    archived = await evalJs(`(async () => {
+      const m = await import('/src/core/library/index.ts');
+      const archived = (await m.remoteAnswerRuns(true))?.some((r) => r.runId === ${JSON.stringify(created.runId)});
+      const pending = (await m.remoteAnswerRuns(false))?.some((r) => r.runId === ${JSON.stringify(created.otherRunId)});
+      return { archived, otherStillPending: pending };
+    })()`);
+    if (!archived.archived) await sleep(100);
+  }
+  if (!archived.archived || !archived.otherStillPending) throw new Error('归档本局后记录状态不正确：' + JSON.stringify(archived));
+  await clickLabel('已归档');
+  if (!await waitFor(row)) throw new Error('归档记录没有出现在已归档列表');
+  await pressKey('Escape', 'Escape', 27);
+  if (!await waitFor('已归档')) throw new Error('Esc 跳过了未归档列表');
+  await clickLabel('已归档');
+  await clickLabel('返回');
+  if (!await waitFor('已归档')) throw new Error('返回按钮跳过了未归档列表');
+
+  const autoArchived = await evalJs(`(async () => {
+    const m = await import('/src/core/library/index.ts');
+    const j = await import('/src/core/journey/index.ts');
+    const topic = Object.keys(cog.bank.byTopic)[0];
+    const q = cog.bank.byTopic[topic][0];
+    j.startRun(null, [], [topic], [], 'words');
+    m.recordAnswer({ stageTopic: topic, qid: q.qid, right: false, choice: q.answer === 0 ? 2 : 1 });
+    const id = m.answerHistory().at(-1).id;
+    j.endRun(false);
+    return m.answerHistory().find((r) => r.id === id).archived;
+  })()`);
+  if (autoArchived) throw new Error('游戏结束时自动归档了答题记录');
+}, async () => true);
+
+await boot(URL_ + '?dev=battle');
+await step('击败敌人 → 最后一击与退场播完后才显示奖励', async () => {
+  if (!await waitHand()) throw new Error('手牌一直没落位');
+  await evalJs(`(() => {
+    const G = cog.state;
+    G.hand[0] = 'base:strike';
+    G.enemy.hp = 1;
+    G.enemy.block = 0;
+    G.node.type = 'fight';
+  })()`);
+  const transition = evalJs(`new Promise((resolve, reject) => {
+    const frames = [];
+    const deadline = performance.now() + 12000;
+    const tick = () => {
+      const v = cog.victory();
+      if (v.exit !== null) {
+        frames.push(v.exit);
+        if (v.exit < 1 && (cog.state.screen !== 'battle' || cog.state.panel.k !== 'none')) {
+          reject(new Error('奖励在敌人退场前覆盖了战场'));
+          return;
+        }
+      }
+      const cards = cog.hots().filter((h) => h.label === 'rewardcard').length;
+      if (cog.state.panel.k === 'reward' && cards > 0) {
+        resolve({ panel: cog.state.panel.k, frames, cards });
+      } else if (performance.now() > deadline) {
+        reject(new Error('击败敌人后没有进入奖励面板'));
+      } else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
+  await clickCard(0);
+  globalThis.__victoryTransition = await transition;
+}, async () => {
+  const v = globalThis.__victoryTransition;
+  if (v.panel !== 'reward' || !v.cards || v.frames.length < 2 || v.frames.at(-1) <= v.frames[0]) {
+    throw new Error(JSON.stringify(v));
+  }
+  return true;
 });
 
 ws.close();

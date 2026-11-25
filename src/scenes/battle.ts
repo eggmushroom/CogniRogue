@@ -1,21 +1,24 @@
-import { g, roundRect, VW } from '../gfx/canvas';
-import { ART } from '../gfx/assets';
-import { C, font, FONT_NUM, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
-import { bar, drawCard, icon, panel, text } from '../gfx/ui';
+import { g, roundRect, VW, wrapText } from '../gfx/canvas';
+import { C, PRESS, font, FONT_NUM, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
+import { bar, cutRule, drawCard, icon, panel, text } from '../gfx/ui';
 import type { IconName } from '../gfx/ui';
-import { onClick, hover } from '../input';
-import { groundGlow, shieldDome, shieldSeal } from '../gfx/aura';
+import { drawPowerIcon } from '../gfx/art/powers';
+import { onClick, hover, setInputLock } from '../input';
+import { groundGlow, shieldDome } from '../gfx/aura';
 import { clamp01, easeOut } from '../gfx/geom';
+import { questionEntry, questionReturn, reduceMotion } from '../gfx/motion';
 import * as FX from '../gfx/fx';
+import { drawEnemy as drawCreatureEnemy, drawHero as drawCreatureHero, enemyWeapon, heroBlade } from '../gfx/creatures';
 import { EFFS, MODE_BY_ID, POWER_BY_ID, mechNote, stageOf } from '../core/model';
 import type { EffOut } from '../core/model';
-import { G } from '../core/infra';
+import { G, panelOf } from '../core/infra';
 import { linkStatus } from '../core/combat/link';
 import { planStrike } from '../core/combat/strike';
 import { curFloor } from '../core/map';
+import { dismissFeedback } from '../core/journey';
 import { canPay, cardKind, costOf, defOf, isUpgraded, isXCost } from '../core/cards';
 import {
-  askCard, cardAskState, endTurn, intentText, playBasic, playFree,
+  askCard, cancelPanel, cardAskState, endTurn, intentText, playBasic, playFree,
 } from '../core/combat';
 import type { CardDef, Foe } from '../core/model';
 
@@ -26,36 +29,35 @@ import type { CardDef, Foe } from '../core/model';
  */
 export const ENEMY = { x: 1150, y: 308 };
 export const HERO = { x: 290, y: 352 };
+
 /**
  * 敌人脚下那一片地面。立绘是浮空的，光要托在它视觉下沿附近，
  * 又要收在状态牌上沿之上 —— 直接取立绘方框底边会被状态牌盖掉一半。
  */
-export const ENEMY_GROUND = { x: ENEMY.x, y: ENEMY.y + 165 };
+const ENEMY_GROUND = { x: ENEMY.x, y: ENEMY.y + 165 };
 const HAND = { cx: 765, cy: 740, w: 200, h: 238, spread: 194 };
-const HERO_ART = { size: 380, cx: HERO.x - 16, cy: HERO.y - 8 };
+const HERO_ART = { size: 410, x: HERO.x - 12, y: HERO.y - 22 };
 /** 玩家 / 敌人共用的状态牌：同一 y、同一宽、同一三段结构。 */
 const PLATE = { y: 530, h: 84, w: 400 };
-/** 提灯焰心在素材里的相对坐标；光刃从这里甩出。 */
-const LAMP = { u: 0.715, v: 0.555 };
-const lampAt = () => ({
-  x: HERO_ART.cx + (LAMP.u - 0.5) * HERO_ART.size,
-  y: HERO_ART.cy + (LAMP.v - 0.5) * HERO_ART.size,
+let battleT = 0;
+
+const heroPose = () => ({
+  ...HERO_ART, t: battleT, lunge: FX.heroLunge(), recoil: FX.heroRecoil(),
+  flash: FX.heroFlash(), guard: FX.heroGuard(),
 });
 
-let heroT = 0;
+const foePose = (e: Foe) => ({
+  ...ENEMY, t: battleT, size: e.type === 'boss' ? 427 : e.type === 'elite' ? 389 : 350,
+  art: e.art, hue: e.hue, boss: e.type === 'boss', lunge: FX.enemyLunge(), recoil: FX.enemyRecoil(),
+  flash: FX.enemyFlash(), guard: FX.enemyGuard(),
+});
 
-/** 提灯的位置；攻击从这里甩出去，不是从卡片。 */
-export const heroHand = () => {
-  const lunge = FX.heroLunge();
-  const recoil = FX.heroRecoil();
-  const p = lampAt();
-  return {
-    x: p.x + lunge * 96 - recoil * 30,
-    y: p.y - lunge * 10 + Math.sin(heroT * 1.25) * 5,
-  };
-};
+// FX uses these anchors rather than tracking another copy of the rig's transforms.
+export const heroHand = () => heroBlade(heroPose());
+export const enemyHand = () => G.enemy ? enemyWeapon(foePose(G.enemy)) : ENEMY;
 
 let lastEnemyKey = '';
+let wardEnemy: Foe | null = null;
 
 /** 换敌人时把战斗内的临时选择清掉，避免索引指向上一场的手牌。 */
 export function syncBattle() {
@@ -66,13 +68,17 @@ export function syncBattle() {
     prevHand = [];
     prevFx = [];
     handFx = [];
+    questionOrigin = null;
     prevTurn = G.turn;
     discardFx.length = 0;
   }
 }
 
 /** 世界层：立绘、状态牌、HUD 和手牌；书架由 layers.ts 的背景层统一画。 */
-export function drawBattle(t: number, dt: number) {
+export function drawBattle(t: number, dt: number, defeat = 0) {
+  battleT = reduceMotion() ? 0 : t;
+  if (wardEnemy !== G.enemy) { wardEnemy = G.enemy; FX.resetWards(); }
+  FX.updateWards(dt, G.block > 0, (G.enemy?.block ?? 0) > 0);
   topBar();
   // 只报会影响卡面数值的状态，玩家要能回答"为什么这张牌现在是 14 点"。
   const ls = linkStatus();
@@ -83,9 +89,9 @@ export function drawBattle(t: number, dt: number) {
     });
   }
 
-  if (G.enemy) drawEnemy(G.enemy, t);
+  if (G.enemy && defeat < 1) drawEnemy(G.enemy, t, defeat);
   drawHero(t);
-  energyOrb(t);
+  energyStamp();
   piles();
   drawHand(t, dt);
   drawDiscards(dt);
@@ -114,15 +120,15 @@ function topChip(x: number, label: string, color: string) {
 function topBar() {
   g.save();
   const grd = g.createLinearGradient(0, 0, 0, 70);
-  grd.addColorStop(0, 'rgba(6,8,13,.92)');
-  grd.addColorStop(1, 'rgba(6,8,13,0)');
+  grd.addColorStop(0, withAlpha(C.void, 0.92));
+  grd.addColorStop(1, withAlpha(C.void, 0));
   g.fillStyle = grd;
   g.fillRect(0, 0, VW, 84);
   g.restore();
 
   // 生命与格挡已经移到人物下方的状态牌里，这里只留「这一局走到哪」。
   const st = stageOf(G.stage);
-  let x = 36;
+  let x = 192;
   icon('floor', x + 7, 31, 9, C.dim);
   x += 22;
   const floorLabel = `第 ${curFloor()} 层`;
@@ -132,9 +138,9 @@ function topBar() {
   divider(x);
   x += 17;
   const stageLabel = `${st.name} · ${G.stageTopic}`;
-  text(stageLabel, x, 31, { size: 13, color: st.color, weight: 600 });
+  text(stageLabel, x, 31, { size: 13, color: st.color, weight: 600, maxW: 300 });
   g.font = font(13, 600, FONT_UI);
-  x += g.measureText(stageLabel).width + 16;
+  x += Math.min(300, g.measureText(stageLabel).width) + 16;
   divider(x);
   x += 17;
 
@@ -150,8 +156,8 @@ function topBar() {
   x += topChip(x, reusing ? '题 复用' : `题 ${left}`, qcol);
   topRowEnd = x;
 
-  // 增益是一排等大的方形小牌，跟顶部其它牌同一条基线；悬停只提亮边框。
-  let rx = VW - 36;
+  // 和其他顶部读数对齐，同时给右侧任务入口留空间。
+  let rx = VW - 180;
   for (let i = G.powers.length - 1; i >= 0; i--) {
     const p = POWER_BY_ID[G.powers[i]];
     if (!p) continue;
@@ -164,12 +170,16 @@ function topBar() {
     g.strokeStyle = withAlpha(p.color, hv ? 0.95 : 0.48);
     g.lineWidth = 1;
     g.stroke();
-    text(p.icon, rx + s / 2, 32, { size: 15, color: p.color, align: 'center', weight: 800 });
+    drawPowerIcon(rx + 1, 18, s - 2, p.id);
     if (hv) {
-      const tw = 250;
-      panel(rx + s / 2 - tw / 2, 58, tw, 50, { r: 6, fill: 'rgba(8,10,16,.95)' });
-      text(p.name, rx + s / 2, 76, { size: 14, weight: 700, align: 'center', color: p.color });
-      text(p.card, rx + s / 2, 94, { size: 11, align: 'center', color: C.ink2, maxW: tw - 20 });
+      const tw = 280;
+      const tx = Math.max(12, Math.min(VW - tw - 12, rx + s / 2 - tw / 2));
+      const size = 13;
+      g.font = font(size);
+      const lines = wrapText(p.card, tw - 28);
+      panel(tx, 58, tw, 38 + lines.length * 19, { fill: PRESS.sheet, stroke: C.goldDim });
+      text(p.name, tx + 14, 76, { size: 14, weight: 700, color: p.color });
+      lines.forEach((ln, j) => text(ln, tx + 14, 98 + j * 19, { size, color: C.ink2 }));
     }
   }
   if (G.powers.length) {
@@ -224,27 +234,10 @@ function statusPlate(o: PlateOpts) {
   const x = o.cx - w / 2;
   const y = PLATE.y;
 
-  // 暗底 + 微圆角 + 1px 细金框，和模式面板、档案尺同一套；左脊当索引标。
-  g.save();
-  roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 4);
-  g.fillStyle = 'rgba(8,10,16,.86)';
-  g.fill();
-  g.strokeStyle = withAlpha(C.gold, o.danger ? 0.46 : 0.26);
-  g.lineWidth = 1;
-  g.stroke();
-  g.save();
-  roundRect(x, y, w, h, 4);
-  g.clip();
-  g.fillStyle = withAlpha(C.gold, 0.42);
-  g.fillRect(x, y, 2, h);
-  const lg = g.createLinearGradient(x, 0, x + w, 0);
-  lg.addColorStop(0, withAlpha(C.gold, 0));
-  lg.addColorStop(0.5, withAlpha(C.gold, 0.24));
-  lg.addColorStop(1, withAlpha(C.gold, 0));
-  g.fillStyle = lg;
-  g.fillRect(x + 10, y + 1, w - 20, 1);
-  g.restore();
-  g.restore();
+  panel(x, y, w, h, {
+    fill: PRESS.sheet, accent: o.hpColor,
+    stroke: withAlpha(o.hpColor, o.danger ? 0.9 : 0.52),
+  });
 
   // 三段各留足行距：名字（含徽章）→ 血条 → 说明，谁都不许压到下一行。
   // 第一行：名字 + 类型签（左），一枚状态徽章（右）。
@@ -317,87 +310,28 @@ function statusPlate(o: PlateOpts) {
 
 /* ── 敌人 ─────────────────────────────────────────────────── */
 
-function drawEnemy(e: Foe, t: number) {
-  const bob = Math.sin(t * 1.5) * 9;
-  const breathe = 1 + Math.sin(t * 1.5 + 1) * 0.012;
-  // Boss 460、小怪 400：下沿都收在状态牌上方，不再压到读数上。
-  const size = (e.type === 'boss' ? 460 : 400) * breathe;
-  const art = ART[e.art];
-
-  const lunge = FX.enemyLunge();
-  const kick = FX.enemyRecoil();
-  const hitGlow = FX.enemyFlash();
-
-  const pose = FX.enemyPose();
-  const pulse = pose ? Math.sin(Math.PI * pose.p) : 0;
-  let posePush = 0;
-  let poseScale = 1;
-  let poseRot = 0;
-  let poseBright = 0;
-  if (pose?.k === 'def') { posePush = 26 * pulse; poseScale = 1 - 0.06 * pulse; }
-  else if (pose?.k === 'buff') { poseScale = 1 + 0.11 * pulse; poseBright = 0.7 * pulse; }
-  else if (pose?.k === 'jam') { posePush = -20 * pulse; poseRot = 0.055 * pulse; }
-  else if (pose?.k === 'calm') { posePush = 12 * pulse; poseScale = 1 - 0.02 * pulse; }
-
-  const ex = ENEMY.x - lunge * 96 + kick * 30 + posePush;
-  const eh = 1 + kick * 0.05;
-  const ew = 1 - kick * 0.025;
-  // poseScale 只乘立绘尺寸，别再乘进 g.scale，平方后会穿出画面。
-  const drawnSize = size * poseScale;
-
+function drawEnemy(e: Foe, t: number, defeat: number) {
+  const pose = foePose(e);
+  const ward = { x: ENEMY_GROUND.x - pose.lunge * 58, y: ENEMY_GROUND.y,
+    rx: pose.size * 0.37, ry: 24, t: battleT, power: FX.wardPower('enemy') };
   g.save();
-  const groundCol = pose?.k === 'buff' ? C.orange : pose?.k === 'def' ? C.blue
-    : pose?.k === 'calm' ? C.cyan : e.type === 'boss' ? C.purple : C.cyan;
-  // 脚下的光落在立绘视觉下沿附近（不是立绘方框底边）：这些敌人是浮空的，
-  // 光要托在它下面，压在状态牌上沿之上，否则一半会被状态牌盖掉。
-  const groundY = ENEMY_GROUND.y;
-  const groundRx = e.type === 'boss' ? 214 : 196;
-  const shieldP = e.block > 0 ? Math.max(0.4, Math.min(1, e.block / 14)) : 0;
+  g.globalAlpha *= 1 - defeat;
   groundGlow({
-    x: ENEMY.x, y: groundY, rx: groundRx, ry: groundRx * 0.25,
-    color: groundCol, t, power: 1, phase: 2.1,
-    boost: hitGlow + pulse * 0.5,
+    x: ENEMY_GROUND.x - pose.lunge * 58, y: ENEMY_GROUND.y, rx: pose.size * 0.39, ry: 27,
+    color: C.hpFoe, t, power: 0.28, phase: 2.1,
+    boost: pose.flash * 0.3,
   });
-
-  // 黑底 screen 立绘容易融进柱廊，身后垫一层冷光托出来。
-  const halo = g.createRadialGradient(ENEMY.x, ENEMY.y, 12, ENEMY.x, ENEMY.y, 240);
-  halo.addColorStop(0, withAlpha(groundCol, 0.11));
-  halo.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = halo;
-  g.beginPath();
-  g.arc(ENEMY.x, ENEMY.y, 240, 0, Math.PI * 2);
-  g.fill();
-  // 护盾的罩画在立绘之前，和玩家同款。
-  if (shieldP > 0) shieldDome({ x: ENEMY.x, y: groundY, rx: e.type === 'boss' ? 164 : 142, ry: 26, t, power: shieldP });
-  g.restore();
-
-  if (art.complete && art.naturalWidth) {
+  shieldDome(ward);
+  if (defeat > 0) {
+    const sink = defeat * defeat;
     g.save();
-    g.globalCompositeOperation = 'screen';
-    g.globalAlpha = 0.95;
-    // 先拉对比把底色压成纯黑，screen 后没有方框边。
-    const hue = e.hue ? ` hue-rotate(${e.hue}deg)` : '';
-    const bright = (hitGlow > 0 || poseBright > 0)
-      ? ` brightness(${1 + hitGlow * 2.6 + poseBright}) saturate(1.5)` : '';
-    g.filter = `contrast(1.5)${hue}${bright}`;
-    g.translate(ex, ENEMY.y + bob);
-    g.rotate(lunge * 0.05 - kick * 0.03 + poseRot);
-    g.scale(eh, ew);
-    g.drawImage(art, -drawnSize / 2, -drawnSize / 2, drawnSize, drawnSize);
-    g.filter = 'none';
+    g.translate(pose.x + 18 * sink, pose.y + 44 * sink);
+    g.rotate(0.16 * sink);
+    g.scale(1, 1 - 0.12 * sink);
+    g.translate(-pose.x, -pose.y);
+    drawCreatureEnemy(pose);
     g.restore();
-  } else {
-    g.fillStyle = withAlpha(C.purple, 0.3);
-    g.beginPath();
-    g.arc(ex, ENEMY.y + bob, 120, 0, Math.PI * 2);
-    g.fill();
-  }
-
-  // 敌人叠了格挡也得看得见：和玩家同一套地面封环，压在立绘之后（脚前面）。
-  // 以前这里什么都没有，玩家只能从状态牌上一个数字猜它还有没有挡。
-  if (shieldP > 0) {
-    shieldSeal({ x: ENEMY.x, y: groundY, rx: groundRx * 0.72, ry: groundRx * 0.72 * 0.25, t, power: shieldP });
-  }
+  } else drawCreatureEnemy(pose);
 
   // 名字 / 意图 / 血条 / 机制全部收进一块状态牌，与玩家那块同一 y、同一结构。
   const it = intentText(e);
@@ -425,114 +359,21 @@ function drawEnemy(e: Foe, t: number) {
     noteColor: C.gold,
     t,
   });
+  g.restore();
 }
 
 /* ── 玩家 ─────────────────────────────────────────────────── */
 
 function drawHero(t: number) {
-  heroT = t;
-  const bob = Math.sin(t * 1.25) * 5;
-  const hurt = FX.heroFlash();
-  const lunge = FX.heroLunge();
-  const recoil = FX.heroRecoil();
-  const dx = lunge * 96 - recoil * 30;
-  const dy = -lunge * 10 + bob;
-  const dim = FX.lampDim();
-  const { cx, cy, size } = HERO_ART;
-  const art = ART.hero;
-
-  const groundCol = hurt > 0 ? C.red : C.gold;
-  const shieldP = G.block > 0 ? Math.max(0.4, Math.min(1, G.block / 14)) : 0;
-
-  // 脚下：外散光 / 光池 / 接地点 + 地面细环 + 浮尘，和敌人共用同一套。
-  // 提灯是暖的，地面也跟着暖；受击整滩转红，格挡另有蓝色封环（画在立绘之后）。
+  const pose = heroPose();
+  const ward = { x: pose.x + pose.lunge * 60, y: pose.y + 160,
+    rx: 144, ry: 24, t: battleT, power: FX.wardPower('hero') };
   groundGlow({
-    x: cx + dx * 0.4, y: cy + 158, rx: 172, ry: 40,
-    color: groundCol, t, power: 0.95, phase: 0.6, boost: hurt,
+    x: pose.x + pose.lunge * 60, y: pose.y + 160, rx: 144, ry: 26,
+    color: pose.flash > 0 ? C.red : C.gold, t, power: 0.28, phase: 0.6, boost: pose.flash * 0.3,
   });
-
-  // 身后一层淡金光，把黑底立绘从柱廊里托出来。
-  g.save();
-  const halo = g.createRadialGradient(cx, cy, 12, cx, cy, 215);
-  halo.addColorStop(0, withAlpha(C.gold, 0.075));
-  halo.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = halo;
-  g.beginPath();
-  g.arc(cx, cy, 215, 0, Math.PI * 2);
-  g.fill();
-  g.restore();
-
-  // 护盾的"罩"必须画在立绘之前：光是从脚下升起来的，人才像被包住。
-  if (shieldP > 0) shieldDome({ x: cx + dx, y: cy + 152, rx: 146, ry: 24, t, power: shieldP });
-
-  if (art.complete && art.naturalWidth) {
-    g.save();
-    g.globalCompositeOperation = 'screen';
-    g.globalAlpha = 0.95;
-    // 与敌人同一套对比度规则；受击提亮，答错时整张稍暗，配合灯焰变矮。
-    const bright = Math.max(0.4, 1.08 + hurt * 2.6 - dim * 0.2);
-    g.filter = `contrast(1.5) brightness(${bright.toFixed(3)})${hurt > 0 ? ' saturate(1.5)' : ''}`;
-    g.translate(cx + dx, cy + dy);
-    g.rotate(lunge * 0.055 - recoil * 0.055);
-    const s = 1 + lunge * 0.02 + Math.sin(t * 1.5 + 1) * 0.006;
-    g.drawImage(art, -size * s / 2, -size * s / 2, size * s, size * s);
-    g.filter = 'none';
-    g.restore();
-  } else {
-    g.fillStyle = withAlpha(C.blue, 0.22);
-    g.beginPath();
-    g.ellipse(cx, cy, 100, 170, 0, 0, Math.PI * 2);
-    g.fill();
-  }
-
-  const lp = lampAt();
-  const lx = lp.x + dx;
-  const ly = lp.y + dy;
-  const flare = Math.max(0, lunge);
-  g.save();
-  g.globalCompositeOperation = 'screen';
-  const lr = (34 + flare * 32) * (1 - 0.4 * dim);
-  const lg = g.createRadialGradient(lx, ly, 1, lx, ly, lr);
-  lg.addColorStop(0, withAlpha(C.gold, 0.42 * (1 - 0.85 * dim)));
-  lg.addColorStop(0.4, withAlpha(C.gold, (0.16 + flare * 0.2) * (1 - 0.9 * dim)));
-  lg.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = lg;
-  g.beginPath();
-  g.arc(lx, ly, lr, 0, Math.PI * 2);
-  g.fill();
-  g.beginPath();
-  g.arc(lx, ly, (2.6 + flare * 2) * (1 - 0.55 * dim), 0, Math.PI * 2);
-  g.fillStyle = withAlpha('#fff0c0', 0.85 * (1 - 0.85 * dim));
-  g.fill();
-  g.restore();
-
-  g.save();
-  g.translate(dx, dy);
-  for (let i = 0; i < 3; i++) {
-    const a = t * (0.2 + i * 0.05) + i * 2.1;
-    const px = cx + Math.cos(a) * (132 + i * 14);
-    const py = cy - 24 + Math.sin(a) * (88 + i * 18);
-    g.save();
-    g.translate(px, py);
-    g.rotate(a * 0.6);
-    g.globalAlpha = 0.1 + 0.06 * Math.sin(t * 1.3 + i);
-    g.fillStyle = i % 2 ? C.gold : C.ink2;
-    g.beginPath();
-    g.moveTo(-4, -7);
-    g.lineTo(4, -6);
-    g.lineTo(4, 7);
-    g.lineTo(-4, 6);
-    g.closePath();
-    g.fill();
-    g.restore();
-  }
-  g.restore();
-
-  // 护盾不再套一圈会转的蓝色虚线大椭圆，也不在人物旁边浮一个大数字：
-  // 现在是脚下的一圈封环（细线 + 慢转虚线 + 扫光 + 上升光屑），读数交给状态牌里的盾徽章。
-  if (shieldP > 0) {
-    shieldSeal({ x: cx + dx, y: cy + 152, rx: 120, ry: 16, t, power: shieldP });
-  }
+  shieldDome(ward);
+  drawCreatureHero({ ...pose, dim: FX.lampDim() });
 
   const weak = Object.entries(G.topicWrong).filter(([, n]) => n > 0).length;
   const hpPct = G.hp / G.maxHp;
@@ -551,69 +392,16 @@ function drawHero(t: number) {
   });
 }
 
-/* ── 光球 / 牌堆 ─────────────────────────────────────────── */
+/* ── 行动力 / 牌堆 ───────────────────────────────────────── */
 
-function energyOrb(t: number) {
-  const x = 86;
-  const y = 688;
-  const r = 48;
-  const p = G.ap / G.apMax;
-
-  g.save();
-  const glow = g.createRadialGradient(x, y, 4, x, y, r * 2.1);
-  glow.addColorStop(0, withAlpha(C.gold, 0.35 * (0.4 + p)));
-  glow.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = glow;
-  g.beginPath();
-  g.arc(x, y, r * 2.1, 0, Math.PI * 2);
-  g.fill();
-  g.restore();
-
-  g.beginPath();
-  g.arc(x, y, r, 0, Math.PI * 2);
-  const ig = g.createRadialGradient(x - 14, y - 16, 4, x, y, r);
-  ig.addColorStop(0, p > 0 ? '#2a2412' : '#161821');
-  ig.addColorStop(1, '#0a0c12');
-  g.fillStyle = ig;
-  g.fill();
-  g.strokeStyle = withAlpha(C.gold, p > 0 ? 0.9 : 0.25);
-  g.lineWidth = 2.5;
-  g.stroke();
-
-  g.beginPath();
-  g.arc(x, y, r - 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p);
-  g.strokeStyle = withAlpha(C.gold, 0.85);
-  g.lineWidth = 4;
-  g.lineCap = 'round';
-  g.stroke();
-
-  for (let i = 0; i < G.apMax; i++) {
-    const a = -Math.PI / 2 + (Math.PI * 2 * i) / G.apMax;
-    g.beginPath();
-    g.moveTo(x + Math.cos(a) * (r - 9), y + Math.sin(a) * (r - 9));
-    g.lineTo(x + Math.cos(a) * (r - 3), y + Math.sin(a) * (r - 3));
-    g.strokeStyle = 'rgba(6,8,13,.9)';
-    g.lineWidth = 3.5;
-    g.stroke();
-  }
-
-  text(String(G.ap), x, y - 6, {
-    size: 38, weight: 800, align: 'center',
-    color: p > 0 ? C.gold : C.faint,
+function energyStamp() {
+  const active = G.ap > 0;
+  panel(38, 640, 96, 96, { fill: active ? PRESS.vermilion : PRESS.sheet, accent: C.gold, stroke: active ? C.gold : C.lineHi });
+  text('行动力', 86, 660, { size: 12, align: 'center', color: C.ink2 });
+  text(String(G.ap), 86, 689, {
+    size: 39, weight: 700, align: 'center', family: FONT_TITLE, color: active ? C.ink : C.faint,
   });
-  // 刻度已经表示格数，这里写标签，告诉玩家这个数字是行动力。
-  text('行动力', x, y + 26, { size: 12, align: 'center', color: C.dim });
-
-  if (p > 0) {
-    const pulse = 0.5 + 0.5 * Math.sin(t * 3);
-    g.globalAlpha = 0.18 + pulse * 0.12;
-    g.beginPath();
-    g.arc(x, y, r + 8 + pulse * 4, 0, Math.PI * 2);
-    g.strokeStyle = C.gold;
-    g.lineWidth = 2;
-    g.stroke();
-    g.globalAlpha = 1;
-  }
+  bar(52, 714, 68, 7, G.ap / G.apMax, C.gold, { ticks: G.apMax });
 }
 
 function piles() {
@@ -622,13 +410,8 @@ function piles() {
     ic: 'cards' | 'discard', fn: () => void, pulse = 0,
   ) => {
     const hv = hover(x, y, 96, 42);
-    // 微圆角 + 1px 细边，和状态牌、顶部牌同一套；两块牌堆与光球共用左边界。
-    roundRect(x + 0.5, y + 0.5, 95, 41, 3);
-    g.fillStyle = hv ? 'rgba(255,255,255,.09)' : 'rgba(255,255,255,.035)';
-    g.fill();
-    g.strokeStyle = pulse > 0 ? withAlpha(col, 0.35 + pulse * 0.5) : hv ? withAlpha(col, 0.7) : C.line;
-    g.lineWidth = 1;
-    g.stroke();
+    panel(x, y, 96, 42, { fill: hv ? C.panelHi : PRESS.sheet,
+      stroke: pulse > 0 ? withAlpha(col, 0.35 + pulse * 0.5) : hv ? col : C.line });
     icon(ic, x + 18, y + 21, 11, hv ? col : C.dim);
     g.save();
     if (pulse > 0) {
@@ -679,7 +462,6 @@ const DRAW_FROM = { x: 86, y: 773 };
 export const DISCARD_TO = { x: 86, y: 821 };
 const DRAW_DUR = 0.27;
 const DRAW_GAP = 0.045;
-/** 必须短于 panelHold，否则反馈面板会把它盖掉。 */
 const DISCARD_DUR = 0.3;
 const DISCARD_GAP = 0.035;
 
@@ -692,6 +474,9 @@ interface DiscardFx {
   x: number;
   y: number;
   rot: number;
+  /** 逻辑已弃牌；答错的牌由解析页翻出，不在战场层重复画。 */
+  waitFor?: typeof G.panel;
+  exitAge?: number;
   /** 负数 = 还在排队 */
   age: number;
 }
@@ -704,8 +489,81 @@ let prevFx: DrawFx[] = [];
 /** 上一帧的回合号：跨回合时整手牌换人，同 id 的副本也不能当「同一张」认。 */
 let prevTurn = G.turn;
 /** 被点开的那一张：id + 当时的下标。知识卡答完才离手，记到真的少一张才用掉。 */
-let eject: { id: string; at: number } | null = null;
+let eject: { id: string; at: number; lift?: number } | null = null;
+interface CardBounds {
+  x: number; y: number; w: number; h: number; rotation: number;
+}
+export interface QuizFlipCard extends CardBounds {
+  drawFront(): void;
+  landing?: CardBounds;
+}
+interface QuestionCardOrigin extends QuizFlipCard {
+  progress: number;
+  exit?: { from: number; age: number };
+}
+let questionOrigin: (QuestionCardOrigin & { panel: NonNullable<ReturnType<typeof panelOf<'question'>>> }) | null = null;
+
+export function questionCard() {
+  return questionOrigin?.panel === G.panel && !reduceMotion() ? questionOrigin : null;
+}
+
+export const questionReturning = () => questionOrigin?.panel === G.panel && !!questionOrigin.exit;
+
+export function cancelQuestion() {
+  const origin = questionCard();
+  if (!origin || origin.progress === 0) { cancelPanel(); return; }
+  if (origin.exit) return;
+  origin.exit = { from: origin.progress, age: 0 };
+  // Key and pointer events can both arrive before the next frame registers new hit areas.
+  setInputLock(true);
+}
+
+export function animateQuestion(age: number, dt: number) {
+  const origin = questionCard();
+  if (!origin) {
+    if (questionReturning()) cancelPanel();
+    return null;
+  }
+  const exit = origin.exit;
+  const motion = exit ? questionReturn(exit.age, exit.from) : questionEntry(age);
+  origin.progress = motion.progress;
+  if (exit) {
+    if (motion.ready) { cancelPanel(); return null; }
+    exit.age += dt;
+  }
+  return motion;
+}
 let discardPulse = 0;
+
+const feedbackDiscard = () => discardFx.find((f) => f.waitFor === G.panel);
+export const feedbackLeaving = () => feedbackDiscard()?.exitAge !== undefined;
+
+export function closeFeedback() {
+  const f = feedbackDiscard();
+  if (!f || reduceMotion()) { dismissFeedback(); return; }
+  if (f.exitAge !== undefined) return;
+  f.exitAge = 0;
+  setInputLock(true);
+}
+
+export function animateFeedbackClose(dt: number) {
+  const f = feedbackDiscard();
+  if (f?.exitAge === undefined) return null;
+  const motion = questionReturn(f.exitAge, 1);
+  if (motion.ready || reduceMotion()) {
+    discardFx.splice(discardFx.indexOf(f), 1);
+    if (!reduceMotion()) pulseDiscard();
+    dismissFeedback();
+    return null;
+  }
+  f.exitAge += dt;
+  const w = HAND.w * 0.38;
+  const h = HAND.h * 0.38;
+  const card: QuizFlipCard = { ...DISCARD_TO, w, h, rotation: -0.5,
+    drawFront: () => drawCard(-w / 2, -h / 2, w, h, f.card, f.out, { up: f.up }),
+  };
+  return { motion, card };
+}
 
 function layoutHand(): Slot[] {
   const n = G.hand.length;
@@ -755,11 +613,12 @@ function alignHand(prev: string[], hand: string[], skip = -1): number[] {
  * 拆出来之后 `drawHand` 只负责布局、飞行和绘制。
  */
 function bindHandCard(args: {
-  px: number; py: number; w: number; h: number; id: string; slot: number;
+  px: number; py: number; w: number; h: number; rot: number; id: string; slot: number;
   card: CardDef; isBase: boolean; isJunk: boolean;
   askState: ReturnType<typeof cardAskState>;
+  drawFace(): void;
 }) {
-  const { px, py, w, h, id, slot, card, isBase, isJunk, askState } = args;
+  const { px, py, w, h, rot, id, slot, card, isBase, isJunk, askState, drawFace } = args;
   const payUp = () => {
     if (canPay(card)) return true;
     FX.shake(6);
@@ -789,10 +648,20 @@ function bindHandCard(args: {
     onClick(px - w / 2, py - h / 2, w, h, () => {
       const i = idxOf();
       if (i < 0 || !payUp()) return;
-      cardPulse(EFFS[card.eff]?.color ?? C.gold);
-      eject = { id, at: i };
+      const lift = (handFx[i]?.py ?? py) - py;
+      eject = { id, at: i, lift };
       // 攒满答题要求直接打，否则抽题；新题用完 askCard 会复用，不用单独分支。
-      if (askState === 'free') playFree(i); else askCard(i);
+      if (askState === 'free') {
+        cardPulse(EFFS[card.eff]?.color ?? C.gold);
+        playFree(i);
+      } else {
+        askCard(i);
+        const panel = panelOf('question');
+        if (panel?.idx === i && !reduceMotion()) {
+          questionOrigin = { panel, x: px, y: py, w, h, rotation: rot, drawFront: drawFace, progress: 0 };
+          setInputLock(true);
+        }
+      }
     }, 'card', slot);
   } else {
     onClick(px - w / 2, py - h / 2, w, h, () => {
@@ -807,6 +676,10 @@ function bindHandCard(args: {
 function drawHand(t: number, dt: number) {
   const slots = layoutHand();
   const foeActing = FX.enemyBusy();
+  const asked = G.panel.k === 'question' ? G.panel.idx : -1;
+  const miss = G.panel.k === 'feedback' && !G.panel.fb.right ? G.panel.fb : null;
+  if (questionOrigin?.panel !== G.panel) questionOrigin = null;
+  const inQuestion = questionCard();
   /**
    * 回合边界：上一回合的整手牌都要飞进弃牌堆，新手牌全部从抽牌堆飞进来。
    * 不能走 alignHand —— 它按 id 找最长公共子序列，新抽到的同名副本会被认成
@@ -839,10 +712,13 @@ function drawHand(t: number, dt: number) {
     const fx = prevFx[pi];
     const id = prevHand[pi];
     if (!fx || !id) continue;
+    const fromQuiz = pi === skip && pi === miss?.idx;
+    if (fromQuiz && reduceMotion()) continue;
     const card = defOf(id);
     discardFx.push({
       card, out: fx.out ?? planStrike(id, { noBoost: true }), up: isUpgraded(id),
       x: fx.dx, y: fx.dy, rot: fx.rot,
+      waitFor: fromQuiz ? G.panel : undefined,
       age: -laneOut * DISCARD_GAP,
     });
     laneOut += 1;
@@ -912,7 +788,7 @@ function drawHand(t: number, dt: number) {
     fx.rot = rot;
 
     const hv = !flying && hover(px - HAND.w / 2, py - HAND.h / 2, HAND.w, HAND.h);
-    // 悬停只抬高不放大太多；卡面字要清晰，又不能挡邻居。
+    const picked = s.i === asked;
     if (hv) { scale *= 1.06; py -= 44; }
     else if (!flying) py -= Math.sin(t * 1.4 + s.i) * 2;
 
@@ -920,6 +796,11 @@ function drawHand(t: number, dt: number) {
     const h = HAND.h * scale;
     fx.dx = px;
     fx.dy = py;
+    // 题框沿用这张牌的身份，手里只留槽位。答完仍从这格更新弃牌动画。
+    if (picked && inQuestion) {
+      inQuestion.landing = { x: px, y: py, w, h, rotation: rot };
+      continue;
+    }
 
     const kind = cardKind(card);
     const isJunk = kind === 'junk';
@@ -927,20 +808,21 @@ function drawHand(t: number, dt: number) {
     // 知识卡两种状态：ask / free。'free' 不压暗，它是最强状态，压暗会读成用不了。
     const askState = isJunk || isBase ? 'other' : cardAskState(id);
 
+    const drawFace = () => drawCard(-w / 2, -h / 2, w, h, card, out, {
+      up: isUpgraded(id), glow: hv || picked, hovered: hv,
+      afford: isJunk || canPay(card),
+      rule: card.link?.note,
+    });
     g.save();
     g.globalAlpha = alpha;
     g.translate(px, py);
     g.rotate(rot);
-    drawCard(-w / 2, -h / 2, w, h, card, out, {
-      up: isUpgraded(id), glow: hv, hovered: hv,
-      afford: isJunk || canPay(card),
-      rule: card.link?.note,
-    });
+    drawFace();
     g.restore();
 
     // 还在飞的牌不注册热区，但下标必须带上；少一项会让热区和牌整体错位。
     if (flying) continue;
-    bindHandCard({ px, py, w, h, id, slot: s.i, card, isBase, isJunk, askState });
+    bindHandCard({ px, py, w, h, rot, id, slot: s.i, card, isBase, isJunk, askState, drawFace });
   }
 
 
@@ -961,43 +843,50 @@ function drawDiscards(dt: number) {
 
   for (let i = discardFx.length - 1; i >= 0; i--) {
     const f = discardFx[i];
+    if (f.waitFor) {
+      if (f.waitFor !== G.panel) discardFx.splice(i, 1);
+      continue;
+    }
     f.age += dt;
     if (f.age < 0) continue;
-    const p = clamp01(f.age / DISCARD_DUR);
-
-    const landing = p >= 1;
-    const e = p * p;
-    const cx = (f.x + DISCARD_TO.x) / 2;
-    const cy = Math.min(f.y, DISCARD_TO.y) + 46;
-    const iu = 1 - e;
-    const px = iu * iu * f.x + 2 * iu * e * cx + e * e * DISCARD_TO.x;
-    const py = iu * iu * f.y + 2 * iu * e * cy + e * e * DISCARD_TO.y;
-    const rot = f.rot - 0.5 * e;
-    const scale = 1 - 0.62 * e;
-    const alpha = 1 - Math.max(0, (p - 0.74) / 0.26) * 0.9;
-
-    if (landing) {
+    if (f.age >= DISCARD_DUR) {
       discardFx.splice(i, 1);
-      discardPulse = 1;
-      FX.burst(DISCARD_TO.x, DISCARD_TO.y - 6, C.orange, 3, {
-        speed: 90, size: 3, grav: 320, life: 0.3,
-      });
+      pulseDiscard();
       continue;
     }
 
-    const w = HAND.w * scale;
-    const h = HAND.h * scale;
-    g.save();
-    g.globalAlpha = alpha;
-    g.translate(px, py);
-    g.rotate(rot);
-    drawCard(-w / 2, -h / 2, w, h, f.card, f.out, { up: f.up });
-    g.restore();
+    drawDiscardCard(f);
   }
 }
 
+function pulseDiscard() {
+  discardPulse = 1;
+  FX.burst(DISCARD_TO.x, DISCARD_TO.y - 6, C.orange, 3, {
+    speed: 90, size: 3, grav: 320, life: 0.3,
+  });
+}
+
+function drawDiscardCard(f: DiscardFx) {
+  const p = clamp01(f.age / DISCARD_DUR);
+  const e = p * p;
+  const cx = (f.x + DISCARD_TO.x) / 2;
+  const cy = Math.min(f.y, DISCARD_TO.y) + 46;
+  const iu = 1 - e;
+  const px = iu * iu * f.x + 2 * iu * e * cx + e * e * DISCARD_TO.x;
+  const py = iu * iu * f.y + 2 * iu * e * cy + e * e * DISCARD_TO.y;
+  const scale = 1 - 0.62 * e;
+  const alpha = 1 - Math.max(0, (p - 0.74) / 0.26) * 0.9;
+  const w = HAND.w * scale;
+  const h = HAND.h * scale;
+  g.save();
+  g.globalAlpha *= alpha;
+  g.translate(px, py);
+  g.rotate(f.rot - 0.5 * e);
+  drawCard(-w / 2, -h / 2, w, h, f.card, f.out, { up: f.up });
+  g.restore();
+}
+
 function endTurnButton() {
-  // 右下两块和左下光球 / 牌堆同一个底栏：等宽、同一 x、微圆角、1px 细边。
   const x = 1392;
   const w = 176;
   const dy = 690;
@@ -1011,12 +900,9 @@ function endTurnButton() {
    */
   const ready = !G.busy && G.pending === null;
 
-  roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 4);
-  g.fillStyle = hv && ready ? withAlpha(C.gold, 0.2) : 'rgba(20,24,34,.9)';
-  g.fill();
-  g.strokeStyle = !ready ? withAlpha(C.gold, 0.22) : hv ? C.gold : withAlpha(C.gold, 0.5);
-  g.lineWidth = 1.4;
-  g.stroke();
+  panel(x, y, w, h, { fill: !ready ? PRESS.sheet : hv ? PRESS.vermilionHi : PRESS.vermilion,
+    stroke: !ready ? C.line : hv ? C.ink : C.gold });
+  cutRule(x + 8, y + h - 7, w - 16, C.gold, hv && ready ? 0.78 : 0.34);
 
   icon('turn', x + 44, y + h / 2, 15, ready ? (hv ? C.gold : C.ink2) : C.faint);
   text('结束回合', x + w / 2 + 18, y + h / 2 + 1, {
@@ -1025,12 +911,7 @@ function endTurnButton() {
   onClick(x, y, w, h, () => endTurn(), 'endturn');
 
   const dhv = hover(x, dy, w, dh);
-  roundRect(x + 0.5, dy + 0.5, w - 1, dh - 1, 4);
-  g.fillStyle = dhv ? 'rgba(255,255,255,.1)' : 'rgba(20,24,34,.85)';
-  g.fill();
-  g.strokeStyle = dhv ? C.lineHi : C.line;
-  g.lineWidth = 1;
-  g.stroke();
+  panel(x, dy, w, dh, { fill: dhv ? C.panelHi : PRESS.sheet, stroke: dhv ? C.gold : C.line });
   icon('cards', x + 42, dy + dh / 2, 11, dhv ? C.ink2 : C.dim);
   text(`牌组 ${G.deck.length}`, x + 97, dy + dh / 2, {
     size: 15, align: 'center', color: dhv ? C.ink : C.ink2,
@@ -1040,11 +921,12 @@ function endTurnButton() {
 
 /** 调试/冒烟用：在飞的牌数量；飞不完的单元会在屏幕上永远留一张牌。 */
 export function fxCount() {
+  const active = discardFx.filter((f) => !f.waitFor || f.exitAge !== undefined);
   return {
     hand: handFx.length,
-    discard: discardFx.length,
+    discard: active.length,
     /** 调试/冒烟用：每张飞出去的牌去了哪；离手的牌一律进弃牌堆。 */
-    discardModes: discardFx.map(() => 'discard'),
+    discardModes: active.map(() => 'discard'),
   };
 }
 
@@ -1054,7 +936,8 @@ export function fxCount() {
  */
 export function handSettled() {
   const slots = layoutHand();
-  if (slots.length !== handFx.length) return false;
+  // 调试工具会原位换牌；旧牌的坐标即使已经对齐，也不能当作新牌的热区。
+  if (slots.length !== handFx.length || G.hand.some((id, i) => id !== prevHand[i])) return false;
   for (const s of slots) {
     const fx = handFx[s.i];
     if (!fx || fx.age < DRAW_DUR) return false;
@@ -1071,6 +954,7 @@ export function resetBattleView() {
   prevTurn = G.turn;
   // 换场时清掉被点走的那格；下标和 id 都是旧的。
   eject = null;
+  questionOrigin = null;
   discardFx.length = 0;
   discardPulse = 0;
   FX.clearFx();
