@@ -6,7 +6,7 @@ import { requestSettle } from './pending';
 import { defOf } from '../cards/registry';
 import { askOf } from '../cards/ask';
 import { onceThisFight, rulesOf } from '../cards/powers';
-import { costNow, isXCost, refundOf } from '../cards/cost';
+import { costNow, isXCost } from '../cards/cost';
 import { recordAnswer } from '../library/stagemem';
 import {
   addNote, buildSettlement, emptySettlement, mergeSettlement, planThorns, settle, viewOf,
@@ -145,8 +145,8 @@ function settleAnswerAp(ctx: AnswerCtx) {
   // 付与退都只记进计划，由执行器在本帧写完，不在两处各写一次 G.ap。
   if (ctx.right) {
     ctx.s.budget.ap.spend = ctx.spent;
-    // 退款上限来自借书证；荧光笔是额外一层，不进 `refundOf`。
-    let back = refundOf(ctx.spent, rulesOf().refund) + G.markerRefund;
+    // 借书证按答对固定退款；即使牌本身是 0 费也生效，荧光笔再额外退款。
+    let back = rulesOf().refund + G.markerRefund;
     // 回形针：这一场第一次打出 3 费以上的牌，再多退 2 点。
     if (ctx.spent >= 3 && onceThisFight('clip')) {
       back += BAL.clipRefund;
@@ -167,6 +167,8 @@ function settleAnswerAp(ctx: AnswerCtx) {
 }
 
 function finishAnswer(ctx: AnswerCtx) {
+  // 作答已经提交，才释放保留题；在此之前取消不能换题。
+  G.pendingQuestion = null;
   // 装订线：这一场第一次答错，这一手照样打出去，只是按费用削减。
   // 两份计划合并，而不是把 11 个字段手工拷一遍：橡皮刚记的格挡、
   // 装订线的自伤与联动说明，全都由 mergeSettlement 保住。

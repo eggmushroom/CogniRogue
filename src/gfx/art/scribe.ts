@@ -1,5 +1,6 @@
-import { g } from '../canvas';
+import { g, roundRect } from '../canvas';
 import { C, PRINT } from '../theme';
+import { drawArtIcon } from './icons';
 
 export type SpiritKind = number;
 
@@ -105,6 +106,99 @@ export function drawScribe(cx: number, cy: number, size: number, work: 'idle' | 
     g.beginPath();
     g.ellipse(x, -1, 0.9, blink ? 0.45 : 1.3, 0, 0, Math.PI * 2);
     g.fill();
+  }
+  g.restore();
+}
+
+export type ScribeAction = 'read' | 'draft' | 'review' | 'bind' | 'idle';
+
+/** Put the activity prop in front of the spirit so the motion reads as a gesture. */
+export function drawScribeAtWork(x: number, y: number, action: ScribeAction, t: number, kind: SpiritKind, motion: boolean) {
+  const moving = motion && action !== 'idle';
+  const sway = moving ? Math.sin(t * 5) : 0;
+  drawScribe(x - 12 + sway * 5, y - 10 + sway * 3, 84, moving ? 'write' : 'idle', t, kind);
+  g.save();
+  g.translate(x + 13, y + 23);
+
+  if (action === 'bind' || action === 'idle') {
+    drawArtIcon('tasks', 0, moving ? sway * 3 : 0, 47, C.gold);
+    g.restore();
+    return;
+  }
+
+  g.rotate(-0.08);
+  g.strokeStyle = PRINT.ink;
+  g.lineWidth = 1.5;
+  if (action === 'read') {
+    // An open book with a leaf that moves across its spine.
+    roundRect(-30, -17, 60, 36, 4);
+    g.fillStyle = C.goldDim;
+    g.fill();
+    g.stroke();
+    for (const side of [-1, 1]) {
+      g.save();
+      g.scale(side, 1);
+      g.beginPath();
+      g.moveTo(0, -14);
+      g.quadraticCurveTo(13, -22, 27, -15);
+      g.lineTo(27, 13);
+      g.quadraticCurveTo(13, 7, 0, 15);
+      g.closePath();
+      g.fillStyle = C.ink2;
+      g.fill();
+      g.stroke();
+      g.fillStyle = C.goldDim;
+      for (let i = 0; i < 3; i++) g.fillRect(6, -7 + i * 5, 15 - i * 2, 1);
+      g.restore();
+    }
+    if (moving) {
+      const leaf = Math.cos(t * 4) * 24;
+      g.beginPath();
+      g.moveTo(0, -14);
+      g.quadraticCurveTo(leaf * 0.55, -29, leaf, -16);
+      g.lineTo(leaf, 10);
+      g.quadraticCurveTo(leaf * 0.55, 1, 0, 15);
+      g.closePath();
+      g.fillStyle = C.gold;
+      g.fill();
+      g.stroke();
+    }
+  } else {
+    roundRect(-23, -16, 46, 34, 3);
+    g.fillStyle = C.ink2;
+    g.fill();
+    g.stroke();
+    g.fillStyle = C.goldDim;
+    g.fillRect(-15, -8, 22, 1.4);
+    g.fillRect(-15, -1, 17, 1.4);
+    if (action === 'draft') {
+      const penX = moving ? sway * 11 : -1;
+      g.fillRect(-15, 7, penX + 15, 1.4);
+      g.translate(penX, 8);
+      g.rotate(0.65);
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.lineTo(-3, -6);
+      g.lineTo(-3, -33);
+      g.lineTo(3, -33);
+      g.lineTo(3, -6);
+      g.closePath();
+      g.fillStyle = C.gold;
+      g.fill();
+      g.stroke();
+    } else {
+      const lift = moving ? Math.max(0, Math.sin(t * 4)) * 22 : 12;
+      drawArtIcon('check', 10, 6, 17, C.redDim);
+      g.translate(10, -lift);
+      roundRect(-4, -20, 8, 15, 4);
+      g.fillStyle = C.goldDim;
+      g.fill();
+      g.stroke();
+      roundRect(-10, -8, 20, 8, 2);
+      g.fillStyle = C.redDim;
+      g.fill();
+      g.stroke();
+    }
   }
   g.restore();
 }

@@ -17,6 +17,8 @@ export let BANK: QuestionBank = { name: '（尚未载入题库）', byTopic: {},
 
 export const sourceBank = (): QuestionBank => BANK;
 
+export const bankTopicTitle = (bank: QuestionBank, id: string): string => bank.byTopic[id]?.[0]?.topicTitle ?? id;
+
 export const countQuestions = (bank: QuestionBank): number =>
   Object.values(bank.byTopic).reduce((n, pool) => n + pool.length, 0);
 export const bankQuestionCount = (): number => countQuestions(BANK);

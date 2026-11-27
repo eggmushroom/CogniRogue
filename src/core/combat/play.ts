@@ -107,33 +107,42 @@ export function askCard(idx: number) {
   // 攒满答题要求：直接打，不抽题
   if (!needsAsk(id, G.charge)) { playFree(idx); return; }
 
-  const q = takeQuestion();
+  const pending = G.pendingQuestion;
+  const q = pending?.q ?? takeQuestion();
   if (!q) {
     // 空题库：给一个能查的失败原因，不静默吞掉点击。
     // 空计划也走执行器：反馈事件与状态写入只有一条出口。
     settle(emptySettlement(card.id));
     return;
   }
-  // 题目快照挂在 Panel 上，答题期间不随题库变。
-  let view = shuffleOptions(q);
-  // 放大镜：这一场第一道题删一个错误选项；只剩两项的题不动。
-  // 记账在抬手就打，不等 `answer()`，否则取消再点能一直删。
-  if (view.options.length >= 3 && onceThisFight('loupe')) {
-    const wrongs = view.options.map((_, i) => i).filter((i) => i !== view.answer);
-    if (wrongs.length) {
-      const drop = wrongs[Math.floor(Math.random() * wrongs.length)];
-      view = {
-        options: view.options.filter((_, i) => i !== drop),
-        originalIndices: view.originalIndices.filter((_, i) => i !== drop),
-        answer: drop < view.answer ? view.answer - 1 : view.answer,
-      };
+  // 取消后复用同一份题目与选项视图，不能通过反复打开来换题或洗选项。
+  const pendingView = pending?.view;
+  let view = pendingView;
+  if (!view) {
+    const shuffled = shuffleOptions(q);
+    let freshView = shuffled;
+    // 放大镜：这一场第一道题删一个错误选项；只剩两项的题不动。
+    // 题目和视图一起保留，取消不会重复触发这次效果。
+    if (shuffled.options.length >= 3 && onceThisFight('loupe')) {
+      const answer = shuffled.answer;
+      const wrongs = shuffled.options.map((_, i) => i).filter((i) => i !== answer);
+      if (wrongs.length) {
+        const drop = wrongs[Math.floor(Math.random() * wrongs.length)];
+        freshView = {
+          options: shuffled.options.filter((_, i) => i !== drop),
+          originalIndices: shuffled.originalIndices.filter((_, i) => i !== drop),
+          answer: drop < answer ? answer - 1 : answer,
+        };
+      }
     }
+    view = freshView;
+    G.pendingQuestion = { q, view: freshView };
   }
   G.panel = { k: 'question', idx, qid: q.qid, topic: q.topic, q, view };
 }
 
 export function cancelPanel() {
-  // 取消不作废这张牌：题已经被 `takeQuestion` 扣掉了，代价已经付过。
+  // 取消只收起面板；题目与选项视图保留，不能通过反复取消换题或洗选项。
   if (G.panel.k === 'question') {
     G.panel = { k: 'none' };
     return;

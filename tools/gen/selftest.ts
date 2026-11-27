@@ -12,22 +12,182 @@ import {
   DEFAULT_BUDGET, blocksOf, chunkMarkdown, paragraphsOf, readSection, sliceLines, splitText, tocText,
 } from './chunk';
 import {
-  MERGE_MAX_PARTS, MERGE_PCT, agenticPlan, mergePlan, pageRange, planTocText, similarEnough, similarity,
-  firstSentence, summarizePlan, tocPlan,
+  AGENTIC_MERGE_MAX_CHARS, agenticPlan, firstSentence, pageRange, titledPlan, tocPlan,
 } from './plan';
 import type { PlanTopic } from './plan';
+import { AGENTIC_OVERLAP_CHARS, AGENTIC_WINDOW, MAX_AGENTIC_WINDOW, MIN_AGENTIC_WINDOW } from '../../src/core/model/plan';
 import { appendPack, checkPack, knowledgeIdByQid, countByTopic, emitPack } from './emit';
 import { parseQuestionBank } from '../../src/core/library/parse';
 import { sendAnswers, serviceBase, setServiceBase } from '../../src/core/library/remote';
+import { tickJobs, watchJob } from '../../src/scenes/jobstate';
 import { generateTopic } from './generate';
-import { openAiLlm, type Llm } from './llm';
-import { indexTopicMemory, memText, mergeSnapshot, newTopicMem, readMemorySection, sourceIndexText, sourceSectionId, topicIdOf } from './memory';
+import { openAiLlm, reviewConfigFromEnv, type Llm } from './llm';
+import { parseReviewReply, reviewQuestion, reviewQuestions } from './review';
+import { indexTopicMemory, memText, mergeSnapshot, newTopicMem, readMemorySection, sourceIndexText, sourceSectionId, syncBankQuestions, topicIdOf } from './memory';
 
 let fails = 0;
 const ok = (cond: boolean, msg: string) => {
   console.log(`${cond ? '✓' : '✗'} ${msg}`);
   if (!cond) fails += 1;
 };
+
+// A successful retry still needs both request attempts under the same question span.
+{
+  const fetch = globalThis.fetch;
+  const log = console.log;
+  const context = { COG_TRACE_ID: 'a'.repeat(32), COG_JOB_ID: 'job-test', COG_PARENT_SPAN_ID: 'b'.repeat(16) };
+  const previous = Object.fromEntries(Object.keys(context).map((key) => [key, process.env[key]]));
+  const events: Array<{ traceId: string; name: string; spanId: string; parentSpanId: string;
+    event: string; outcome?: string; attrs: Record<string, unknown> }> = [];
+  let calls = 0;
+  try {
+    Object.assign(process.env, context);
+    console.log = (line: string) => { if (line.startsWith('@@trace ')) events.push(JSON.parse(line.slice(8))); };
+    globalThis.fetch = async () => {
+      if (++calls === 1) throw new DOMException('test-token', 'TimeoutError');
+      return Response.json({ choices: [{ message: { content: '1' } }], usage: { prompt_tokens: 15, completion_tokens: 1 } },
+        { headers: { 'x-request-id': 'provider-test' } });
+    };
+    await reviewQuestions(openAiLlm({ apiKey: 'test-token', baseUrl: 'http://test.invalid', model: 'stub', retries: 1 }), [
+      { qid: 'q_trace', stem: '不应进入 trace 的题干', options: ['甲', '乙'], answer: 0,
+        sources: [{ sectionId: 'sec_trace', text: '不应进入 trace 的原文' }] },
+    ]);
+  } finally {
+    globalThis.fetch = fetch;
+    console.log = log;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  const question = events.find((event) => event.name === 'question.review' && event.event === 'start');
+  const requests = events.filter((event) => event.name === 'model.request');
+  const serial = JSON.stringify(events);
+  ok(question?.attrs.qid === 'q_trace' && question.parentSpanId === context.COG_PARENT_SPAN_ID
+    && events.every((event) => event.traceId === context.COG_TRACE_ID)
+    && requests.length === 4 && requests.every((event) => event.parentSpanId === question.spanId)
+    && requests[0]?.attrs.retry === 0 && requests[1]?.attrs.errorKind === 'timeout'
+    && requests[2]?.attrs.retry === 1 && requests[3]?.outcome === 'ok'
+    && requests[3]?.attrs.inputTokens === 15 && requests[3]?.attrs.providerRequestId === 'provider-test'
+    && events.at(-1)?.outcome === 'pass' && !serial.includes('test-token') && !serial.includes('不应进入 trace'),
+  'Trace：审核超时后重试成功，两次请求用同一逐题 span 串联，且仅记录诊断字段');
+}
+
+// 审核配置留空时安全回退到生成模型；显式审核配置仍可逐项覆盖。
+const fallbackReview = reviewConfigFromEnv({ GEN_API_KEY: 'gen-key', GEN_BASE_URL: 'https://gen.example/v1', GEN_MODEL: 'gen-model' });
+ok(fallbackReview.apiKey === 'gen-key' && fallbackReview.baseUrl === 'https://gen.example/v1' && fallbackReview.model === 'gen-model',
+  '审核未单独配置时沿用生成模型凭据、地址和模型');
+const overrideReview = reviewConfigFromEnv({ GEN_API_KEY: 'gen-key', GEN_BASE_URL: 'https://gen.example/v1', GEN_MODEL: 'gen-model',
+  REVIEW_API_KEY: 'review-key', REVIEW_BASE_URL: 'https://review.example/v1', REVIEW_MODEL: 'review-model' });
+ok(overrideReview.apiKey === 'review-key' && overrideReview.baseUrl === 'https://review.example/v1' && overrideReview.model === 'review-model',
+  '审核独立配置优先于生成模型配置');
+
+// 审核输出限定为一个字符 0/1；任何额外内容均不得放行。
+ok(parseReviewReply('1', 'q_demo').verdict === 'pass' && parseReviewReply('0', 'q_demo').verdict === 'reject',
+  '审核契约：只接受 0/1 并映射为通过/拒绝');
+ok(['1\n理由：正确', '```json\n1\n```', '{"pass":true}', ' 1 '].every((text) => {
+  const result = parseReviewReply(text, 'q_demo');
+  return result.verdict === 'pending' && result.issue === 'invalid-output';
+}), '审核契约：格式异常标为待审，不当作 0');
+let reviewPrompt = '';
+const reviewFixture = { qid: 'q_demo', stem: '题目', options: ['甲', '乙'], answer: 0,
+  sources: [{ sectionId: 'sec_a', text: '原文\n  保留格式' }] };
+const reviewed = await reviewQuestion({ ask: async (system, user) => {
+  reviewPrompt = `${system}\n${user}`;
+  return '1';
+} }, reviewFixture);
+ok(reviewed.verdict === 'pass' && reviewPrompt.includes('一个字符')
+  && reviewPrompt.includes(`"sourceSections":${JSON.stringify(reviewFixture.sources)}`),
+  '审核调用要求只输出 0/1，并提交保留格式的章节原文');
+const unavailable = await reviewQuestion({ ask: async () => { throw new Error('timeout'); } }, reviewFixture);
+ok(unavailable.verdict === 'pending' && unavailable.issue === 'request-failed', '请求失败不计为模型拒绝');
+{
+  const fetch = globalThis.fetch;
+  const cfg = { apiKey: 'review-key-for-test', baseUrl: 'http://test.invalid/v1', model: 'stub', jsonMode: false, retries: 0 };
+  const attempts = async (retries = 0) => {
+    const result = await reviewQuestion(openAiLlm({ ...cfg, retries }), reviewFixture);
+    // main.ts writes the review result directly into each question's JSON report.
+    return result.verdict === 'pending' && result.issue === 'request-failed' ? result.attempts : undefined;
+  };
+  try {
+    let calls = 0;
+    globalThis.fetch = async () => ++calls === 1
+      ? Response.json({ error: { code: 'rate_limit', message: `retry later; rejected ${cfg.apiKey} and Bearer echoed-token` } }, { status: 429 })
+      : new Response('gateway unavailable', { status: 503 });
+    const retried = await attempts(1);
+    const stored = JSON.stringify(retried);
+    ok(retried?.length === 2 && retried[0]?.kind === 'http' && retried[0].status === 429
+      && retried[0].code === 'rate_limit' && retried[0].retry === 0 && retried[1]?.retry === 1
+      && retried[1].status === 503 && retried[1].message === 'gateway unavailable'
+      && retried.every((item) => item.durationMs >= 0) && stored.includes('retry later')
+      && !stored.includes(cfg.apiKey) && !stored.includes('echoed-token'), '审核报告记录 429 和重试后的 503，并对错误内容脱敏');
+
+    globalThis.fetch = async () => { throw new DOMException('deadline', 'TimeoutError'); };
+    ok((await attempts())?.[0]?.kind === 'timeout', '审核报告区分请求超时');
+    globalThis.fetch = async () => { throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }); };
+    const network = (await attempts())?.[0];
+    ok(network?.kind === 'network' && network.code === 'ECONNRESET' && network.status === undefined, '审核报告保留底层网络错误码');
+
+    globalThis.fetch = async () => Response.json({ error: { code: 'overloaded', message: 'over capacity' } });
+    const provider = (await attempts())?.[0];
+    ok(provider?.kind === 'provider' && provider.status === 200 && provider.code === 'overloaded'
+      && provider.message === 'over capacity', '审核报告识别 HTTP 200 中的接口错误');
+    globalThis.fetch = async () => new Response('not JSON');
+    ok((await attempts())?.[0]?.kind === 'invalid-response', '审核报告区分无法解析的响应');
+    globalThis.fetch = async () => Response.json({ choices: [{ message: { content: '' } }] });
+    ok((await attempts())?.[0]?.kind === 'empty-response', '审核报告区分空回复');
+  } finally {
+    globalThis.fetch = fetch;
+  }
+}
+{
+  const fetch = globalThis.fetch;
+  const cfg = { apiKey: 'tool-key-for-test', baseUrl: 'http://test.invalid/v1', model: 'stub', retries: 1, timeoutMs: 1000 };
+  let calls = 0;
+  const toolStream = () => new Response(
+    'data: ' + JSON.stringify({ choices: [{ delta: { content: 'done' }, finish_reason: null }] }) + '\n\n'
+      + 'data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + '\n\n'
+      + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  try {
+    globalThis.fetch = async (_url, init) => {
+      calls++;
+      const body = JSON.parse(String(init?.body));
+      if (calls === 1) throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
+      return body.stream ? toolStream() : Response.json({ choices: [{ message: { content: 'sync' } }] });
+    };
+    const result = await openAiLlm(cfg).tool!('system', [{ role: 'user', content: 'read' }], []);
+    ok(calls === 2 && result.text === 'done', 'JIT 工具调用遇到瞬时网络错误后会重试并继续');
+
+    calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      throw new DOMException('deadline', 'TimeoutError');
+    };
+    let error = '';
+    try { await openAiLlm(cfg).tool!('system', [{ role: 'user', content: 'read' }], []); }
+    catch (err) { error = err instanceof Error ? err.message : String(err); }
+    ok(calls === 2 && error.includes('timeout') && error.includes('2 次请求'), 'JIT 工具调用超时会有限重试并报告尝试次数');
+  } finally {
+    globalThis.fetch = fetch;
+  }
+}
+
+let reviewActive = 0;
+let reviewPeak = 0;
+const reviewProgress: number[] = [];
+const parallelReviews = await reviewQuestions({ ask: async (_system, user) => {
+  reviewActive++;
+  reviewPeak = Math.max(reviewPeak, reviewActive);
+  const id = (JSON.parse(user) as { qid: string }).qid;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  reviewActive--;
+  return id.endsWith('bad') ? '0' : '1';
+} }, ['a', 'b', 'c', 'bad', 'e'].map((qid) => ({
+  ...reviewFixture, qid,
+})), 2, (completed) => reviewProgress.push(completed));
+ok(reviewProgress.join(',') === '1,2,3,4,5', '并发审核在每道题完成后递增进度');
+ok(reviewPeak === 2 && parallelReviews.map((r) => r.qid).join(',') === 'a,b,c,bad,e'
+  && parallelReviews[3]?.verdict === 'reject', '批量审核限制并发且保留题目顺序与拒绝结果');
 
 const lines = (...s: string[]) => s.join('\n');
 
@@ -61,6 +221,11 @@ const BOOK = lines(
 const doc = chunkMarkdown(BOOK);
 const indexPlan = tocPlan(BOOK, { name: '测试', depth: 1, size: 4000 })!;
 const indexed = newTopicMem(indexPlan.topics[0].title, 'book.md', topicIdOf('book.md', BOOK, indexPlan.topics[0]!));
+const sharedParentSource = '# 文档\n\n## 章节\n\n正文';
+const siblingTopicA: PlanTopic = { title: '甲主题', from: 2, to: 3, chars: 2, summary: '', summarized: 'none' };
+const siblingTopicB: PlanTopic = { title: '乙主题', from: 3, to: 4, chars: 2, summary: '', summarized: 'none' };
+ok(topicIdOf('book.md', sharedParentSource, siblingTopicA, true) !== topicIdOf('book.md', sharedParentSource, siblingTopicB, true),
+  '同一父标题下不同 agentic 主题生成不同 ID');
 const sectionDir = mkdtempSync(join(tmpdir(), 'cognirogue-jit-'));
 const sectionFiles = indexTopicMemory(indexed, BOOK, indexPlan.topics[0]);
 for (const file of sectionFiles) writeFileSync(join(sectionDir, `${file.id}.md`), file.content, 'utf8');
@@ -112,26 +277,42 @@ ok(answerMem.cursor === 5 && stats().bad === 1, '重放旧游标不会重复消�
 learned!.questions.qB = { stem: '二分题', options: ['左移', '右移'], answer: 1 };
 ok(memText(answerMem).includes('正确选项 2') && memText(answerMem).includes('选项选择顺序（1-based）'), '记忆从逐题流水组装正确选项与作答顺序');
 let feedbackPrompt = '';
+const targetedSectionId = sectionId;
+const targetedSource = readMemorySection(indexed, sectionDir, targetedSectionId)!;
+let feedbackRound = 0;
 const feedbackLlm: Llm = {
   ask: async (_system, user) => {
     feedbackPrompt = user;
-    return JSON.stringify({ questions: [{
-      knowledge: '第一章 复杂度/二分查找',
-      stem: '二分查找每次比较后区间如何变化？',
-      options: ['减半', '不变'], answer: 0,
-    }] });
+    feedbackRound++;
+    return feedbackRound === 1
+      ? JSON.stringify({ read: [targetedSectionId], questions: [] })
+      : JSON.stringify({ questions: [{
+        knowledge: '第一章 复杂度/二分查找',
+        stem: '二分查找每次比较后区间如何变化？',
+        options: ['减半', '不变'], answer: 0,
+        sectionIds: [targetedSectionId],
+      }] });
   },
 };
 const targeted = await generateTopic({
-  topic: '第一章 复杂度',
-  chunks: [{ path: ['第一章 复杂度'], text: '二分查找每次比较后区间减半。', part: 0, size: 20 }],
-  toc: '第一章 复杂度',
-  memory: memText(answerMem),
-  per: 1,
-  read: () => null,
+  topic: '第一章 复杂度', toc: `${targetedSectionId} | 1.1 二分查找`,
+  memory: memText(answerMem), per: 1,
+  read: (id) => id === targetedSectionId ? targetedSource : null,
 }, feedbackLlm);
 ok(feedbackPrompt.includes('玩家 0 对 1 错') && targeted.questions[0]?.knowledgeId.startsWith('k_'),
   '单主题增量生成读取重新纳入的答题记忆并允许生成新题号');
+ok(targeted.questions[0]?.sectionIds[0] === targetedSectionId && targeted.sources.get(targetedSectionId) === targetedSource,
+  '生成题只关联章节 ID，审核原文来自本轮实际读取的文件');
+const generated = targeted.questions[0]!;
+const stored = newTopicMem('增量测试', 'book.md');
+stored.knowledge[generated.knowledgeId] = {
+  label: generated.knowledgeLabel!, stem: generated.stem, gen: 1,
+  questions: { [generated.qid]: { stem: generated.stem, options: generated.options, answer: generated.answer, sectionIds: generated.sectionIds } },
+};
+const reloadedPack = parseQuestionBank(emitPack('增量测试', [{ topic: stored.topic, topicId: stored.topicId, questions: [generated] }]));
+syncBankQuestions(stored, reloadedPack.byTopic[stored.topicId]!);
+ok(stored.knowledge[generated.knowledgeId]!.questions[generated.qid]?.sectionIds?.[0] === targetedSectionId,
+  '下一次生成从题库回补旧题时不会擦掉记忆中的原文章节 ID');
 ok(paths.length === 5 && paths[0] === '第一章 复杂度' && paths[1] === '第一章 复杂度 > 1.1 二分查找'
   && paths[4] === '第二章 图 > 2.1 最短路',
   `目录按标题层级展开（${paths.length} 条：${paths.join(' / ')}）`);
@@ -208,24 +389,28 @@ ok(chk.ok && chk.count === 2, `渲染出的题库能过游戏自己的解析器�
 ok(packText.includes('~ algo/binary-worst') && packText.includes('= B'),
   '知识点行、题号和答案字母都由代码写入，不靠模型拼');
 
-const qidMap = knowledgeIdByQid(packText);
+const qidMap = knowledgeIdByQid(parseQuestionBank(packText));
 ok(Object.keys(qidMap).length === 2 && Object.values(qidMap).includes('algo/sort-lower'),
   'qid → knowledgeId 映射能把逐题作答归并到知识点');
 
 // ── 一个主题 = 一个子 agent：JIT 取数 + 校验 + 去重（全离线，假模型） ──
 const asked: string[] = [];
+const generationRules: string[] = [];
 let round = 0;
 const fake: Llm = {
-  ask: async (_sys, user) => {
+  ask: async (system, user) => {
+    generationRules.push(system);
     asked.push(user);
     round += 1;
-    if (round === 1) return JSON.stringify({ read: [sortSectionId], questions: [] });
+    if (round === 1) return JSON.stringify({ read: [sortSectionId, sectionId], questions: [] });
     return JSON.stringify({
       questions: [
-        { knowledge: '二分查找最坏情况', stem: '二分查找最坏比几次？', options: ['O(1)', 'O(log n)'], answer: 1 },
+        { knowledge: '二分查找最坏情况', stem: '二分查找最坏比几次？', options: ['O(1)', 'O(log n)'], answer: 1, sectionIds: [sectionId] },
         { knowledge: '二分查找最坏情况', stem: '二分查找最坏比几次？', options: ['甲', '乙'], answer: 0 },
-        { knowledge: '比较排序下界', stem: '下界？', options: ['n', 'n log n', '以上都对'], answer: 1 },
+        { knowledge: '比较排序下界', stem: '下界？', options: ['n', 'n log n', '以上都对'], answer: 1, sectionIds: [sortSectionId, sortSectionId] },
         { knowledge: 'algo/bad', stem: '答案越界', options: ['甲', '乙'], answer: 5 },
+        { knowledge: 'algo/missing', stem: '缺少章节 ID', options: ['甲', '乙'], answer: 0 },
+        { knowledge: 'algo/unread', stem: '引用未读章节', options: ['甲', '乙'], answer: 0, sectionIds: ['sec_unread'] },
       ],
     });
   },
@@ -233,11 +418,10 @@ const fake: Llm = {
 const sortSectionId = indexed.sections!.find((section) => section.title === '1.2 排序')!.id;
 const res = await generateTopic({
   topic: '复杂度',
-  chunks: [],
-  toc: `${sortSectionId} | 1.2 排序`,
+  toc: sourceIndexText(indexed),
   memory: '（这个主题还没有记忆）',
   per: 6,
-  read: (id: string) => id === sortSectionId ? readMemorySection(indexed, sectionDir, id) : null,
+  read: (id) => readMemorySection(indexed, sectionDir, id),
 }, fake);
 
 ok(res.reads.includes(sortSectionId),
@@ -245,39 +429,74 @@ ok(res.reads.includes(sortSectionId),
 ok(!asked[0].includes('# 已读取的原文') && asked[0].includes('# 本主题的原文索引') && !asked[0].includes('渐进下界'),
   'JIT：首轮只注入目录和记忆，不注入任何正文');
 const ungrounded = await generateTopic({
-  topic: '复杂度', chunks: [], toc: '复杂度', memory: '', per: 1, read: () => null,
+  topic: '复杂度', toc: '复杂度', memory: '', per: 1, read: () => null,
 }, { ask: async () => JSON.stringify({ questions: [{ knowledge: 'algo/guess', stem: '猜测', options: ['甲', '乙'], answer: 0 }] }) });
 ok(ungrounded.questions.length === 0, 'JIT：没有取到原文时不接受题目');
 ok(asked.length === 2 && asked[1].includes('渐进下界'),
   '第二轮把读到的原文追加进了上下文');
+ok(generationRules.length === 2 && generationRules[0] === generationRules[1]
+  && generationRules[0].includes('生成 6 道') && generationRules[0].includes('"read"')
+  && asked.every((message) => !message.includes('"questions"')),
+  '兼容模式各轮共享同一套规则，用户消息只承载数据');
 // Tool-calling agent asks the service for one exact section; the untouched chapter never enters context.
 const toolContexts: string[] = [];
+const toolRules: string[] = [];
 let toolRound = 0;
 const toolAgent: Llm = {
   ask: async () => '',
-  tool: async (_system, messages, _tools) => {
+  tool: async (system, messages, _tools) => {
+    toolRules.push(system);
     toolContexts.push(JSON.stringify(messages));
     toolRound++;
     if (toolRound === 1) return { text: '', calls: [{ id: 'read-1', name: 'read_source', arguments: JSON.stringify({ sectionId: sortSectionId }) }] };
-    return { text: JSON.stringify({ questions: [{ knowledge: '排序下界', stem: '比较排序下界？', options: ['n', 'n log n'], answer: 1 }] }), calls: [] };
+    return { text: JSON.stringify({ questions: [{ knowledge: '排序下界', stem: '比较排序下界？', options: ['n', 'n log n'], answer: 1, sectionIds: [sortSectionId] }] }), calls: [] };
   },
 };
-const toolResult = await generateTopic({ topic: '复杂度', chunks: [], toc: `${sortSectionId} | 1.2 排序`, memory: '', per: 1, read: (id) => id === sortSectionId ? readMemorySection(indexed, sectionDir, id) : null }, toolAgent);
-ok(toolResult.questions.length === 1 && toolResult.reads.length === 1,
-  'agent 通过 read_source 工具按需取一节，得到题目');
+const toolResult = await generateTopic({ topic: '复杂度', toc: `${sortSectionId} | 1.2 排序`, memory: '', per: 1, read: (id) => id === sortSectionId ? readMemorySection(indexed, sectionDir, id) : null }, toolAgent);
+ok(toolResult.questions.length === 1 && toolResult.reads.length === 1 && toolResult.questions[0]?.sectionIds[0] === sortSectionId,
+  'agent 通过 read_source 工具按需取一节，并为题目绑定章节 ID');
 ok(!toolContexts[0].includes('渐进下界') && toolContexts[1].includes('渐进下界') && !toolContexts[1].includes('归并排序'),
   'JIT 工具只把申请的小节加入上下文，没有预载整个主题');
-ok(res.questions.length === 2, `合格的题被收下（${res.questions.length} 道）`);
+let multiReadRound = 0;
+const multiReadAgent: Llm = {
+  ask: async () => '',
+  tool: async () => {
+    multiReadRound++;
+    if (multiReadRound <= 4) return { text: '', calls: [{ id: `read-${multiReadRound}`, name: 'read_source',
+      arguments: JSON.stringify({ sectionId: sortSectionId }) }] };
+    return { text: JSON.stringify({ questions: [{ knowledge: '多轮读取', stem: '多轮 JIT 后可出题吗？',
+      options: ['可以', '不可以'], answer: 0, sectionIds: [sortSectionId] }] }), calls: [] };
+  },
+};
+const multiReadResult = await generateTopic({ topic: '复杂度', toc: `${sortSectionId} | 1.2 排序`, memory: '', per: 1,
+  read: (id) => id === sortSectionId ? readMemorySection(indexed, sectionDir, id) : null }, multiReadAgent);
+ok(multiReadResult.questions.length === 1 && multiReadRound === 5,
+  '多节主题连续 JIT 读取四轮后仍保留一轮合成题目的机会');
+ok(toolRules.length === 2 && toolRules[0] === toolRules[1] && toolRules[0].includes('read_source')
+  && !toolRules[0].includes('"read"')
+  && toolRules[0].split('\n').slice(2).join('\n') === generationRules[0].split('\n').slice(2).join('\n'),
+  '工具调用和兼容模式共享同一套出题、格式和记忆规则');
+ok(res.questions.length === 4 && res.questions[0]?.sectionIds.join() === sectionId && res.questions[1]?.sectionIds.join() === sortSectionId
+  && res.questions.slice(2).every((q) => q.sectionIds.join() === [sortSectionId, sectionId].join()),
+  '合法 ID 去重并精确定位；缺失或无效 ID 的题仍送审，只回退到已读原文');
 ok(res.questions[1]?.noShuffle === true, '位置依赖的选项自动补上「! 固定顺序」声明');
 ok(res.dropped.length === 2
   && res.dropped.some((d) => d.reason.includes('重复'))
   && res.dropped.some((d) => d.reason.includes('越界')),
   `不合格的题被扔下并说明原因（${res.dropped.map((d) => d.reason).join(' / ')}）`);
 
-// 整条链路走一遍：假模型出的题 → 渲染 → 过游戏解析器 → 每题题号独立生成
-const chain = emitPack('链路自检', [{ topic: '复杂度', questions: res.questions }]);
+// 经过模型审核后，只有明确放行的题可进入游戏题库。
+const chainReviews = await reviewQuestions({ ask: async (_system, user) => {
+  const q = JSON.parse(user) as { question: string; sourceSections: Array<{ text: string }> };
+  if (q.question === '引用未读章节') return '0';
+  if (q.question === '下界？') return '1。';
+  return q.sourceSections.some((s) => s.text.includes('有序数组')) ? '1' : '0';
+} }, res.questions.map((q) => ({ ...q, sources: q.sectionIds.map((id) => ({ sectionId: id, text: res.sources.get(id)! })) })));
+const chain = emitPack('链路自检', [{ topic: '复杂度', questions: res.questions.filter((_q, i) => chainReviews[i]?.verdict === 'pass') }]);
 const chainChk = checkPack(chain);
-ok(chainChk.ok && chainChk.count === 2, `假模型的一轮产物能直接载入游戏（${chainChk.count} 道）`);
+ok(chainReviews.map((r) => r.verdict).join() === 'pass,pending,pass,reject'
+  && chainChk.ok && chainChk.count === 2 && chain.includes('缺少章节 ID') && !chain.includes('引用未读章节'),
+  `仅审核返回 1 的题能直接载入游戏（${chainChk.count} 道）`);
 
 const basePack = emitPack('增量自检', [
   { topic: '甲', questions: [{ knowledgeId: 'a', qid: 'q_a', stem: '旧题', options: ['是', '否'], answer: 0 }] },
@@ -369,18 +588,17 @@ ok(tocPlaned.topics[0].chars > 0 && tocPlaned.topics[0].chars < tocPlaned.chars,
   '目录划分：单节字数已统计，且小于全文');
 ok(tocPlan(PLAN_DOC, { name: 'x', depth: 3, size: 4000 }) === null,
   '目录划分：该层级没有标题时返回 null（交给上层回落）');
+const deeperOnly = '# 文档\n\n### 第一节\n\n内容一\n\n### 第二节\n\n内容二';
+const autoDeep = titledPlan(deeperOnly, { name: 'x', depth: 2, size: 4000 });
+ok(autoDeep?.tier === 'toc' && autoDeep.depth === 3 && autoDeep.topics.length === 2,
+  '自动划分：缺少二级标题时选择可用的三级标题');
+const repeatedHeadingLevels = '# 文档\n\n## 唯一章节\n\n### 子节一\n\n内容一\n\n### 子节二\n\n内容二';
+const autoSubsections = titledPlan(repeatedHeadingLevels, { name: 'x', depth: 2, size: 4000 });
+ok(autoSubsections?.depth === 3 && autoSubsections.topics.length === 2,
+  '自动划分：单个章节标题下优先使用多个子节标题');
+ok(AGENTIC_WINDOW === 8000 && MIN_AGENTIC_WINDOW === 2000 && MAX_AGENTIC_WINDOW === 20000,
+  `agentic 窗口默认 8000 字，可设为 ${MIN_AGENTIC_WINDOW}-${MAX_AGENTIC_WINDOW} 字`);
 
-// 摘要：有模型就调，没有就回落首句
-const sumLlm: Llm = {
-  ask: async () => '二分查找的做法与最坏比较次数。',
-};
-const summed = await summarizePlan(tocPlaned!, PLAN_DOC, sumLlm);
-ok(summed.topics.every((t) => t.summarized === 'model' && t.summary.length > 0),
-  '摘要：模型给的摘要写进了每一节');
-const noModel = await summarizePlan(tocPlaned!, PLAN_DOC, null);
-ok(noModel.topics.every((t) => t.summarized === 'none' && t.summary.length > 0)
-  && noModel.notes.some((n) => n.includes('没有配模型')),
-  '摘要：没有模型时回落首句，并在 notes 里说明');
 ok(firstSentence('# 1. 入门指南\nch01-getting-started.md\n正文说明了 Rust 的安装步骤。')
   === '正文说明了 Rust 的安装步骤',
   '摘要：编号标题、页锚点和源文件名不冒充首句');
@@ -394,47 +612,7 @@ indexTopicMemory(pageMem, paged, { title: 'PDF 章节', from: 1, to: 6, chars: 1
 ok(pageMem.sections![0].pageFrom === 4 && pageMem.sections![0].pageTo === 5
   && sourceIndexText(pageMem).includes('PDF 第 4-5 页'), '未出题的 PDF 主题记忆保存物理页表');
 
-// 相似度与合并：判据是整数，合并有上限
-ok(similarity('二分查找每次折半比较', '二分查找每次折半') > MERGE_PCT,
-  `相似度：几乎同义的两段（${similarity('二分查找每次折半比较', '二分查找每次折半')}%）`);
-ok(similarity('二分查找每次折半', '哈希表用桶装冲突的键') === 0,
-  '相似度：不相干的两段是 0');
-ok(similarEnough('二分查找每次折半比较', '二分查找每次折半', MERGE_PCT)
-  && !similarEnough('二分查找每次折半', '哈希表用桶装冲突的键', MERGE_PCT),
-  '相似度：阈值判据与整数百分比同向');
-
-const mkTopic = (title: string, summary: string, chars: number): PlanTopic => ({
-  title, from: 0, to: 1, chars, summary, summarized: 'model',
-});
-const merged = mergePlan({
-  ...tocPlaned!,
-  topics: [
-    mkTopic('甲', '二分查找每次折半比较，最坏 log n', 800),
-    mkTopic('乙', '二分查找每次折半比较', 900),
-    mkTopic('丙', '哈希表用桶装冲突的键', 700),
-  ],
-}, { pct: MERGE_PCT, maxChars: 8000, maxParts: 4 });
-ok(merged.topics.length === 2 && merged.topics[0].merged === 2,
-  `合并：相邻且相似的两节并成一节（剩 ${merged.topics.length} 节）`);
-ok(merged.topics[0].title === '甲' && merged.topics[0].chars === 1700,
-  '合并：留下前一节的名字，字数相加');
-ok(merged.topics[1].title === '丙', '合并：不相似的那节没被并进去');
-
-const tooBig = mergePlan({
-  ...tocPlaned!,
-  topics: [mkTopic('甲', '二分查找每次折半比较', 5000), mkTopic('乙', '二分查找每次折半比较', 4000)],
-}, { pct: MERGE_PCT, maxChars: 8000, maxParts: 4 });
-ok(tooBig.topics.length === 2, '合并：并起来超过 8000 字就不并');
-
-const tooMany = mergePlan({
-  ...tocPlaned!,
-  topics: Array.from({ length: 6 }, (_, i) => mkTopic(`节${i}`, '二分查找每次折半比较', 100)),
-}, { pct: MERGE_PCT, maxChars: 8000, maxParts: 4 });
-ok(tooMany.topics.length === 2 && tooMany.topics[0].merged === 4,
-  `合并：一节最多并 ${MERGE_MAX_PARTS} 节（${tooMany.topics.map((t) => t.merged ?? 1).join('+')}）`);
-
-// 模型层：分窗、编号、窗首强制断一次。
-// 每段都写到 300 字以上：太碎的节会被并进前一个（MIN_TOPIC），那是另一条路数。
+// 每个窗口按段落编号，模型只选择段落起点。
 const pad = '折半查找每次把区间减半，最坏比较次数随规模对数增长。'.repeat(14);
 const flatDoc = lines(
   `第一步讲二分。${pad}`,
@@ -445,142 +623,236 @@ const flatDoc = lines(
 );
 const agenticLlm: Llm = {
   ask: async (_s, user) => {
-    ok(user.includes('⟪1⟫') && user.includes('⟪3⟫'), '模型划分：每一窗的段落都带上了编号');
-    return JSON.stringify({ topics: [{ title: '二分与哈希', start: 1 }, { title: '排序', start: 2 }] });
+    if (user.includes('# 原文顺序中的')) {
+      const payload = user.split('\n\n')[1]!;
+      const fragments = JSON.parse(payload) as Array<{ id: string; title: string; summary: string; subtopics: Array<{ id: string; title: string; summary: string }> }>;
+      return JSON.stringify({ topics: fragments.map((fragment) => ({ title: fragment.title, summary: fragment.summary,
+        fragmentIds: [fragment.id], subtopics: fragment.subtopics.map((sub) => ({
+          title: sub.title, summary: sub.summary, fragmentIds: [sub.id],
+        })) })) });
+    }
+    ok(user.includes('⟪1⟫') && user.includes('⟪3⟫'), '模型理解：每一窗段落带有序号');
+    return JSON.stringify({ summary: '查找与排序', topics: [
+      { title: '二分与哈希', summary: '介绍查找方法', start: 1,
+        subtopics: [{ title: '二分查找', summary: '有序区间折半查找', start: 1 }] },
+      { title: '排序', summary: '介绍排序方法', start: 2,
+        subtopics: [{ title: '比较排序', summary: '通过比较排列元素', start: 2 }] },
+    ] });
   },
 };
 const agented = (await agenticPlan(flatDoc, { name: '散记', depth: 2, size: 4000 }, agenticLlm))!;
-ok(!!agented && agented.tier === 'agentic' && agented.topics.length === 2,
+ok(!!agented && agented.tier === 'agentic' && agented.agenticWindow === AGENTIC_WINDOW
+  && agented.agenticOverlapChars === AGENTIC_OVERLAP_CHARS && agented.topics.length === 2,
   `模型划分：按模型给的切点分成 ${agented.topics.length} 节`);
-ok(agented.topics[0].title === '二分与哈希' && agented.topics[1].title === '排序',
-  '模型划分：用模型给的标题');
+ok(agented.topics[0].title === '二分与哈希' && agented.topics[1].title === '排序'
+  && agented.topics[0].subtopics?.[0]?.title === '二分查找', '模型划分：生成主题、摘要与子主题层级');
 ok(agented.topics.every((t, i, arr) => i === 0 || t.from === arr[i - 1].to),
   '模型划分：区间首尾相接（窗首由我们强制断开）');
 
+const section = (title: string, start: number) => ({ title, summary: `${title}的说明`, start });
+const fragment = (title: string, start: number, ...subtopics: ReturnType<typeof section>[]) =>
+  ({ ...section(title, start), subtopics });
+const longSummary = '共享引用允许读取借用的值，同一时刻可以有多个共享引用，只要这些共享引用仍被使用，就不能创建指向同一数据的可变引用。引用的生命周期还必须受限于它所借用的数据。';
+const localReplies = [
+  { summary: '常量与借用开篇', topics: [fragment('常量', 1, section('常量声明', 1)), fragment('借用', 2, section('共享借用', 2))] },
+  { summary: '借用续篇', topics: [fragment('借用规则', 1, { ...section('共享借用续', 1), summary: longSummary }, section('可变借用', 2))] },
+];
+const group = (title: string, ...fragmentIds: string[]) => ({ title, summary: `${title}的说明`, fragmentIds });
+const mergedTopics = [
+  { ...group('常量', 'f001'), subtopics: [group('常量声明', 'f001.s001')] },
+  { ...group('借用', 'f002', 'f003'), subtopics: [group('共享借用', 'f002.s001', 'f003.s001'), group('可变借用', 'f003.s002')] },
+];
+const windowDoc = [
+  '<!-- cognirogue-page: 4 -->', `定义常量。${'甲'.repeat(700)}`, '', `共享借用开篇。${'乙'.repeat(700)}`,
+  '<!-- cognirogue-page: 5 -->', `共享借用续篇。${'丙'.repeat(700)}`, '', `介绍可变借用。${'丁'.repeat(700)}`,
+].join('\n');
+const customWindowOpts = { name: '带页码的教材', depth: 2, size: 4000, agenticWindow: 2000, agenticOverlapChars: 200 };
+const runChunkFixture = (result: typeof mergedTopics, requests: string[] = []) => {
+  let window = 0;
+  return agenticPlan(windowDoc, customWindowOpts, {
+    ask: async (_system, user) => {
+      requests.push(user);
+      return JSON.stringify(user.startsWith('# 原文顺序中的') ? { topics: result } : localReplies[window++]);
+    },
+  });
+};
+const chunkRequests: string[] = [];
+const customWindowPlan = (await runChunkFixture(mergedTopics, chunkRequests))!;
+ok(longSummary.length > 60 && chunkRequests[2]?.includes(longSummary),
+  '二级聚合：超过提示词长度的摘要保留完整内容并进入合并预算');
+const mergeInput = JSON.parse(chunkRequests[2]!.split('\n\n')[1]!) as Array<{ id: string; startsWindow?: boolean }>;
+ok(mergeInput.filter((fragment) => fragment.startsWindow).map((fragment) => fragment.id).join() === 'f003',
+  '二级聚合：合并输入标记程序分窗边界，窗内主题不误标');
+const [constants, borrowing] = customWindowPlan.topics;
+const [shared, mutable] = borrowing.subtopics!;
+ok(chunkRequests.length === 3 && customWindowPlan.agenticWindow === 2000 && customWindowPlan.topics.length === 2
+  && borrowing.merged === 2 && shared.fragmentIds?.join() === 'f002.s001,f003.s001',
+  '二级聚合：前一窗的第二个主题在后一窗延续，主题和子主题依次合并');
+ok(customWindowPlan.agenticChunks?.map((chunk) => `${chunk.summary}:${chunk.pageFrom}-${chunk.pageTo}`).join()
+  === '常量与借用开篇:4-4,借用续篇:5-5'
+  && constants.pageTo === 4 && shared.pageFrom === 4 && shared.pageTo === 5 && mutable.pageFrom === 5,
+  '二级聚合：保留块摘要，页锚点不会把前一段误算到下一页');
+const memForChunks = newTopicMem(borrowing.title, 'sample.pdf.md');
+const indexedChunks = indexTopicMemory(memForChunks, windowDoc, borrowing);
+ok(indexedChunks.length === 2 && indexedChunks[0].content.includes('共享借用开篇')
+  && indexedChunks[0].content.includes('共享借用续篇') && !indexedChunks[0].content.includes('介绍可变借用')
+  && indexedChunks[1].content.includes('介绍可变借用') && indexedChunks[0].id !== indexedChunks[1].id
+  && sourceIndexText(memForChunks).includes('PDF 第 4-5 页'), '二级聚合：跨窗子主题按 ID 单独存储原文，JIT 可定位页码');
+
+for (const { windowSize, configuredOverlapChars } of [
+  { windowSize: MIN_AGENTIC_WINDOW }, { windowSize: AGENTIC_WINDOW }, { windowSize: MAX_AGENTIC_WINDOW },
+  { windowSize: MIN_AGENTIC_WINDOW, configuredOverlapChars: 337 },
+]) {
+  const overlapSize = configuredOverlapChars ?? 800;
+  const codeFence = '```rust\n// \n```';
+  const overlapTail = codeFence.replace('// ', `// ${'x'.repeat(overlapSize - codeFence.length)}`);
+  const newBody = '乙'.repeat(windowSize - overlapSize - 2);
+  const overlapDoc = ['甲'.repeat(windowSize - overlapSize - 2), overlapTail, newBody, '丙'.repeat(20)].join('\n\n');
+  const overlapRequests: string[] = [];
+  const overlapPlan = (await agenticPlan(overlapDoc, {
+    ...customWindowOpts, agenticWindow: windowSize, agenticOverlapChars: configuredOverlapChars,
+  }, {
+    ask: async (_system, user) => {
+      overlapRequests.push(user);
+      return JSON.stringify({ summary: '块摘要', topics: [fragment('局部主题', 1, section('局部子主题', 1))] });
+    },
+  }, { merge: false }))!;
+  const [first, second, third] = overlapPlan.agenticChunks!;
+  ok(overlapPlan.agenticOverlapChars === overlapSize && overlapRequests.length === 3 && overlapTail.length === overlapSize
+    && overlapRequests[0]?.endsWith(`⟪2⟫ ${overlapTail}`)
+    && overlapRequests[1] === `# 前置上下文\n\n${overlapTail}\n\n# 窗口 2/3 的编号原文\n\n⟪1⟫ ${newBody}`
+    && overlapRequests[2]?.startsWith('# 窗口 3/3')
+    && first?.contextFrom === first?.from && second?.contextFrom === 2 && third?.contextFrom === third?.from,
+    `二级聚合：${windowSize} 字窗口复用上一窗末尾 ${overlapSize} 字完整代码段，并计入本窗预算`);
+  ok(first?.to === second?.from && second?.to === third?.from
+    && overlapPlan.topics[0]?.to === overlapPlan.topics[1]?.from
+    && overlapPlan.topics[1]?.subtopics?.[0]?.chunkIds?.join() === second?.id
+    && second?.contextTo === second?.to,
+    `二级聚合：${windowSize} 字窗口的重叠上下文不计入最终原文`);
+}
+const noOverlapRequests: string[] = [];
+const noOverlapPlan = await agenticPlan(['甲'.repeat(1898), '乙'.repeat(100), '丙'.repeat(1900)].join('\n\n'),
+  { ...customWindowOpts, agenticOverlapChars: 0 }, {
+    ask: async (_system, user) => {
+      noOverlapRequests.push(user);
+      return JSON.stringify({ summary: '块摘要', topics: [fragment('局部主题', 1, section('局部子主题', 1))] });
+    },
+  }, { merge: false });
+ok(noOverlapPlan?.agenticOverlapChars === 0 && noOverlapRequests.length === 2
+  && noOverlapRequests[1]?.startsWith('# 窗口 2/2')
+  && noOverlapPlan.agenticChunks?.every((chunk) => chunk.contextFrom === chunk.from) === true,
+  '二级聚合：显式 0 字符关闭重叠，即使上一窗尾段可放入');
+for (const agenticOverlapChars of [-1, customWindowOpts.agenticWindow + 1, 10.5]) {
+  const rejected = await agenticPlan(flatDoc, { ...customWindowOpts, agenticOverlapChars }, agenticLlm)
+    .then(() => false, (error: unknown) => error instanceof RangeError);
+  ok(rejected, `模型划分：拒绝无效的重叠字符数 ${agenticOverlapChars}`);
+}
+ok(borrowing.chunkIds?.join() === 'chunk_001,chunk_002'
+  && shared.chunkIds?.join() === 'chunk_001,chunk_002' && mutable.chunkIds?.join() === 'chunk_002',
+  '二级聚合：跨窗口主题和子主题追溯到各自的核心块 ID');
+
+const malformedMerges: Array<{ label: string; topics: typeof mergedTopics; error: string }> = [
+  { label: '遗漏主题', topics: [mergedTopics[0]], error: '遗漏主题片段' },
+  { label: '重复主题', topics: [...mergedTopics, mergedTopics[1]], error: '主题引用无效' },
+  { label: '主题乱序', topics: [...mergedTopics].reverse(), error: '主题引用无效' },
+  { label: '跨父主题引用', topics: [{ ...mergedTopics[0], subtopics: [mergedTopics[1].subtopics[0]] }, mergedTopics[1]],
+    error: '子主题引用无效' },
+  { label: '遗漏子主题', topics: [mergedTopics[0], { ...mergedTopics[1], subtopics: [mergedTopics[1].subtopics[0]] }],
+    error: '遗漏子主题片段' },
+];
+for (const { label, topics, error } of malformedMerges) {
+  const actual = await runChunkFixture(topics).then(() => '', (err: Error) => err.message);
+  ok(actual.includes(error), `二级聚合：拒绝${label}`);
+}
+
+let budgetCalls = 0;
+const manyChunks = Array.from({ length: 25 }, () => Array(6).fill('文'.repeat(300)).join('\n\n')).join('\n\n');
+const budgetError = await agenticPlan(manyChunks, customWindowOpts, {
+  ask: async () => {
+    budgetCalls += 1;
+    return JSON.stringify({ summary: '块摘要', topics: [{ title: '窗口主题', summary: '主题摘要', start: 1,
+      subtopics: Array.from({ length: 6 }, (_, i) => ({ title: `子主题 ${i}`, start: i + 1, summary: '摘'.repeat(60) })),
+    }] });
+  },
+}).then(() => '', (err: Error) => err.message);
+ok(budgetCalls === 25 && budgetError.includes(String(AGENTIC_MERGE_MAX_CHARS))
+  && budgetError.includes('增大窗口或拆分文档'), '二级聚合：超预算直接返回可操作错误，未发起全局合并请求');
+
+let rejectedWindow = false;
+try {
+  await agenticPlan(flatDoc, { name: '越界', depth: 2, size: 4000, agenticWindow: 20001 }, agenticLlm);
+} catch (error) {
+  rejectedWindow = error instanceof RangeError;
+}
+ok(rejectedWindow, '模型划分：拒绝超出范围的窗口参数');
+
 // 模型不老实就整份放弃，让上层回落 —— 不做半份计划
 const badLlm: Llm = { ask: async () => '{"topics":[{"title":"","start":0}]}' };
-ok(await agenticPlan(flatDoc, { name: '散记', depth: 2, size: 4000 }, badLlm) === null,
-  '模型划分：返回不合法就整份放弃（回落固定层）');
+let invalidMapRejected = false;
+try { await agenticPlan(flatDoc, { name: '散记', depth: 2, size: 4000 }, badLlm); }
+catch { invalidMapRejected = true; }
+ok(invalidMapRejected, '二级聚合：局部输出不符合结构时拒绝生成计划');
 
-ok(planTocText(tocPlaned!).includes('1.1 二分查找') && planTocText(tocPlaned!).includes('字'),
-  '计划能渲染成给模型的目录（JIT 索引）');
-
-console.log(fails ? `\n✗ ${fails} 项失败` : '\n✓ 生成工具自检通过');
-// Split inside a Chinese character and an SSE frame; keep the response open until the first output is observed.
+// Split inside a Chinese character and a tool argument across streaming frames.
 {
   const fetch = globalThis.fetch;
   const cfg = { apiKey: 'test', baseUrl: 'http://test.invalid/v1', model: 'stub', retries: 0 };
   const encoder = new TextEncoder();
-  const content = (text: string) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\r\n\r\n`;
+  const frame = (delta: unknown, finish_reason?: string) => `data: ${JSON.stringify({ choices: [{ delta, finish_reason }] })}\r\n\r\n`;
   try {
-    let release!: () => void;
-    const first = new Promise<void>((resolve) => { release = resolve; });
-    const events: Array<{ call: number; phase: string; text: string; inputTokens?: number; outputTokens?: number }> = [];
-    const wire = encoder.encode(content('现'));
+    const toolCall = (args: string, name?: string) => ({ tool_calls: [{ index: 0,
+      ...(name ? { id: 'read-1' } : {}), function: { name, arguments: args } }] });
+    const wire = encoder.encode(frame({ content: '现场' }) + frame(toolCall('{"sectionId":"sec_', 'read_source'))
+      + frame(toolCall('0123456789abcdef"}'), 'tool_calls') + 'data: [DONE]\n\n');
     const split = wire.indexOf(0xe7) + 1;
     globalThis.fetch = async () => new Response(new ReadableStream({
-      async start(controller) {
+      start(controller) {
         controller.enqueue(wire.slice(0, split));
         controller.enqueue(wire.slice(split));
-        await Promise.race([first, new Promise<void>((_, reject) => {
-          const timeout = AbortSignal.timeout(1000);
-          timeout.addEventListener('abort', () => reject(timeout.reason), { once: true });
-        })]);
-        controller.enqueue(encoder.encode(content('场')
-          + 'data: {"choices":[],"usage":{"prompt_tokens":31,"completion_tokens":2}}\n\n'
-          + 'data: [DONE]\n\n'));
         controller.close();
       },
     }), { headers: { 'content-type': 'text/event-stream; charset=utf-8' } });
-    const streamed = await openAiLlm(cfg, (event) => {
-      events.push(event);
-      if (event.phase === 'live') release();
-    }).ask('system', 'user');
-    ok(events[1]?.call === 1 && events[1]?.phase === 'live' && events[1]?.text === '现' && events[1].outputTokens === undefined,
-      '模型尚未结束时已发布真实输出，UTF-8 跨片段不乱码，也不估算 token');
-    ok(events.at(-2)?.phase === 'live' && events.at(-2)?.text === '现场',
-      '流结束时刷新尚未到节流间隔的最后一段文本');
-    ok(streamed === '现场' && events.at(-1)?.call === 1 && events.at(-1)?.inputTokens === 31 && events.at(-1)?.outputTokens === 2,
-      'SSE 拼回完整回复，最终用量来自服务商');
-
-    let releaseTool!: () => void;
-    const toolStarted = new Promise<void>((resolve) => { releaseTool = resolve; });
-    const toolEvents: Array<{
-      phase: string;
-      text: string;
-      toolCalls?: Array<{ id: string; name: string; arguments: string; state: string; detail?: string }>;
-    }> = [];
-    const toolFrame = (delta: unknown, finish_reason: string | null = null) => `data: ${JSON.stringify({ choices: [{ delta, finish_reason }] })}\n\n`;
-    globalThis.fetch = async () => new Response(new ReadableStream({
-      async start(controller) {
-        controller.enqueue(encoder.encode(toolFrame({ tool_calls: [{ index: 0, id: 'read-1', function: { name: 'read_source', arguments: '{"sectionId":"sec_' } }] })));
-        await Promise.race([toolStarted, new Promise<void>((_, reject) => {
-          const timeout = AbortSignal.timeout(1000);
-          timeout.addEventListener('abort', () => reject(timeout.reason), { once: true });
-        })]);
-        const finalToolFrame = toolFrame({ tool_calls: [{ index: 0, function: { arguments: '0123456789abcdef"}' } }] }, 'tool_calls');
-        controller.enqueue(encoder.encode(finalToolFrame + 'data: [DONE]\n\n'));
-        controller.close();
-      },
-    }), { headers: { 'content-type': 'text/event-stream' } });
-    const toolAgentStream = openAiLlm(cfg, (event) => {
-      toolEvents.push(event);
-      if (event.phase === 'live' && event.toolCalls?.some((call) => call.name === 'read_source')) releaseTool();
-    });
-    const toolReply = await toolAgentStream.tool!('system', [{ role: 'user', content: '目录' }], [
-      { name: 'read_source', description: '读目录中的小节', parameters: { type: 'object' } },
-    ]);
-    ok(toolEvents.some((event) => event.phase === 'live' && event.toolCalls?.some((call) =>
-      call.name === 'read_source' && call.arguments.includes('{"sectionId":"sec_') && call.state === 'streaming')),
-      '工具名与参数作为独立结构在模型流中途推送到任务详情');
-    ok(toolEvents.some((event) => event.phase === 'live' && event.toolCalls?.some((call) =>
-      call.arguments === '{"sectionId":"sec_0123456789abcdef"}' && call.state === 'streaming')),
-      '工具流结束前刷新最后一段参数');
-    ok(toolReply.calls[0]?.arguments === '{"sectionId":"sec_0123456789abcdef"}', '流式工具参数被完整拼接后交给 JIT 执行器');
-    toolReply.reportToolResult?.('read-1', { ok: true, detail: '已读取 20 字符' });
-    ok(toolEvents.at(-1)?.phase === 'tools' && toolEvents.at(-1)?.toolCalls?.[0]?.state === 'complete',
-      '工具执行结果单独更新步骤状态，而不拼进模型消息');
+    const streamed = await openAiLlm(cfg).tool!('system', [{ role: 'user', content: '目录' }], []);
+    ok(streamed.text === '现场' && streamed.calls[0]?.name === 'read_source'
+      && streamed.calls[0]?.arguments === '{"sectionId":"sec_0123456789abcdef"}',
+      'SSE 跨网络片段保留 UTF-8 内容并拼回完整的工具参数');
 
     const requests: Array<{ stream?: boolean; stream_options?: unknown }> = [];
-    globalThis.fetch = async (_url, init) => {
-      const request = JSON.parse(String(init?.body));
-      requests.push(request);
-      if (request.stream_options) return new Response('unsupported stream_options', { status: 400 });
-      if (request.stream) return new Response('stream not supported', { status: 422 });
-      return Response.json({ choices: [{ message: { content: '完整回复' } }] });
-    };
-    const fallbackEvents: Array<{ call: number; phase: string }> = [];
-    const batch = openAiLlm(cfg, (event) => fallbackEvents.push({ call: event.call, phase: event.phase }));
-    const batchText = await batch.ask('system', 'user');
-    await batch.ask('system', 'user');
-    ok(batchText === '完整回复' && requests.length === 4 && requests[0].stream_options !== undefined &&
-      requests[1].stream === true && requests[1].stream_options === undefined && !requests[2].stream && !requests[3].stream &&
-      !fallbackEvents.some((event) => event.phase === 'live') && fallbackEvents.some((event) => event.phase === 'batch') &&
-      new Set(fallbackEvents.map((event) => event.call)).size === 2,
-      '不支持流式用量或流式输出时逐级降级，非流式回复不冒充实时输出');
-
     requests.length = 0;
     globalThis.fetch = async (_url, init) => {
       const request = JSON.parse(String(init?.body));
       requests.push(request);
       if (request.stream_options) return new Response('unsupported stream_options', { status: 400 });
-      if (request.stream) return new Response('stream not supported', { status: 422 });
-      return Response.json({ choices: [{ message: { tool_calls: [{ id: 'read-1', function: {
+      const delta = { tool_calls: [{ index: 0, id: 'read-1', function: {
         name: 'read_source', arguments: JSON.stringify({ sectionId: sortSectionId }),
-      } }] } }] });
+      } }] };
+      return new Response('data: ' + JSON.stringify({ choices: [{ delta, finish_reason: 'tool_calls' }] })
+        + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
     };
-    const fallbackTool = openAiLlm(cfg, () => {}).tool!;
+    const fallbackTool = openAiLlm(cfg).tool!;
     const fallbackSpec = [{ name: 'read_source', description: '读取章节', parameters: { type: 'object' } }];
     const fallbackMessages = [{ role: 'user' as const, content: '目录' }];
-    const batchTool = await fallbackTool('system', fallbackMessages, fallbackSpec);
+    const streamedTool = await fallbackTool('system', fallbackMessages, fallbackSpec);
     await fallbackTool('system', fallbackMessages, fallbackSpec);
-    ok(requests.length === 4 && !!requests[0].stream_options && requests[1].stream === true &&
-      !requests[1].stream_options && !requests[2].stream && !requests[3].stream &&
-      batchTool.calls[0]?.arguments === JSON.stringify({ sectionId: sortSectionId }),
-      '工具调用兼容无用量流和非流式响应，并缓存可用模式');
+    ok(requests.length === 3 && !!requests[0].stream_options && requests[1].stream === true &&
+      !requests[1].stream_options && requests[2].stream === true &&
+      streamedTool.calls[0]?.arguments === JSON.stringify({ sectionId: sortSectionId }),
+      'JIT 工具调用遇到用量流参数不兼容时降级为普通 SSE，始终保持流式');
 
-    globalThis.fetch = async () => new Response(content('半截回复'), { headers: { 'content-type': 'text/event-stream' } });
-    const error = await openAiLlm(cfg, () => {}).ask('system', 'user').catch((err: Error) => err.message);
+    requests.length = 0;
+    globalThis.fetch = async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      requests.push(request);
+      return request.stream ? new Response('stream unsupported', { status: 422 })
+        : Response.json({ choices: [{ message: { tool_calls: [] } }] });
+    };
+    const streamRequiredError = await openAiLlm(cfg).tool!('system', fallbackMessages, fallbackSpec)
+      .then(() => '', (error: Error) => error.message);
+    ok(requests.length === 1 && requests[0]?.stream === true
+      && streamRequiredError.includes('HTTP 422'), 'JIT 不支持 SSE 时明确失败，不静默退化为同步生成');
+
+    globalThis.fetch = async () => new Response(frame({ content: '半截回复' }), { headers: { 'content-type': 'text/event-stream' } });
+    const error = await openAiLlm(cfg).ask('system', 'user').catch((err: Error) => err.message);
     ok(error.includes('模型输出流提前结束'), '断开的输出流不会作为完整模型回复交给出题器');
   } finally {
     globalThis.fetch = fetch;
@@ -611,6 +883,33 @@ try {
   ok(await sendAnswers({ v: 2, bankId: 'words', events: [] }) && calls.length === 2
     && calls[0]!.endsWith('/api/health') && calls[1]!.endsWith('/api/answers'),
     '新服务通过 API 契约探测后才接收答题事件');
+
+  let detailRequests = 0;
+  let phase: 'offline' | 'running' | 'done' = 'offline';
+  const job = { id: 'job-plan', taskType: 'plan', title: '目录解析', ms: 0, tail: '' };
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/api/jobs')) {
+      return phase === 'offline' ? new Response(null, { status: 503 }) : Response.json([{ ...job, state: phase }]);
+    }
+    detailRequests++;
+    return detailRequests === 1 ? new Response(null, { status: 503 })
+      : Response.json({ ...job, state: phase, plan: { name: '测试计划' } });
+  };
+  let progressed = false;
+  let settled = false;
+  const watched = watchJob(job.id, (row) => { progressed = row.state === 'running'; })
+    .then((result) => { settled = true; return result; });
+  await tickJobs(0);
+  ok(!settled, '分章等待遇到任务列表暂时不可用时继续等待');
+  phase = 'running';
+  await tickJobs(1000);
+  ok(progressed && !detailRequests, '运行中的分章进度只从任务列表读取');
+  phase = 'done';
+  await tickJobs(2000);
+  ok(!settled, '完成的分章遇到详情请求失败时继续等待');
+  await tickJobs(3000);
+  ok(settled && (await watched)?.plan?.name === '测试计划', '恢复连接后从详情取得分章结果');
+
 } finally {
   globalThis.fetch = originalFetch;
   setServiceBase(originalBase);

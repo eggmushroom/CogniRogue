@@ -5,6 +5,7 @@
  * 服务不在是**正常状态**，不是错误：`dist/index.html` 双击打开、没起服务，
  * 玩家仍可用随程序的英语题库。所以这里的每个函数失败都返回空值，不抛。
  */
+import { AGENTIC_OVERLAP_CHARS, AGENTIC_WINDOW } from '../model/plan';
 import type { Question } from '../model/types';
 
 /**
@@ -224,6 +225,30 @@ export async function remoteDocument(id: string): Promise<(RemoteDocument & { pl
   return r ? await r.json() : null;
 }
 
+
+async function mutateDocument(id: string, method: 'POST' | 'DELETE'): Promise<SubmitResult> {
+  if (!await serviceCompatible()) return { ok: false, error: '本机服务没有响应' };
+  try {
+    const r = await fetch(serviceBase() + '/api/docs/' + encodeURIComponent(id) + (method === 'POST' ? '/reset' : ''), {
+      method, signal: AbortSignal.timeout(10_000),
+    });
+    const data = await r.json().catch(() => null) as { detail?: string } | null;
+    return r.ok ? { ok: true } : { ok: false, error: data?.detail ?? `请求失败（${r.status}）` };
+  } catch {
+    return { ok: false, error: '本机服务没有响应' };
+  }
+}
+
+/** 清除文档派生的主题划分和生成题目，但保留已上传的原文件。 */
+export function resetRemoteDocument(id: string): Promise<SubmitResult> {
+  return mutateDocument(id, 'POST');
+}
+
+/** 删除已上传文档及其派生题库、划分、记忆和章节文件。 */
+export function deleteRemoteDocument(id: string): Promise<SubmitResult> {
+  return mutateDocument(id, 'DELETE');
+}
+
 /** 上传一份文档。pdf 由服务端抽文字（pymupdf 在服务端，不在浏览器）。 */
 export async function uploadDoc(name: string, body: ArrayBuffer): Promise<DocUpload> {
   try {
@@ -290,6 +315,7 @@ export interface PlanTopicRemote {
   pageFrom?: number;
   pageTo?: number;
   summary: string;
+  subtopics?: Array<{ title: string; from: number; to: number; chars: number; pageFrom?: number; pageTo?: number; summary: string }>;
   summarized: 'model' | 'none';
   merged?: number;
   sim?: number;
@@ -301,6 +327,8 @@ export interface PlanRemote {
   tier: 'toc' | 'agentic' | 'fixed';
   size: number;
   depth: number;
+  agenticWindow?: number;
+  agenticOverlapChars?: number;
   chars: number;
   topics: PlanTopicRemote[];
   notes: string[];
@@ -319,10 +347,19 @@ export interface PlanStart {
  */
 export async function startPlan(
   docId: string, mode: 'auto' | 'toc' | 'fixed' | 'agentic', name: string,
+  agenticWindow = AGENTIC_WINDOW, agenticOverlapChars = AGENTIC_OVERLAP_CHARS,
 ): Promise<PlanStart> {
-  return postJson<PlanStart>('/api/plan', { docId, mode, name }, 15_000,
+  return postJson<PlanStart>('/api/plan', { docId, mode, name, agenticWindow, agenticOverlapChars }, 15_000,
     '服务没有回答 —— 先跑 npm run serve。');
 }
+
+export type JobActivityEvent =
+  | { kind: 'index' | 'draft'; active: boolean }
+  | { kind: 'source'; title: string; active: false }
+  | { kind: 'review'; total: number; active: boolean }
+  | { kind: 'reviewed'; passed: number; rejected: number; pending: number; active: false };
+
+export type JobActivity = JobActivityEvent & { ms: number };
 
 export interface JobState {
   id: string;
@@ -335,42 +372,25 @@ export interface JobState {
   name?: string | null;
   ms: number;
   tail: string;
-  progress?: { phase: string; completed: number; total: number; label?: string };
-  /** 任务详情保留每一轮模型调用的完整回复，JIT 追问也不覆盖前一轮。 */
-  modelOutput?: {
-    /** Older saved jobs have one final snapshot; their earlier calls cannot be recovered. */
-    calls?: Array<{
-      call: number;
-      phase: 'waiting' | 'live' | 'batch' | 'tools' | 'complete';
-      text: string;
-      toolCalls?: Array<{
-        id: string;
-        name: string;
-        arguments: string;
-        state: 'streaming' | 'running' | 'complete' | 'failed';
-        detail?: string;
-      }>;
-      inputTokens?: number;
-      outputTokens?: number;
-    }>;
-    phase?: 'waiting' | 'live' | 'batch' | 'tools' | 'complete';
-    text?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    truncated?: boolean;
-  };
+  traceId?: string;
+  progress?: { phase: string; completed: number; total: number; label?: string; written?: number };
+  activity?: JobActivity[];
   /** 计划任务跑完时带回来的一份计划。 */
   plan?: PlanRemote;
 }
 
-export async function serviceJobs(ms = 3000): Promise<JobState[]> {
+export function jobTraceUrl(traceId: string): string {
+  return serviceBase() + '/api/traces/' + encodeURIComponent(traceId);
+}
+
+export async function serviceJobs(ms = 3000): Promise<JobState[] | null> {
   const r = await get('/api/jobs', ms);
-  if (!r) return [];
+  if (!r) return null;
   try {
     const rows = (await r.json()) as unknown;
-    return Array.isArray(rows) ? rows as JobState[] : [];
+    return Array.isArray(rows) ? rows as JobState[] : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -381,34 +401,6 @@ export async function jobState(id: string, ms = 8000): Promise<JobState | null> 
     return (await r.json()) as JobState;
   } catch {
     return null;
-  }
-}
-
-/** 持续接收任务快照；模型输出不再等下一轮任务轮询才显示。 */
-export async function streamJob(id: string, onJob: (job: JobState) => void, signal: AbortSignal): Promise<void> {
-  const response = await fetch(serviceBase() + '/api/jobs/' + encodeURIComponent(id) + '/events', {
-    headers: { Accept: 'text/event-stream' }, signal,
-  });
-  if (!response.ok || !response.body) throw new Error('任务流不可用');
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let pending = '';
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
-      let boundary: number;
-      while ((boundary = pending.indexOf('\n\n')) >= 0) {
-        const frame = pending.slice(0, boundary);
-        pending = pending.slice(boundary + 2);
-        const data = frame.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim();
-        if (!data) continue;
-        try { onJob(JSON.parse(data) as JobState); } catch { /* 忽略不完整或无效帧，继续读流 */ }
-      }
-      if (done) break;
-    }
-  } finally {
-    reader.releaseLock();
   }
 }
 

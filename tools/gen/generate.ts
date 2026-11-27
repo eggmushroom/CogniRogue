@@ -10,18 +10,18 @@
  * 我们把那一节原文追加进去再问一轮。它决定"要读什么"，
  * 但"目录长什么样"由 `chunk.ts` 的确定性切分决定 —— 两边各做自己擅长的那半。
  */
-import type { Chunk } from './chunk';
 import type { Llm } from './llm';
 import { createHash } from 'node:crypto';
 import { questionId } from '../../src/core/library/parse';
+import { traced } from './trace';
 import { parseJsonReply } from './llm';
 import type { GenQuestion } from './emit';
+
+type CandidateQuestion = GenQuestion & { sectionIds: string[] };
 
 export interface TopicJob {
   topic: string;
   topicId?: string;
-  /** 这一节自己的正文块（同一 path 被预算切开的那些）。 */
-  chunks: Chunk[];
   /** 当前主题的原文索引，给模型申请 JIT 读取。 */
   toc: string;
   /** 记忆注入文本，见 `memory.ts` 的 `memText()`。 */
@@ -30,10 +30,13 @@ export interface TopicJob {
   per: number;
   /** 按划分阶段分配的原文 ID 取独立章节文件，JIT 用。 */
   read: (sectionId: string) => string | null;
+  onModelRequest?: (hasSource: boolean) => void;
 }
 
 export interface TopicResult {
-  questions: GenQuestion[];
+  questions: CandidateQuestion[];
+  /** 本轮实际读取的原文，供审核使用。 */
+  sources: ReadonlyMap<string, string>;
   /** 被扔掉的题与原因：写进报表，不静默吞。 */
   dropped: Array<{ reason: string; stem: string }>;
   /** 用掉几轮 JIT 取数。 */
@@ -45,51 +48,40 @@ export interface TopicResult {
 /** 位置依赖的选项文案：和 `core/library/parse.ts` 的判据保持一致。 */
 const POSITIONAL = /^(以上|下述|前面|全都|全部都是|以上皆|以上均|其余|其他都)/;
 
-const SYSTEM = [
-  '你是教材的出题人。只能依据通过 read 提供的原文出题，不许凭目录或常识猜答案。',
-  '每道题只考一个知识点，knowledge 用简短、明确的知识点名称；不要生成 ID。',
-  '复练旧知识点时，knowledge 名称必须逐字照抄记忆中的名称；同一名称表示同一知识点。',
-  '选项 2–4 个，干扰项必须是同一个知识点范围内似是而非的错法，不要凑字数。',
-  '答案用 0 基下标给出。',
-  '如果某个选项的语义依赖它的位置（例如「以上都对」），必须在这一题写 "noShuffle": true。',
-  '原文索引项是「sectionId | 标题 | parentId」；工具调用只能使用索引中的 sectionId，不得传标题。',
-  '只输出 JSON 对象，不要解释、不要代码围栏。',
-].join('\n');
+const OUTPUT_FORMAT = '{"questions":[{"knowledge":"知识点名称","stem":"…","options":["…","…"],"answer":0,"explain":"…","noShuffle":false,"sectionIds":["已读取的章节 ID"]}]}';
 
-function userPrompt(job: TopicJob, extra: string[]): string {
-  const body = job.chunks.map((c) => c.text).join('\n\n');
-  const parts = [
-    `# 主题\n${job.topic}`,
-    `# 本主题的原文索引（read_source 只接受 sectionId）\n${job.toc}`,
-    body ? `# 已读取的原文\n${body}` : '',
-    `# 这个主题的出题记忆\n${job.memory}`,
-    extra.length ? `# 你上几轮申请读的内容\n${extra.join('\n\n')}` : '',
-    [
-      '# 要你做的事',
-      `出 ${job.per} 道题，覆盖这一节的不同知识点，避开记忆里已经稳了的概念。`,
-      '对记忆中需要重练的概念，可以换一个问法生成新题；新题的 knowledge 名称必须对应一个知识点；复练时从记忆中逐字复用名称。程序会分配 ID。',
-      !body && !extra.length ? '先从索引选择相关章节 ID 读取。每个文件只包含对应小节，需要更多内容时再读取其他 ID。本轮禁止直接出题。' : '',
-      '需要原文或更多上下文时，只返回 {"read": ["sec_0123456789abcdef"], "questions": []}，sectionId 必须来自原文索引。',
-      '输出格式：{"questions":[{"knowledge":"知识点名称","stem":"…","options":["…","…"],"answer":0,"explain":"…","noShuffle":false}]}',
-    ].join('\n'),
-  ];
-  return parts.filter(Boolean).join('\n\n');
+function systemPrompt(per: number, nativeTools: boolean): string {
+  const read = nativeTools
+    ? '用索引里的 sectionId 调用 read_source，按需取小节。'
+    : '取小节时只交付 {"read":["索引中的章节 ID"],"questions":[]}，等待程序返回正文。';
+  return [
+    `为当前主题生成 ${per} 道单选题，每题一个不同知识点。不为凑数出不确定的题。`,
+    `取证：出题前先读正文。${read} 目录和记忆用于选题，不当作事实依据。`,
+    '命题：先确定正文直接支持的结论，再写可独立作答的题干。凡影响答案的条件都放进题干。若问代码能否编译或会输出什么，明确必要的类型、定义、导入和输入，不用省略号代替影响结论的代码。教材若只给出某种写法，就问这段代码如何运行，不把它说成唯一合法写法。',
+    '验题：只按题干给出的条件逐一判断 2–4 个选项。必须恰有一个选项全文正确；不得靠标答或解析补条件。题干、标答和解析的范围一致；遇到「必须」「只能」「全部」这类说法，考虑是否有合法反例，有疑问就改成只问该例。解析只说明本题结论为何成立，不加题外断言，不按字母或位置指代选项。',
+    '记录：避开已掌握的知识点；复练换问法并原样复用记忆里的 knowledge 名称。新知识点用简短名称，不生成 ID。sectionIds 只列本轮读过且支持答案和解析的章节；answer 用 0 基下标；noShuffle 仅在选项语义依赖顺序时为 true。',
+    `交付题目时只返回以下结构的 JSON 对象，不加围栏或其他文字：${OUTPUT_FORMAT}`,
+  ].join('\n');
+}
+
+function topicContext(job: TopicJob): string {
+  return [`# 主题\n${job.topic}`, `# 本主题的原文索引\n${job.toc}`, `# 出题记忆\n${job.memory}`].join('\n\n');
 }
 
 /**
- * 校验并修正一道题。
+ * 校验题库格式并解析要交给审核模型的章节。
  *
  * 位置依赖的选项自动补 `noShuffle`：DSL 要作者**显式声明**，是因为游戏不许
  * 靠文案猜语义；而这里我们就是作者，声明一次、写进产物，
  * 游戏那一侧仍然只读标记，不猜。
  */
-function normalize(raw: unknown): { q?: GenQuestion; why?: string; stem?: string } {
+function normalize(raw: unknown, sourceById: ReadonlyMap<string, string>): { q?: CandidateQuestion; why?: string; stem?: string } {
   const r = raw as (Record<string, unknown> & { stem?: unknown; options?: unknown; answer?: unknown; explain?: unknown; noShuffle?: unknown }) | null;
   if (!r || typeof r !== 'object' || Array.isArray(r)) return { why: '不是对象' };
   // 一处换行就能毁掉整份产物：DSL 是一行题干 + 若干行选项，
   // 模型把题干写成两行，第 2 行就不再是选项，整份被解析器拒掉（一次 4 道这么挂过）。
   // 空白在这里压平，代价是丢掉作者刻意的排版 —— 题干本来也不该有排版。
-  const keys = ['knowledge', 'stem', 'options', 'answer', 'explain', 'noShuffle'];
+  const keys = ['knowledge', 'stem', 'options', 'answer', 'explain', 'noShuffle', 'sectionIds'];
   if (Object.keys(r).some((key) => !keys.includes(key))) return { why: '包含未知字段', stem: '' };
   const flat = (s: unknown) => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : '';
   const knowledge = flat(r.knowledge);
@@ -97,7 +89,6 @@ function normalize(raw: unknown): { q?: GenQuestion; why?: string; stem?: string
   const stem = markdown(r.stem);
   const options = Array.isArray(r.options) ? r.options.map(markdown) : [];
   const answer = Number(r.answer);
-
   if (!knowledge || knowledge.length > 80 || /[\r\n\x00-\x1f]/.test(knowledge)) return { why: 'knowledge 必须是 1–80 字的单行知识点名称', stem };
   if (typeof r.stem !== 'string' || !Array.isArray(r.options) || r.options.some((option) => typeof option !== 'string') || typeof r.answer !== 'number' || !Number.isInteger(r.answer) || (r.noShuffle !== undefined && typeof r.noShuffle !== 'boolean') || (r.explain !== undefined && typeof r.explain !== 'string')) return { why: '题目字段类型无效', stem };
   if (!stem) return { why: '缺少题干', stem };
@@ -110,41 +101,66 @@ function normalize(raw: unknown): { q?: GenQuestion; why?: string; stem?: string
 
   const noShuffle = r.noShuffle === true || options.some((o) => POSITIONAL.test(o));
   const knowledgeId = `k_${createHash('sha256').update(knowledge.normalize('NFKC').toLocaleLowerCase('zh-CN')).digest('hex').slice(0, 16)}`;
+  const requested = r.sectionIds;
+  // 引用缺失或写错时回退到本轮已读原文，由审核模型判断是否有足够依据。
+  const sectionIds = Array.isArray(requested) && requested.length > 0
+    && requested.every((id): id is string => typeof id === 'string' && sourceById.has(id))
+    ? [...new Set(requested)] : [...sourceById.keys()];
   return {
-    q: { knowledgeId, knowledgeLabel: knowledge, qid: questionId('', stem), stem, options, answer, explain: markdown(r.explain), noShuffle },
+    q: { knowledgeId, knowledgeLabel: knowledge, qid: questionId('', stem), stem, options, answer, explain: markdown(r.explain), noShuffle, sectionIds },
   };
 }
 
-/** 跑一个主题：可能先读几轮别的节，再出题。 */
-export async function generateTopic(job: TopicJob, llm: Llm, maxRounds = 3): Promise<TopicResult> {
+function finalize(job: TopicJob, rawQuestions: unknown[], sourceById: ReadonlyMap<string, string>, rounds: number, reads: string[]): TopicResult {
+  const questions: CandidateQuestion[] = [];
+  const dropped: TopicResult['dropped'] = [];
+  const seen = new Set<string>();
+  for (const raw of rawQuestions) {
+    const { q, why, stem } = normalize(raw, sourceById);
+    if (!q) { dropped.push({ reason: why ?? '不合格', stem: stem ?? '' }); continue; }
+    q.qid = questionId(job.topicId ?? job.topic, q.stem);
+    if (seen.has(q.qid)) { dropped.push({ reason: `题目重复「${q.stem.slice(0, 32)}」`, stem: q.stem }); continue; }
+    seen.add(q.qid);
+    questions.push(q);
+    if (questions.length >= job.per) break;
+  }
+  return { questions, sources: sourceById, dropped, rounds, reads };
+}
+
+/** 跑一个主题：模型先按需读取章节，再生成候选题。 */
+// A large topic may need several JIT reads before the model can synthesize questions.
+export async function generateTopic(job: TopicJob, llm: Llm, maxRounds = 6): Promise<TopicResult> {
   const extra: string[] = [];
   const reads: string[] = [];
-  const dropped: TopicResult['dropped'] = [];
+  const sourceById = new Map<string, string>();
+  const context = topicContext(job);
+  const system = systemPrompt(job.per, Boolean(llm.tool));
+  const empty = (reason: string, rounds: number): TopicResult => ({
+    questions: [], sources: sourceById, dropped: [{ reason, stem: '' }], rounds, reads,
+  });
 
   if (llm.tool) {
     const messages: Array<{ role: 'user' | 'assistant' | 'tool'; content: string; toolCallId?: string; calls?: Array<{ id: string; name: string; arguments: string }> }> = [
-      { role: 'user', content: [
-        `# 主题\n${job.topic}`, `# 原文索引（只能通过 read_source 获取正文）\n${job.toc}`, `# 记忆\n${job.memory}`,
-        `出 ${job.per} 道题；只依据 read_source 返回的原文。请先调用工具读取必要小节，再输出 JSON：{"questions":[{"knowledge":"知识点名称","stem":"…","options":["…","…"],"answer":0,"explain":"…","noShuffle":false}]}`,
-      ].join('\n\n') },
+      { role: 'user', content: context },
     ];
     const toolSpec = [{ name: 'read_source', description: '按划分计划里的原文 ID 读取对应章节文件。只读取出题确实需要的内容。',
       parameters: { type: 'object', properties: { sectionId: { type: 'string', pattern: '^sec_[a-f0-9]{16}$', description: '原文索引中列出的章节 ID' } }, required: ['sectionId'], additionalProperties: false } }];
     for (let round = 0; round <= maxRounds; round++) {
-      const response = await llm.tool(SYSTEM, messages, toolSpec);
+      job.onModelRequest?.(sourceById.size > 0);
+      const model = llm.tool;
+      const response = await traced('generation.round', { round: round + 1, loadedSections: sourceById.size }, () =>
+        model(system, messages, toolSpec));
       if (response.calls.length) {
         messages.push({ role: 'assistant', content: response.text, calls: response.calls });
         for (const call of response.calls) {
           let sectionId = '';
           try { const args = JSON.parse(call.arguments); sectionId = typeof args.sectionId === 'string' ? args.sectionId : ''; } catch { /* invalid tool arguments yield a bounded error */ }
-          if (!sectionId) response.reportToolResult?.(call.id, { ok: false, detail: '参数无效' });
           const text = call.name === 'read_source' && sectionId ? job.read(sectionId) : null;
           if (text) {
-            response.reportToolResult?.(call.id, { ok: true, detail: `已读取 ${text.length} 字符` });
             reads.push(sectionId);
+            sourceById.set(sectionId, text);
             messages.push({ role: 'tool', toolCallId: call.id, content: text });
           } else {
-            if (sectionId) response.reportToolResult?.(call.id, { ok: false, detail: 'sectionId 不在当前主题索引中' });
             messages.push({ role: 'tool', toolCallId: call.id, content: '读取失败：sectionId 不在当前主题原文索引中。请使用索引中列出的 ID。' });
           }
         }
@@ -152,29 +168,20 @@ export async function generateTopic(job: TopicJob, llm: Llm, maxRounds = 3): Pro
       }
       const parsed = parseJsonReply(response.text) as { questions?: unknown[] };
       const rawQuestions = Array.isArray(parsed.questions) ? parsed.questions : [];
-      if (!reads.length) return { questions: [], dropped: [{ reason: 'agent 未通过 read_source 读取原文', stem: '' }], rounds: round, reads };
-      const seen = new Set<string>();
-      const questions: GenQuestion[] = [];
-      for (const raw of rawQuestions) {
-        const { q, why, stem } = normalize(raw);
-        if (!q) { dropped.push({ reason: why ?? '不合格', stem: stem ?? '' }); continue; }
-        q.qid = questionId(job.topicId ?? job.topic, q.stem);
-        if (seen.has(q.qid)) { dropped.push({ reason: `题目重复「${q.stem.slice(0, 32)}」`, stem: q.stem }); continue; }
-        seen.add(q.qid); questions.push(q);
-        if (questions.length >= job.per) break;
-      }
-      return { questions, dropped, rounds: round, reads };
+      if (!reads.length) return empty('agent 未通过 read_source 读取原文', round);
+      return finalize(job, rawQuestions, sourceById, round, reads);
     }
-    return { questions: [], dropped: [{ reason: `JIT 取数超过 ${maxRounds} 轮仍没出题`, stem: '' }], rounds: maxRounds, reads };
+    return empty(`JIT 取数超过 ${maxRounds} 轮仍没出题`, maxRounds);
   }
 
   for (let round = 0; round <= maxRounds; round++) {
-    const reply = await llm.ask(SYSTEM, userPrompt(job, extra));
+    job.onModelRequest?.(sourceById.size > 0);
+    const reply = await llm.ask(system, extra.length ? `${context}\n\n# 已读取的原文\n${extra.join('\n\n')}` : context);
     const parsed = parseJsonReply(reply) as { questions?: unknown[]; read?: unknown };
 
     const want = Array.isArray(parsed.read) ? parsed.read.filter((id): id is string => typeof id === 'string') : [];
     const questions = Array.isArray(parsed.questions) ? parsed.questions : [];
-    const hasSource = job.chunks.length > 0 || extra.length > 0;
+    const hasSource = sourceById.size > 0;
 
     // 空题 + 申请读数：这是 JIT 的正常一轮，不是失败
     if ((!hasSource || !questions.length) && want.length && round < maxRounds) {
@@ -184,27 +191,17 @@ export async function generateTopic(job: TopicJob, llm: Llm, maxRounds = 3): Pro
         if (!text) continue;
         got += 1;
         reads.push(sectionId);
+        sourceById.set(sectionId, text);
         extra.push(`## ${sectionId}\n${text}`);
       }
       if (got) continue;
       // 一条都读不到：别再来一轮同样的空转
-      return { questions: [], dropped: [{ reason: `申请的原文 ID 读不到：${want.join(' / ')}`, stem: '' }], rounds: round, reads };
+      return empty(`申请的原文 ID 读不到：${want.join(' / ')}`, round);
     }
-    if (!hasSource) return { questions: [], dropped: [{ reason: '未读取原文', stem: '' }], rounds: round, reads };
+    if (!hasSource) return empty('未读取原文', round);
 
-    const seen = new Set<string>();
-    const out: GenQuestion[] = [];
-    for (const raw of questions) {
-      const { q, why, stem } = normalize(raw);
-      if (!q) { dropped.push({ reason: why ?? '不合格', stem: stem ?? '' }); continue; }
-      q.qid = questionId(job.topicId ?? job.topic, q.stem);
-      if (seen.has(q.qid)) { dropped.push({ reason: `题目重复「${q.stem.slice(0, 32)}」`, stem: q.stem }); continue; }
-      seen.add(q.qid);
-      out.push(q);
-      if (out.length >= job.per) break;
-    }
-    return { questions: out, dropped, rounds: round, reads };
+    return finalize(job, questions, sourceById, round, reads);
   }
 
-  return { questions: [], dropped: [...dropped, { reason: `JIT 取数超过 ${maxRounds} 轮仍没出题`, stem: '' }], rounds: maxRounds, reads };
+  return empty(`JIT 取数超过 ${maxRounds} 轮仍没出题`, maxRounds);
 }

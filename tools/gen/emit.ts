@@ -11,7 +11,7 @@ import { topicHeading } from '../../src/core/library/parse';
 import type { Question } from '../../src/core/model';
 import { closesFence, codeFence } from '../../src/core/library/markdown';
 
-/** 模型该产出、也只该产出的东西。 */
+/** 已经程序规范化的题目。 */
 export interface GenQuestion {
   /** 稳定知识点 ID：同一知识点的变式题共用。 */
   knowledgeId: string;
@@ -23,6 +23,8 @@ export interface GenQuestion {
   answer: number;
   explain?: string;
   noShuffle?: boolean;
+  /** 审核时实际提供的原文章节，仅存于服务侧，不渲染进游戏题库。 */
+  sectionIds?: string[];
 }
 
 export interface GenTopic {
@@ -151,9 +153,8 @@ export function countByTopic(text: string): Record<string, Question[]> {
  * 玩家导出的快照按 qid 记，并进记忆按 knowledgeId 汇总，中间这一步就在这里。
  * 没写 `~` 的老题不进表：它们的号跟着题干走，映射过去也会错。
  */
-export function knowledgeIdByQid(text: string): Record<string, string> {
+export function knowledgeIdByQid(bank: ReturnType<typeof parseQuestionBank>): Record<string, string> {
   const out: Record<string, string> = {};
-  const bank = parseQuestionBank(text);
   for (const topic of Object.keys(bank.byTopic)) {
     for (const q of bank.byTopic[topic]) if (q.knowledgeId) out[q.qid] = q.knowledgeId;
   }

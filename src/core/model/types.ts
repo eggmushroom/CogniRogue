@@ -502,6 +502,7 @@ export interface PlanTopicView {
   pageFrom?: number;
   pageTo?: number;
   summary: string;
+  subtopics?: Array<{ title: string; summary: string; pageFrom?: number; pageTo?: number }>;
   /** 摘要来自模型还是回落到首句 —— 界面上要标出来，不然玩家以为摘要一定准。 */
   summarized: 'model' | 'none';
   /** 合并过几节（> 1 才有意义）。 */
@@ -516,6 +517,9 @@ export interface PlanView {
   name: string;
   /** 这一份计划是怎么切出来的：目录 / 模型 / 固定大小。 */
   tier: 'toc' | 'agentic' | 'fixed' | '';
+  agenticWindow: number;
+  agenticOverlapChars: number;
+  agenticOverlapInput?: EditField;
   chars: number;
   topics: PlanTopicView[];
   /** 回落原因之类的说明。空数组 = 一切按计划。 */
@@ -524,7 +528,8 @@ export interface PlanView {
   canAgentic: boolean;
   imported: boolean;
   selected: Set<number>;
-  busy: 'plan' | 'submit' | '';
+  busy: 'plan' | 'submit' | 'reset' | 'delete' | '';
+  confirmAction?: 'reset' | 'delete';
   msg: string;
   ok: boolean;
   /** 服务端那份计划的 id，出题时要带回去。 */
@@ -569,6 +574,8 @@ export interface GameState {
   charge: Record<string, number>;
   /** 本场还没点开过的新题；用完不锁牌，`takeQuestion` 会改问被问得最少的题。 */
   qLeft: Question[];
+  /** 取消答题时保留题目与选项视图；同一局内重开必须继续回答这一题。 */
+  pendingQuestion: { q: Question; view: QView } | null;
   /** 本局每题被抽到几次；到 3 次不再进新题池。跨场保留，`startRun` 清。 */
   qPicked: Record<string, number>;
   /**

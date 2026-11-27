@@ -4,23 +4,24 @@
  * 这是「从文档建题库」的第一步，服务端起它、把结果给玩家确认，再起 `npm run gen --plan=…`。
  * 它自己不写题库：切错了只影响一份 json，不会污染 `packs/`。
  *
- *   --mode=auto     有第 --depth 级标题就按目录切，否则按段落装箱（默认，不调用模型）
+ *   --mode=auto     优先按可用标题层级切分，否则按段落装箱（默认，不调用模型）
  *   --mode=toc      只按目录切；切不出来就退出码 1（交给调用方决定要不要问玩家）
  *   --mode=fixed    只按段落装箱
- *   --mode=agentic  让模型按段落分章（要 GEN_API_KEY）；失败回落到 fixed 并记 notes
+ *   --mode=agentic  逐块提取主题树并全局合并（要 GEN_API_KEY）
  *
- * 摘要与合并：有模型就每节一次调用生成摘要，再按摘要相似度合并相邻节；
- * 没有模型（或加了 --no-summaries）就用首句代替，且**不合并** —— 首句不像摘要，
- * 拿它比相似度会把两节不相干的东西并到一起。
+ * --overlap 指定模型分章的重叠字符数，设为 0 时关闭重叠。
+ * --no-merge 跳过全局合并；--no-summaries 保留首句摘要并跳过全局合并。
  */
 import { basename, resolve } from 'node:path';
+import { AGENTIC_OVERLAP_CHARS, AGENTIC_WINDOW, MAX_AGENTIC_WINDOW, MIN_AGENTIC_WINDOW } from '../../src/core/model/plan';
 import { readFileSync } from 'node:fs';
 import { commitFiles } from './files';
+import { traced, tracedSync } from './trace';
 import { memFile, prepareSections, readTopicMem } from './memory';
 import { configFromEnv, openAiLlm } from './llm';
 import type { Llm } from './llm';
 import {
-  MERGE_PCT, PLAN_DEPTH, PLAN_SIZE, agenticPlan, fixedPlan, mergePlan, pageRange, summarizePlan, tocPlan,
+  PLAN_DEPTH, PLAN_SIZE, agenticPlan, firstSentence, fixedPlan, pageRange, planText, titledPlan, tocPlan,
 } from './plan';
 import type { Plan, PlanOpts } from './plan';
 
@@ -32,6 +33,8 @@ interface Opts {
   mode: Mode;
   depth: number;
   size: number;
+  agenticWindow: number;
+  agenticOverlapChars: number;
   name: string;
   merge: boolean;
   summaries: boolean;
@@ -42,11 +45,11 @@ interface Opts {
 }
 
 const USAGE = `用法：npm run plan -- --src=<文档.md> [--out=plan.json] [--mode=auto|toc|fixed|agentic]
-        [--depth=${PLAN_DEPTH}] [--size=${PLAN_SIZE}] [--name=显示名] [--no-merge] [--no-summaries]`;
+        [--depth=${PLAN_DEPTH}] [--size=${PLAN_SIZE}] [--window=${AGENTIC_WINDOW}] [--overlap=${AGENTIC_OVERLAP_CHARS}] [--name=显示名] [--no-merge] [--no-summaries]`;
 
 /** 白名单解析：认不出的参数直接退出，不许静默忽略。 */
 function parseArgs(argv: string[]): Opts | null {
-  const known = new Set(['src', 'out', 'mode', 'depth', 'size', 'name', 'complete', 'memory', 'sections', 'document']);
+  const known = new Set(['src', 'out', 'mode', 'depth', 'size', 'window', 'overlap', 'name', 'complete', 'memory', 'sections', 'document']);
   const flags = new Set(['no-merge', 'no-summaries']);
   const val: Record<string, string> = {};
   const on = new Set<string>();
@@ -70,6 +73,15 @@ function parseArgs(argv: string[]): Opts | null {
   };
   const mode = (val.mode ?? 'auto') as Mode;
   if (!['auto', 'toc', 'fixed', 'agentic'].includes(mode)) throw new Error(`--mode 只能是 auto / toc / fixed / agentic`);
+  const window = num('window', AGENTIC_WINDOW);
+  if (window < MIN_AGENTIC_WINDOW || window > MAX_AGENTIC_WINDOW) {
+    throw new Error(`--window 必须在 ${MIN_AGENTIC_WINDOW} 到 ${MAX_AGENTIC_WINDOW} 之间`);
+  }
+
+  const overlap = val.overlap ?? String(AGENTIC_OVERLAP_CHARS);
+  if (!/^\d+$/.test(overlap) || Number(overlap) > window) {
+    throw new Error(`--overlap 必须是 0 到 ${window} 的整数（字符数）`);
+  }
 
   return {
     src: val.src,
@@ -77,6 +89,8 @@ function parseArgs(argv: string[]): Opts | null {
     mode,
     depth: num('depth', PLAN_DEPTH),
     size: num('size', PLAN_SIZE),
+    agenticWindow: window,
+    agenticOverlapChars: Number(overlap),
     name: (val.name || basename(val.src)).slice(0, 80),
     merge: !on.has('no-merge'),
     summaries: !on.has('no-summaries'),
@@ -111,22 +125,29 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const planOpts: PlanOpts = { name: opts.name, depth: opts.depth, size: opts.size };
+  const planOpts: PlanOpts = {
+    name: opts.name, depth: opts.depth, size: opts.size,
+    agenticWindow: opts.agenticWindow, agenticOverlapChars: opts.agenticOverlapChars,
+  };
 
   const cfg = configFromEnv();
   const llm: Llm | null = cfg.apiKey ? openAiLlm(cfg) : null;
   const notes: string[] = [];
+  let planningSteps = 1;
+  const progress = (phase: string, completed: number, label: string) => {
+    console.log('@@progress ' + JSON.stringify({ phase, completed, total: planningSteps + 2, label }));
+  };
 
   let plan: Plan | null = null;
   if (opts.mode === 'toc' || opts.mode === 'auto') {
-    plan = tocPlan(md, planOpts);
+    plan = opts.mode === 'auto' ? titledPlan(md, planOpts) : tocPlan(md, planOpts);
     if (!plan) {
       if (opts.mode === 'toc') {
         console.error(`✗ 源文档里没有第 ${opts.depth} 级标题，切不出目录划分。`);
         process.exitCode = 1;
         return;
       }
-      notes.push(`没有第 ${opts.depth} 级标题，按段落装箱；模型分章需手动选择。`);
+      notes.push('没有可用的章节标题，按段落装箱；模型分章需手动选择。');
     }
   }
   if (!plan && opts.mode === 'agentic') {
@@ -135,10 +156,17 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    plan = await agenticPlan(md, planOpts, llm, (s) => console.log(`  ${s}`));
+    const model = llm;
+    plan = await traced('plan.agentic', { window: opts.agenticWindow, overlapChars: opts.agenticOverlapChars }, () =>
+      agenticPlan(md, planOpts, model, {
+        merge: opts.merge && opts.summaries,
+        onProgress: ({ phase, completed, total, label }) => {
+          planningSteps = total;
+          progress(phase, completed, label);
+        },
+      }));
     if (!plan) {
-      notes.push('模型没有给出可用的分章，回落到段落装箱。');
-      plan = fixedPlan(md, planOpts);
+      throw new Error('这份文档没有可供模型划分的段落。');
     }
   }
   if (!plan) plan = fixedPlan(md, planOpts);
@@ -147,25 +175,19 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  console.log('@@progress ' + JSON.stringify({ phase: 'split', completed: 1, total: 4, label: `已划分 ${plan.topics.length} 个主题` }));
+  progress('index', planningSteps, `已划分 ${plan.topics.length} 个主题，正在建立原文索引`);
 
-  // 摘要：模型给的就靠它合并；没有模型就只留首句，并且不合并
-  const useModel = !!llm && opts.summaries && opts.mode === `agentic`;
-  plan = await summarizePlan(plan, md, useModel ? llm : null, (s) => console.log(`  ${s}`));
-  console.log('@@progress ' + JSON.stringify({ phase: 'summary', completed: 2, total: 4, label: '主题摘要已完成' }));
-  if (useModel && opts.merge) {
-    const before = plan.topics.length;
-    plan = mergePlan(plan);
-    if (plan.topics.length < before) {
-      console.log(`  合并：${before} 节 → ${plan.topics.length} 节（相似度 ≥ ${MERGE_PCT}%）`);
-    }
-  }
-  plan.topics = plan.topics.map((topic) => {
-    const pages = pageRange(md, topic.from, topic.to);
-    return pages ? { ...topic, ...pages } : topic;
+  const annotate = <T extends Plan['topics'][number]>(topic: T): T => ({
+    ...topic,
+    ...(topic.summarized === 'none' || !opts.summaries
+      ? { summary: firstSentence(planText(md, topic)), summarized: 'none' } : {}),
+    ...(plan?.tier === 'agentic' ? {} : pageRange(md, topic.from, topic.to)),
   });
+  plan.topics = plan.topics.map((topic) => ({
+    ...annotate(topic),
+    ...(topic.subtopics ? { subtopics: topic.subtopics.map(annotate) } : {}),
+  }));
   plan.notes.push(...notes);
-  console.log('@@progress ' + JSON.stringify({ phase: 'index', completed: 3, total: 4, label: '页码索引已完成' }));
 
   const out = resolve(opts.out);
   const files: Array<{ target: string; content: string }> = [];
@@ -187,17 +209,19 @@ async function main(): Promise<void> {
     document.planId = basename(out, '.json');
     files.push({ target: resolve(opts.document), content: JSON.stringify(document, null, 2) + '\n' });
   }
-  commitFiles(out, files, opts.complete ? resolve(opts.complete) : undefined);
+  progress('commit', planningSteps + 1, '正在保存划分计划与主题记忆');
+  tracedSync('plan.commit', { topics: plan.topics.length, sections: sections.length }, () =>
+    commitFiles(out, files, opts.complete ? resolve(opts.complete) : undefined));
 
   console.log(`源文档 ${opts.src}｜${tierName(plan)}｜${plan.chars} 字 → ${plan.topics.length} 节`);
   for (const t of plan.topics) {
-    const extra = t.merged && t.merged > 1 ? `（并了 ${t.merged} 节，像 ${t.sim}%）` : '';
+    const extra = t.merged && t.merged > 1 ? `（合并 ${t.merged} 个片段）` : '';
     const pages = t.pageFrom ? `｜第 ${t.pageFrom}${t.pageTo !== t.pageFrom ? `-${t.pageTo}` : ``} 页` : ``;
     console.log(`  ${t.title}｜${t.chars} 字${pages}${extra}｜${t.summary.slice(0, 40)}`);
   }
   for (const n of plan.notes) console.log(`  ! ${n}`);
   console.log(`✓ 写入 ${opts.out}`);
-  console.log('@@progress ' + JSON.stringify({ phase: 'complete', completed: 4, total: 4, label: '划分与主题记忆已保存' }));
+  progress('complete', planningSteps + 2, '划分与主题记忆已保存');
 }
 
 main().catch((err: unknown) => {

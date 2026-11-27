@@ -763,7 +763,7 @@ await step('题库：超过一屏的长题目仍可展开和收起', async () =>
 await step('出题 Agent：首次出题、混合更新、显式选用与删除', async () => {
   await evalJs(`(() => {
     const fetch = window.fetch;
-    window.__restoreTopicMocks = () => { window.fetch = fetch; };
+    window.__restoreTopicMocks = () => { window.fetch = fetch; canvas.fillText = fillText; };
     window.__topicRequests = [];
     window.__deleteRequests = [];
     let generated = false;
@@ -772,14 +772,26 @@ await step('出题 Agent：首次出题、混合更新、显式选用与删除',
     const doc = { docId: 'saved-doc-test', name: '已保存文档.md', kind: 'md', chars: 100,
       createdAt: '2026-11-20', planId: 'saved-plan', importedPlanId: 'saved-plan' };
     const topics = ['基础', '进阶', '附录'].map(title => ({ title, chars: 100, summary: '已保存的正文', summarized: 'none' }));
-    window.__setTopicLiveText = (text) => {
+    const canvas = document.querySelector('canvas').getContext('2d');
+    const fillText = canvas.fillText;
+    const shown = new Set();
+    canvas.fillText = function (text, ...args) {
+      shown.add(text);
+      fillText.call(this, text, ...args);
+    };
+    window.__topicShown = (text) => shown.has(text);
+    window.__setTopicDraft = () => {
       const job = jobs.find(item => item.id === 'topic-job-0');
-      if (job?.modelOutput?.calls?.[1]) { job.modelOutput.calls[1].phase = 'live'; job.modelOutput.calls[1].text = text; }
+      job.activity = [{ kind: 'index', active: true, ms: 0 }, { kind: 'source', title: '基础定义', active: false, ms: 1000 }, { kind: 'draft', active: true, ms: 1001 }];
+    };
+    window.__setTopicReview = () => {
+      const job = jobs.find(item => item.id === 'topic-job-0');
+      job.progress = { phase: 'review', completed: 2, total: 3 };
+      job.activity.push({ kind: 'review', total: 3, active: true, ms: 2000 });
     };
     window.__finishTopicJobs = () => {
-      jobs = jobs.map(job => ({ ...job, state: 'done', modelOutput: job.modelOutput && {
-        ...job.modelOutput, calls: job.modelOutput.calls.map(call => call.call === 2 ? { ...call, phase: 'complete' } : call),
-      } }));
+      jobs = jobs.map(job => ({ ...job, state: 'done', progress: { phase: 'complete', completed: 1, total: 1, written: 3 },
+        activity: job.activity && [...job.activity, { kind: 'reviewed', passed: 3, rejected: 0, pending: 0, active: false, ms: 3000 }] }));
       generated = true;
     };
     window.__topicBankRead = () => bankRead;
@@ -801,37 +813,14 @@ await step('出题 Agent：首次出题、混合更新、显式选用与删除',
         return Promise.resolve(new Response(
           '# 已保存文档\\n## 基础\\n### 示例题？\\nA) 正确\\nB) 错误\\n= A\\n'));
       }
-      if (/^\\/api\\/jobs\\/[^/]+\\/events$/.test(path)) {
-        const id = decodeURIComponent(path.split('/')[3]);
-        let timer;
-        const stream = new ReadableStream({
-          start(controller) {
-            const emit = () => {
-              const job = jobs.find(item => item.id === id);
-              if (!job) { controller.close(); return; }
-              controller.enqueue(new TextEncoder().encode('event: job\\ndata: ' + JSON.stringify(job) + '\\n\\n'));
-              if (job.state === 'done' || job.state === 'fail') controller.close();
-              else timer = setTimeout(emit, 40);
-            };
-            emit();
-          },
-          cancel() { clearTimeout(timer); },
-        });
-        return Promise.resolve(new Response(stream, { headers: { 'content-type': 'text/event-stream' } }));
-      }
       if (path === '/api/jobs') return json(jobs);
       if (path === '/api/generate') {
         const body = JSON.parse(init.body);
         window.__topicRequests.push(body);
         const prefix = window.__topicRequests.length === 1 ? 'topic-job-' : 'topic-update-';
         jobs = body.topics.map((topic, i) => ({ id: prefix + topic, topic, planId: doc.planId, title: topics[topic].title,
-          bankId: doc.docId, state: i ? 'queued' : 'running', ms: 0, taskType: 'generate',
-          modelOutput: i ? undefined : { calls: [
-            { call: 1, phase: 'complete', text: '第一轮模型输出。', toolCalls: [
-              { id: 'jit-read', name: 'read_knowledge', arguments: '{"knowledgeId":"k-1"}', state: 'complete', detail: '读取了一个知识点。' },
-            ] },
-            { call: 2, phase: 'complete', text: '最终模型输出。' },
-          ] } }));
+          bankId: doc.docId, state: i ? 'queued' : 'running', ms: 0, taskType: 'generate', traceId: String(topic + 1).repeat(32),
+          tail: '', progress: { phase: 'topics', completed: 0, total: 1 } }));
         return json({ ok: true, jobs });
       }
       return fetch(input, init);
@@ -858,9 +847,22 @@ await step('出题 Agent：首次出题、混合更新、显式选用与删除',
     if (hits.includes('select-topic:0') || hits.includes('select-topic:2') || !hits.includes('select-topic:1')) {
       throw new Error('运行中和排队中的主题仍可重复勾选');
     }
-    if (hits.includes('查看任务') || hits.includes('后台任务')) {
-      throw new Error('文档主题页不应出现任务入口');
+    await clickLabel('出题中 ›');
+    if (!await waitFor('返回') || !await S("window.__topicShown('出题') && window.__topicShown('审核') && window.__topicShown('入库')")) {
+      throw new Error('文档主题页的任务侧栏未显示三个阶段');
     }
+    await evalJs('window.__setTopicDraft(); true');
+    const draftDeadline = Date.now() + 4000;
+    const draftShown = "window.__topicShown('构思题目中') && window.__topicShown('已读《基础定义》')";
+    while (Date.now() < draftDeadline && !await S(draftShown)) await sleep(60);
+    if (!await S(draftShown)) throw new Error('任务详情没有显示本轮读过的章节与出题动作');
+    await evalJs('window.__setTopicReview(); true');
+    const reviewDeadline = Date.now() + 4000;
+    const reviewShown = "window.__topicShown('审核中 · 2/3') && window.__topicShown('提交 3 道候选题审核')";
+    while (Date.now() < reviewDeadline && !await S(reviewShown)) await sleep(60);
+    if (!await S(reviewShown)) throw new Error('任务详情没有更新审核进度与工作记录');
+    await clickLogical(610, 130);
+    if (!await waitGone('任务抽屉遮罩') || !await waitFor('审核中 · 2/3 ›')) throw new Error('关闭侧栏后未返回文档主题');
     await pressKey('Escape', 'Escape', 27);
     await pressKey('Escape', 'Escape', 27);
     await clickLabel('后台任务');
@@ -868,44 +870,34 @@ await step('出题 Agent：首次出题、混合更新、显式选用与删除',
       throw new Error('后台任务缺少各主题的独立记录');
     }
     await clickLabel('任务:topic-job-0');
-    if (!await waitFor('返回')) throw new Error('后台任务详情没有返回入口');
-    const oldModel = '工作步骤:topic-job-0:1:assistant';
-    const latestModel = '工作步骤:topic-job-0:2:assistant';
-    const jitTool = '工作步骤:topic-job-0:1:tool:jit-read';
-    if (!await waitFor(oldModel) || !await waitFor(latestModel) || !await waitFor(jitTool)) {
-      throw new Error('模型输出 / 工具调用没有可点击的步骤热区');
-    }
-    const latestLabel = JSON.stringify(latestModel);
-    const initialLatest = await evalJs(`cog.hots().find(h => h.label === ${latestLabel})`);
-    if (!initialLatest || initialLatest.h <= 46) throw new Error('最新模型输出没有默认展开');
-    await clickLabel(oldModel);
-    await clickLabel(oldModel);
-    await clickLabel(jitTool);
-    await clickLogical(1500, 810);
-    if (await evalJs('document.body.style.cursor') !== 'default') throw new Error('任务抽屉空白处仍显示可选择光标');
-    await evalJs(`window.__setTopicLiveText(${JSON.stringify('{"a":"新片段此刻可见。","b":1}')})`);
-    let latestExpanded = initialLatest;
-    const streamDeadline = Date.now() + 3000;
-    while (Date.now() < streamDeadline && latestExpanded.h <= initialLatest.h) {
-      await sleep(40);
-      latestExpanded = await evalJs(`cog.hots().find(h => h.label === ${latestLabel})`);
-    }
-    if (!latestExpanded || latestExpanded.h <= initialLatest.h) throw new Error('模型流更新没有在完成前重新布局');
-    await clickLabel(latestModel);
-    const latestCollapsed = await evalJs(`cog.hots().find(h => h.label === ${JSON.stringify(latestModel)})`);
-    if (!latestCollapsed || latestCollapsed.h >= latestExpanded.h) throw new Error('最新模型输出无法收起');
-    await clickLabel(latestModel);
-    const latestReopened = await evalJs(`cog.hots().find(h => h.label === ${JSON.stringify(latestModel)})`);
-    if (!latestReopened || latestReopened.h <= latestCollapsed.h) throw new Error('最新模型输出无法重新展开');
     await pressKey('Escape', 'Escape', 27);
     if (!await waitFor('任务:topic-job-0')) throw new Error('Esc 跳过了后台任务列表');
     await clickLabel('任务:topic-job-0');
+    await evalJs('window.__finishTopicJobs(); true');
+    for (let i = 0; i < 100 && !await S('window.__topicBankRead()'); i++) await sleep(60);
+    if (!await S("window.__topicBankRead() && window.__topicShown('已入库 3 道')")) {
+      // The bank fetch can finish before the next canvas frame paints the updated label.
+      await nextFrames();
+      if (!await S("window.__topicBankRead() && window.__topicShown('已入库 3 道')")) throw new Error('任务完成后未显示入库数量或刷新题库');
+    }
+    if (!await S("window.__topicShown('3 道通过 · 0 道拒绝')")) throw new Error('任务完成后没有保留审核结果');
+    if (!await waitFor('复制 Trace ID') || !await waitFor('下载 Trace')) throw new Error('任务详情没有 Trace 入口');
+    await evalJs(`(() => {
+      const click = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function() {
+        window.__downloadedTrace = { url: new URL(this.href).pathname, filename: this.download };
+        HTMLAnchorElement.prototype.click = click;
+      };
+      return true;
+    })()`);
+    await clickLabel('下载 Trace');
+    const trace = await S('window.__downloadedTrace');
+    if (trace?.url !== '/api/traces/' + '1'.repeat(32) || trace?.filename !== 'trace-' + '1'.repeat(32) + '.jsonl') {
+      throw new Error('下载链接没有指向当前任务的 Trace');
+    }
     await clickLabel('返回');
     if (!await waitFor('任务:topic-job-0')) throw new Error('返回按钮跳过了后台任务列表');
     await clickLabel('×');
-    await evalJs('window.__finishTopicJobs(); true');
-    for (let i = 0; i < 100 && !await S('window.__topicBankRead()'); i++) await sleep(60);
-    if (!await S('window.__topicBankRead()')) throw new Error('后台任务完成后没有刷新题库');
     await clickLabel('题库');
     await clickLabel(label);
     if (!await waitFor('文档主题', 5000)) throw new Error('生成结束后无法打开题库与文档主题');
@@ -987,7 +979,7 @@ await step('出题 Agent：首次出题、混合更新、显式选用与删除',
     await pressKey('Escape', 'Escape', 27);
     await pressKey('Escape', 'Escape', 27);
   } finally {
-    await evalJs('window.__restoreTopicMocks(); delete window.__restoreTopicMocks; delete window.__topicRequests; delete window.__finishTopicJobs; delete window.__topicBankRead; delete window.__deleteRequests; delete window.__finishDelete; true');
+    await evalJs('window.__restoreTopicMocks(); delete window.__restoreTopicMocks; delete window.__topicRequests; delete window.__finishTopicJobs; delete window.__setTopicReview; delete window.__setTopicDraft; delete window.__topicShown; delete window.__topicBankRead; delete window.__deleteRequests; delete window.__finishDelete; true');
   }
 }, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
 
@@ -996,16 +988,28 @@ await step('上传无目录文档：手动模型分章，导入主题后才可�
   await evalJs(`(() => {
     const fetch = window.fetch;
     const click = HTMLInputElement.prototype.click;
+    const canvas = document.querySelector('canvas').getContext('2d');
+    const fillText = canvas.fillText;
+    const shown = new Set();
+    window.__importCaptionShown = (text) => shown.has(text);
+    canvas.fillText = function (text, ...args) {
+      shown.add(text);
+      fillText.call(this, text, ...args);
+    };
     window.__restoreImportMocks = () => {
       window.fetch = fetch;
       HTMLInputElement.prototype.click = click;
+      canvas.fillText = fillText;
+      delete window.__importCaptionShown;
     };
     const doc = { docId: 'new-doc-test', name: '无目录.md', kind: 'md', chars: 100, planId: '' };
     const requests = window.__importRequests = [];
     let savedPlan;
+    const planJobs = [];
     const plans = {
       auto: { tier: 'fixed', topics: [{ title: '段落预览', chars: 100, summary: '原文首句', summarized: 'none' }] },
-      agentic: { tier: 'agentic', topics: [{ title: '模型主题', chars: 100, summary: '分章摘要', summarized: 'model' }] },
+      agentic: { tier: 'agentic', agenticWindow: 9000, agenticOverlapChars: 1375, topics: [{ title: '模型主题', chars: 100,
+        summary: '分章摘要', summarized: 'model', subtopics: [{ title: '子主题标题', summary: '子主题摘要', pageFrom: 2, pageTo: 3 }] }] },
     };
     HTMLInputElement.prototype.click = function() {
       if (this.type !== 'file') return click.call(this);
@@ -1034,13 +1038,17 @@ await step('上传无目录文档：手动模型分章，导入主题后才可�
       if (path === '/api/plan') {
         const body = JSON.parse(init.body);
         requests.push({ path, body });
-        return json({ ok: true, job: 'split-' + body.mode, planId: body.mode + '-plan' });
+        const job = { id: 'split-' + body.mode, taskType: 'plan', state: 'done', title: '目录解析', ms: 0, tail: '' };
+        planJobs.push(job);
+        return json({ ok: true, job: job.id, planId: body.mode + '-plan' });
       }
+      if (path === '/api/jobs') return json(planJobs);
       if (path.startsWith('/api/jobs/split-')) {
-        const plan = plans[path.slice('/api/jobs/split-'.length)];
-        savedPlan = { ...plan, chars: 100, notes: [] };
-        doc.planId = path.slice('/api/jobs/split-'.length) + '-plan';
-        return json({ state: 'done', plan: savedPlan });
+        const job = planJobs.find((row) => '/api/jobs/' + row.id === path);
+        const mode = path.slice('/api/jobs/split-'.length);
+        savedPlan = { ...plans[mode], chars: 100, notes: [] };
+        doc.planId = mode + '-plan';
+        return json({ ...job, plan: savedPlan });
       }
       if (path === '/api/generate') {
         requests.push({ path, body: JSON.parse(init.body) });
@@ -1059,13 +1067,22 @@ await step('上传无目录文档：手动模型分章，导入主题后才可�
       throw new Error('没有标明目录解析回落');
     }
     if (await waitFor('select-topic:0', 200)) throw new Error('预览期间可以选择出题主题');
+    if (fallback.agenticOverlapChars !== 800) throw new Error('默认重叠量应为 800 字符');
+    await clickLabel('+');
+    await clickLabel('重叠字符数');
+    await typeText('1375');
     await clickLabel('模型分章');
     if (!await waitFor('确认主题划分', 8000)) throw new Error('模型分章后没有恢复划分确认');
     const prepared = await S('cog.state.panel.data');
     const requests = await S('window.__importRequests');
     if (prepared.tier !== 'agentic' || prepared.topics[0].title !== '模型主题'
+        || prepared.agenticOverlapChars !== 1375 || requests.at(-1)?.body?.agenticOverlapChars !== 1375
+        || requests.at(-1)?.body?.agenticWindow !== 9000
         || requests.map((r) => r.body?.mode ?? r.path).join() !== '/api/docs,auto,agentic') {
       throw new Error('预览阶段请求错误：' + JSON.stringify(requests));
+    }
+    if (!await S('window.__importCaptionShown("· 子主题标题  ·  第 2–3 页") && window.__importCaptionShown("子主题摘要")')) {
+      throw new Error('分章预览未显示子主题及页码');
     }
     await clickLabel('确认主题划分');
     if (!await waitFor('select-topic:0', 5000)) throw new Error('确认后未直接进入主题勾选');

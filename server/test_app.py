@@ -9,58 +9,25 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from starlette.requests import Request
 
 from server import app as service
 
 
-class JobOutputTests(unittest.TestCase):
+class JobProgressTests(unittest.TestCase):
     def test_health_advertises_the_answer_ledger_api_contract(self) -> None:
         self.assertEqual(service.health()['apiVersion'], 1)
 
-    def test_snapshot_is_detail_only_and_persisted_once_finished(self) -> None:
-        with tempfile.TemporaryDirectory() as root, patch.object(service, "JOBS", Path(root)):
-            output = Path(root) / "bank.md"
-            job = service.make_job("gen", [], output, "doc", "job-test", output, taskType="generate", title="题库")
-            job["state"] = "running"
-            service.record_model_output(job, {"call": 1, "phase": "live", "text": "第一轮输出"})
-            service.record_model_output(job, {"call": 1, "phase": "complete", "text": "第一轮完整输出", "inputTokens": 10})
-            service.record_model_output(job, {"call": 2, "phase": "live", "text": "第二轮输出"})
-            path = Path(root) / "job-test.json"
-            service.save_job(job)
-            self.assertNotIn("modelOutput", json.loads(path.read_text(encoding="utf-8")))
-            self.assertNotIn("modelOutput", service.job_status(job))
-            detail = service.job_status(job, details=True)["modelOutput"]["calls"]
-            self.assertEqual([call["text"] for call in detail], ["第一轮完整输出", "第二轮输出"])
-            job["state"] = "done"
-            service.record_model_output(job, {"call": 2, "phase": "complete", "text": "第二轮完整输出", "outputTokens": 2})
-            service.save_job(job)
-            saved = json.loads(path.read_text(encoding="utf-8"))["modelOutput"]["calls"]
-            self.assertEqual(len(saved), 2)
-            self.assertEqual(saved[0]["text"], "第一轮完整输出")
-            self.assertEqual(saved[1]["outputTokens"], 2)
-
-    def test_job_event_stream_emits_final_snapshot(self) -> None:
-        with patch.object(service, "jobs", {"job-test": {
-            "id": "job-test", "state": "done", "taskType": "generate", "title": "题库",
-            "started": time.time(), "lines": [], "progress": {"phase": "complete", "completed": 1, "total": 1},
-            "modelOutput": {"calls": [{"call": 1, "phase": "tools", "text": "", "toolCalls": [
-                {"id": "read-1", "name": "read_source", "arguments": '{"path":["第一章"]}',
-                 "state": "complete", "detail": "已读取 20 字符"},
-            ]}]},
-        }}):
-            async def receive():
-                return {"type": "http.request", "body": b"", "more_body": False}
-            request = Request({"type": "http", "method": "GET", "path": "/api/jobs/job-test/events", "headers": [], "query_string": b"", "server": ("127.0.0.1", 7777), "client": ("127.0.0.1", 1), "scheme": "http", "http_version": "1.1"}, receive)
-            response = asyncio.run(service.job_events("job-test", request))
-            chunks = asyncio.run(collect_stream(response.body_iterator))
-            self.assertIn('event: job\ndata:', chunks)
-            self.assertIn('read_source', chunks)
-            self.assertIn('"state":"complete"', chunks)
-
-
-async def collect_stream(iterator) -> str:
-    return "".join([chunk.decode() if isinstance(chunk, bytes) else chunk async for chunk in iterator])
+    def test_job_status_reports_review_progress_and_preserves_written_count(self) -> None:
+        output = Path("bank.md")
+        job = service.make_job("gen", [], output, "doc", "job-test", output, taskType="generate", title="题库")
+        job.update(state="running", progress={"phase": "review", "completed": 2, "total": 10})
+        self.assertEqual(service.job_status(job)["progress"], job["progress"])
+        job.update(state="done", progress={"phase": "commit", "completed": 1, "total": 1, "written": 7})
+        job["progress"] = service.complete_progress(job)
+        progress = service.job_status(job, details=True)["progress"]
+        self.assertEqual((progress["phase"], progress["written"]), ("complete", 7))
 
 
 class AnswerPersistenceTests(unittest.TestCase):
@@ -195,6 +162,60 @@ class DocumentPersistenceTests(unittest.TestCase):
         self.assertIsNone(service.get_document(first["docId"])["plan"])
         self.assertFalse(service.GEN_BANKS.exists())
 
+    def test_reset_document_keeps_source_and_clears_generated_artifacts(self) -> None:
+        doc = self.upload()
+        doc_id = doc["docId"]
+        row_path = service.DOCS / f"{doc_id}.json"
+        row = json.loads(row_path.read_text(encoding="utf-8"))
+        plan_id = f"{doc_id}-plan-test"
+        row.update(planId=plan_id, importedPlanId=plan_id)
+        row_path.write_text(json.dumps(row), encoding="utf-8")
+        service.GEN_BANKS.mkdir(parents=True)
+        (service.GEN_BANKS / f"{doc_id}.md").write_text("generated", encoding="utf-8")
+        (service.PLANS / f"{plan_id}.json").write_text("{}", encoding="utf-8")
+        for directory in (service.STORE / "memory" / doc_id, service.STORE / "sections" / doc_id):
+            directory.mkdir(parents=True)
+            (directory / "part.md").write_text("derived", encoding="utf-8")
+
+        checkpoint = service.GEN_BANKS / f"{doc_id}.md.checkpoint.json"
+        checkpoint.write_text("{}", encoding="utf-8")
+        result = service.reset_document(doc_id)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(checkpoint.exists())
+        self.assertTrue((service.DOCS / f"{doc_id}.md").is_file())
+        self.assertEqual(service.get_document(doc_id)["planId"], "")
+        self.assertFalse((service.GEN_BANKS / f"{doc_id}.md").exists())
+        self.assertFalse((service.PLANS / f"{plan_id}.json").exists())
+        self.assertFalse((service.STORE / "memory" / doc_id).exists())
+        self.assertFalse((service.STORE / "sections" / doc_id).exists())
+
+    def test_delete_document_removes_uploaded_source_and_derived_files(self) -> None:
+        doc = self.upload()
+        doc_id = doc["docId"]
+        plan_id = f"{doc_id}-plan-test"
+        service.GEN_BANKS.mkdir(parents=True)
+        (service.GEN_BANKS / f"{doc_id}.md").write_text("generated", encoding="utf-8")
+        (service.PLANS / f"{plan_id}.json").write_text("{}", encoding="utf-8")
+
+        result = service.delete_document(doc_id)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse((service.DOCS / f"{doc_id}.json").exists())
+        self.assertFalse((service.DOCS / f"{doc_id}.md").exists())
+        self.assertFalse((service.GEN_BANKS / f"{doc_id}.md").exists())
+        self.assertFalse((service.PLANS / f"{plan_id}.json").exists())
+        self.assertEqual(service.list_documents(), [])
+
+    def test_reset_and_delete_reject_documents_with_active_jobs(self) -> None:
+        doc = self.upload()
+        service.jobs["job-active"] = {"id": "job-active", "lock_doc": doc["docId"], "state": "running"}
+        for operation in (service.reset_document, service.delete_document):
+            with self.assertRaises(HTTPException) as rejected:
+                operation(doc["docId"])
+            self.assertEqual(rejected.exception.status_code, 409)
+        self.assertTrue((service.DOCS / f"{doc['docId']}.md").exists())
+
     def test_pdf_extraction_runs_in_threadpool(self) -> None:
         async def receive() -> dict:
             return {"type": "http.request", "body": b"pdf-bytes", "more_body": False}
@@ -213,9 +234,11 @@ class DocumentPersistenceTests(unittest.TestCase):
 
     def test_plan_persists_document_pointer_and_all_topic_memories(self) -> None:
         doc = self.upload()
-        with patch.object(service, "start_job", return_value="job-test") as start:
-            result = service.start_plan(service.PlanInput(docId=doc["docId"]))
-        args = start.call_args.args[1]
+        with patch.object(service, "dispatch_jobs"):
+            result = service.start_plan(service.PlanInput(docId=doc["docId"], agenticWindow=12000, agenticOverlapChars=0))
+        args = service.jobs[result["job"]]["args"]
+        self.assertIn("--window=12000", args)
+        self.assertIn("--overlap=0", args)
         self.assertIn(f"--memory={service.STORE / 'memory' / doc['docId']}", args)
         self.assertIn(f"--document={service.DOCS / (doc['docId'] + '.json')}", args)
         self.assertNotEqual(result["planId"], doc["planId"])
@@ -223,6 +246,27 @@ class DocumentPersistenceTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as rejected:
             service.start_generate(service.GenerateInput(docId=doc["docId"], plan="another-document", topics=[0]))
         self.assertEqual(rejected.exception.status_code, 400)
+
+    def test_plan_rejects_document_with_queued_work(self) -> None:
+        doc_id = self.upload()["docId"]
+        service.jobs["job-queued"] = {"id": "job-queued", "lock_doc": doc_id, "state": "queued"}
+        with self.assertRaises(HTTPException) as rejected:
+            service.start_plan(service.PlanInput(docId=doc_id))
+        self.assertEqual(rejected.exception.status_code, 409)
+        self.assertEqual(list(service.jobs), ["job-queued"])
+
+    def test_plan_window_must_be_a_strict_integer_in_supported_range(self) -> None:
+        self.assertEqual(service.PlanInput(docId="doc").agenticWindow, 8000)
+        for value in (1999, 20001, 8000.5, True):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                service.PlanInput(docId="doc", agenticWindow=value)
+
+    def test_plan_overlap_must_be_a_strict_integer_within_window(self) -> None:
+        self.assertEqual(service.PlanInput(docId="doc").agenticOverlapChars, 800)
+        self.assertEqual(service.PlanInput(docId="doc", agenticWindow=2000, agenticOverlapChars=2000).agenticOverlapChars, 2000)
+        for value in (-1, 2001, 10.5, "10", True):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                service.PlanInput(docId="doc", agenticWindow=2000, agenticOverlapChars=value)
 
     def test_only_imported_topics_can_be_queued_as_individual_jobs(self) -> None:
         doc = self.upload()
@@ -253,6 +297,40 @@ class DocumentPersistenceTests(unittest.TestCase):
                 service.start_generate(request)
             self.assertEqual(duplicate.exception.status_code, 409)
         self.assertEqual(len(list(service.JOBS.glob("*.json"))), 2)
+
+    def test_trace_links_job_worker_and_child_and_preserves_id_after_restart(self) -> None:
+        job = service.make_job("plan", [], service.PLANS / "test.json", "doc", "job-test",
+                               service.JOBS / "test.complete", taskType="plan", title="Test", planId="p")
+        service.jobs[job["id"]] = job
+        with patch.object(service.threading, "Thread"):
+            service.dispatch_jobs()
+            trace_id = service.get_job(job["id"])["traceId"]
+            first = job["traceExecution"]["spanId"]
+            event = {"v": 1, "traceId": trace_id, "jobId": job["id"], "name": "plan.chunk",
+                     "event": "start", "spanId": "1234567890abcdef", "parentSpanId": first}
+            service.job_trace.accept_child(service.JOBS, job, json.dumps(event))
+            service.job_trace.accept_child(service.JOBS, job, json.dumps({**event, "traceId": "wrong"}))
+            service.jobs.clear()
+            service.active_docs.clear()
+            with patch.object(service.subprocess, "run") as build:
+                build.return_value.returncode = 0
+                service.startup()
+        recovered = service.jobs[job["id"]]
+        self.assertEqual(recovered["traceId"], trace_id)
+        self.assertEqual(recovered["traceExecution"]["attempt"], 2)
+        self.assertNotEqual(recovered["traceExecution"]["spanId"], first)
+        service.finish_trace(recovered, "ok")
+        response = service.get_trace(trace_id)
+        self.assertIn(f"trace-{trace_id}.jsonl", response.headers["content-disposition"])
+        events = [json.loads(line) for line in response.body.splitlines()]
+        self.assertTrue(all(row["traceId"] == trace_id for row in events))
+        self.assertEqual([row["outcome"] for row in events if row["name"] == "worker" and row["event"] == "end"],
+                         ["interrupted", "ok"])
+        self.assertEqual([row["parentSpanId"] for row in events if row["name"] == "plan.chunk"], [first])
+        self.assertEqual(events[-1]["name"], "job")
+        with self.assertRaises(HTTPException) as missing:
+            service.get_trace("../test")
+        self.assertEqual(missing.exception.status_code, 404)
 
     def test_interrupted_plan_commit_recovers_memories_and_active_plan(self) -> None:
         doc = self.upload()

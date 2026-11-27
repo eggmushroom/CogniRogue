@@ -21,6 +21,7 @@ import {
 import { drawOverlay } from './scenes/overlay';
 import { drawSceneBackdrop, drawSceneScrim, drawSceneWorld, worldLayer } from './scenes/layers';
 import { settingsKey } from './scenes/settings';
+import { planKey } from './scenes/plangen';
 import { leavePanel } from './scenes/navigation';
 import { closeTaskbar, drawTaskbar, taskbarExit, taskbarOpen } from './scenes/taskbar';
 import { tickJobs } from './scenes/jobstate';
@@ -189,7 +190,8 @@ onFx((e) => {
 });
 
 const homeToolsVisible = () => G.screen === 'title' && !modalOpen();
-const sidePanelOpen = () => homeToolsVisible() && (taskbarOpen() || answerbarOpen());
+const taskbarVisible = () => G.screen === 'title' && (!modalOpen() || G.panel.k === 'plan');
+const sidePanelOpen = () => (taskbarVisible() && taskbarOpen()) || (homeToolsVisible() && answerbarOpen());
 let navigationReady = true;
 
 keyHandler((k) => {
@@ -216,8 +218,8 @@ keyHandler((k) => {
     const card = G.hand[p.idx];
     if (card) answer(i);
   }
-  // 输入框拿着焦点时，按键先过它 —— 见 scenes/settings.ts 的 settingsKey
-}, (key) => navigationReady && settingsKey(key), sidePanelOpen);
+  // 输入框拿着焦点时，按键先交给当前面板。
+}, (key) => navigationReady && (settingsKey(key) || planKey(key)), sidePanelOpen);
 
 let t = 0;
 let last = performance.now();
@@ -231,7 +233,7 @@ function frame(now: number) {
   beginInput();
   if (!standalone) tickJobs(now);
   const showHomeTools = homeToolsVisible();
-  if (!showHomeTools && taskbarOpen()) closeTaskbar(true);
+  if (!taskbarVisible() && taskbarOpen()) closeTaskbar(true);
   if (!showHomeTools && answerbarOpen()) closeAnswerbar(true);
   if (!standalone && now >= nextAnswerSync) {
     nextAnswerSync = now + 2000;
@@ -310,10 +312,10 @@ function frame(now: number) {
         settling: quizSettling, reveal: quizReveal, entry: quizEntry, exit: quizExit,
       }, age);
     }
-    if (showHomeTools) {
-      if (!standalone) drawTaskbar(dt, t, () => closeAnswerbar(true));
-      drawAnswerbar(dt, () => closeTaskbar(true));
+    if (!standalone && taskbarVisible() && (showHomeTools || taskbarOpen())) {
+      drawTaskbar(dt, t, () => closeAnswerbar(true), showHomeTools);
     }
+    if (showHomeTools) drawAnswerbar(dt, () => closeTaskbar(true));
   }));
   // 只留背景时不画残留特效，但按 4 倍速散掉：关掉面板时画面已经是干净的。
   FX.update(dt * (layer === 'backdrop' ? 4 : 1));

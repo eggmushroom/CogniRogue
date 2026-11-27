@@ -14,7 +14,7 @@ export function newRunState(): GameState {
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0, ap: BAL.baseAp, apMax: BAL.baseAp,
     turn: 1, enemy: null, draw: [], discard: [], hand: [],
     map: [], pos: null, node: null, seen: {}, eventsSeen: [],
-    charge: {}, qLeft: [], qPicked: {}, topics: [], runQueue: [], runQuestions: [], runBankId: '', runId: '', runCursor: 0, qSolved: {},
+    charge: {}, qLeft: [], pendingQuestion: null, qPicked: {}, topics: [], runQueue: [], runQuestions: [], runBankId: '', runId: '', runCursor: 0, qSolved: {},
     topicWrong: {}, okThisTurn: 0, topOkTopic: null,
     markerRefund: 0, syllabusTurn: 0,
     onceUsed: {}, onceStage: {}, onceRun: {},
@@ -84,6 +84,7 @@ export function resetBattleFields() {
   G.pendingCost = 0;
   G.pendingHeal = 0;
   G.qLeft = [];
+  G.pendingQuestion = null;
 }
 
 /** 本局错得最多的主题，只算一次。 */

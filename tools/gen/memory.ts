@@ -13,12 +13,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import type { Question } from '../../src/core/model/types';
 import { headingsOf, sliceLines } from './chunk';
 import { pageRange, type Plan, type PlanTopic } from './plan';
 
 export interface SourceSection {
   id: string;
   title: string;
+  summary?: string;
   parentId?: string;
   pageFrom?: number;
   pageTo?: number;
@@ -40,7 +42,7 @@ export interface KnowledgeMem {
   stem: string;
   /** 生成过几次。 */
   gen: number;
-  questions: Record<string, { stem: string; options: string[]; answer: number }>;
+  questions: Record<string, { stem: string; options: string[]; answer: number; sectionIds?: string[] }>;
 }
 
 interface QuestionStats { ok: number; bad: number; attempts: number[] }
@@ -89,7 +91,19 @@ export function readTopicMem(dir: string, topic: string, source: string, topicId
   return { ...raw, topic, source };
 }
 
-export function topicIdOf(sourceId: string, source: string, topic: PlanTopic): string {
+/** 从题库回补旧题的选项；题库 DSL 不含证据，不覆盖未变化题目的记忆。 */
+export function syncBankQuestions(mem: TopicMem, questions: readonly Question[]): void {
+  for (const q of questions) {
+    const knowledge = q.knowledgeId ? mem.knowledge[q.knowledgeId] : undefined;
+    if (!knowledge) continue;
+    const saved = knowledge.questions[q.qid];
+    if (saved?.stem === q.q && saved.answer === q.answer
+        && saved.options.length === q.options.length && saved.options.every((option, i) => option === q.options[i])) continue;
+    knowledge.questions[q.qid] = { stem: q.q, options: q.options.slice(), answer: q.answer };
+  }
+}
+
+export function topicIdOf(sourceId: string, source: string, topic: PlanTopic, disambiguate = false): string {
   const headings = headingsOf(source).filter((heading) => heading.line <= topic.from);
   const heading = headings.at(-1);
   const path = headings.reduce<typeof headings>((path, item) => {
@@ -98,13 +112,15 @@ export function topicIdOf(sourceId: string, source: string, topic: PlanTopic): s
     return path;
   }, []).map((item) => item.text).join('\0');
   const duplicates = headings.filter((item) => item.text === (heading?.text ?? topic.title) && item.line <= topic.from).length;
-  return `t_${createHash('sha256').update(`${sourceId}\0${path || topic.title}\0${duplicates}`).digest('hex').slice(0, 24)}`;
+  const identity = `${sourceId}\0${path || topic.title}\0${duplicates}`
+    + (disambiguate ? `\0${topic.title}\0${topic.from}` : '');
+  return `t_${createHash('sha256').update(identity).digest('hex').slice(0, 24)}`;
 }
 
 /** Both CLI entry points materialize the same sections before starting an agent. */
 export function prepareSections(plan: Plan, sourceId: string, source: string): SectionDocument[] {
   const files = plan.topics.flatMap((topic) => {
-    topic.id = topicIdOf(sourceId, source, topic);
+    topic.id = topicIdOf(sourceId, source, topic, plan.tier === 'agentic');
     const mem = newTopicMem(topic.title, sourceId, topic.id);
     const documents = indexTopicMemory(mem, source, topic);
     topic.sections = mem.sections;
@@ -116,6 +132,17 @@ export function prepareSections(plan: Plan, sourceId: string, source: string): S
 
 /** 划分时切出独立原文文件；JIT 后续只凭 ID 读取，不再扫描整本书。 */
 export function indexTopicMemory(mem: TopicMem, source: string, topic: PlanTopic): SectionDocument[] {
+  if (topic.subtopics?.length) {
+    const files = topic.subtopics.map((subtopic) => {
+      const id = sourceSectionId(mem.source, [mem.topicId, 'subtopic', String(subtopic.from), String(subtopic.to)]);
+      return {
+        section: { id, title: subtopic.title, summary: subtopic.summary, ...pageRange(source, subtopic.from, subtopic.to) },
+        file: { id, content: sliceLines(source, subtopic.from, subtopic.to).trim() + '\n' },
+      };
+    });
+    mem.sections = files.map(({ section }) => section);
+    return files.map(({ file }) => file);
+  }
   const headings = headingsOf(source);
   const heads = headings.filter((head) => head.line > topic.from && head.line < topic.to);
   const atTopic = headings.find((head) => head.line === topic.from);
@@ -243,6 +270,6 @@ export function memText(mem: TopicMem, limit = 40): string {
 export function sourceIndexText(mem: TopicMem): string {
   return (mem.sections ?? []).map((section) => {
     const pages = section.pageFrom ? `｜PDF 第 ${section.pageFrom}-${section.pageTo} 页` : '';
-    return `- ${section.id} | ${section.title}${section.parentId ? ` | parent ${section.parentId}` : ''}${pages}`;
+    return `- ${section.id} | ${section.title}${section.parentId ? ` | parent ${section.parentId}` : ''}${pages}${section.summary ? `｜${section.summary}` : ''}`;
   }).join('\n');
 }

@@ -99,7 +99,7 @@ export const CATALOG: CardDef[] = [
   { id: "c82", name: "上限贯穿", atk: 29, blk: 0, cost: 3, ask: 3, eff: "pierce", up: { cost: 1, atk: 4 }, kind: 'knowledge' },
   { id: "c83", name: "博览强记", atk: 3, blk: 4, cost: 1, ask: 1, eff: "strike", link: { atkFrom: 'drawn', floor: 3, note: '本回合每抽 1 张 +1 伤' }, up: { blk: 4 }, kind: 'knowledge' },
   { id: "c84", name: "铸甲为刃", atk: 0, blk: 4, cost: 1, ask: 0, eff: "strike", link: { atkFrom: 'block', note: '造成当前护甲等额伤害' }, up: { blk: 4 }, kind: 'knowledge' },
-  { id: "c85", name: "续火", atk: 3, blk: 3, cost: 1, ask: 1, eff: "strike", link: { nextMul: 2, note: '下一张造成伤害的牌 ×2' }, up: { nextMul: 1, atk: 3 }, kind: 'knowledge' },
+  { id: "c85", name: "续火", atk: 3, blk: 3, cost: 1, ask: 1, eff: "strike", link: { nextMul: 2, note: '下一张造成伤害的牌 ×2' }, up: { atk: 3 }, kind: 'knowledge' },
   { id: "c86", name: "叠章", atk: 4, blk: 3, cost: 1, ask: 1, eff: "strike", link: { grow: 3, note: '本场每打出一次，下次 +3 伤' }, up: { grow: 2, atk: 3 }, kind: 'knowledge' },
 
   /* 自伤与节奏卡：自伤扣这一局的血，卡面与结算共用 resolveEff().selfHp。

@@ -1,4 +1,4 @@
-import { jobState, refreshRemoteBanks, serviceJobs, streamJob, type JobState } from '../core/library';
+import { jobState, refreshRemoteBanks, serviceJobs, type JobState } from '../core/library';
 
 interface Watcher {
   onProgress: (job: JobState) => void;
@@ -11,52 +11,56 @@ let nextPoll = 0;
 let polling = false;
 let revision = 0;
 let loaded = false;
-let detail: { id: string; job: JobState | null; next: number; polling: boolean; stream?: AbortController; streaming?: boolean } | null = null;
-
-export function inspectJob(id: string) {
-  detail?.stream?.abort();
-  detail = id ? { id, job: null, next: 0, polling: false } : null;
-}
-
-export const inspectedJob = () => detail?.job;
-
-function tickDetail(now: number) {
-  const current = detail;
-  if (!current || current.streaming || current.polling || now < current.next ||
-      current.job?.state === 'done' || current.job?.state === 'fail') return;
-  current.next = now + 800;
-  current.streaming = true;
-  const controller = new AbortController();
-  current.stream = controller;
-  void streamJob(current.id, (job) => {
-    if (detail !== current) return;
-    current.job = job;
-    if (job.state === 'done' || job.state === 'fail') controller.abort();
-  }, controller.signal).catch(async () => {
-    if (detail !== current || controller.signal.aborted) return;
-    current.polling = true;
-    try { current.job = await jobState(current.id, 2500); }
-    finally { current.polling = false; }
-  }).finally(() => {
-    if (detail === current) {
-      current.streaming = false;
-      current.stream = undefined;
-      if (current.job?.state !== 'done' && current.job?.state !== 'fail') current.next = 0;
-    }
-  });
-}
-
 const watchers = new Map<string, Watcher>();
 
 export const jobsSnapshot = (): JobState[] => jobs;
 
-/** 题库写入阶段与模型输出状态分别显示。 */
-export function generationStage(job: JobState) {
-  if (job.state === 'fail') return { index: -1, label: '未完成' };
-  if (job.state === 'done') return { index: 3, label: '已写入题库' };
-  if (job.state === 'queued') return { index: 0, label: '排队中' };
-  if (job.progress?.phase === 'commit' || job.progress?.phase === 'complete') return { index: 2, label: '写入题库中' };
-  return { index: 1, label: job.progress?.phase === 'starting' ? '准备出题' : '出题中' };
+export function generationStep(job: JobState) {
+  if (job.state === 'done') return 3;
+  if (job.state === 'queued') return -1;
+  const phase = job.progress?.phase;
+  if (phase === 'commit' || phase === 'complete') return 2;
+  return phase === 'review' ? 1 : 0;
+}
+
+export function generationLabel(job: JobState): string {
+  if (job.state === 'fail') return '未完成';
+  if (job.state === 'done') {
+    // Older jobs only recorded the count in the completion log.
+    const previousCount = /^✓ 写入 .*：(\d+) 道题 \//m.exec(job.tail)?.[1];
+    const written = job.progress?.written ?? previousCount;
+    return written == null ? '已写入题库' : `已入库 ${written} 道`;
+  }
+  if (job.state === 'queued') return '排队中';
+  if (generationStep(job) === 2) return '写入题库中';
+  if (job.progress?.phase === 'review') {
+    const { completed, total } = job.progress;
+    return `审核中 · ${completed}/${total}`;
+  }
+  return job.progress?.phase === 'starting' ? '准备出题' : '出题中';
+}
+
+export function jobFailureReason(tail: string): string {
+  if (/模型拒绝 0 道，待审 0 道/.test(tail)) {
+    return /JIT 取数超过/.test(tail)
+      ? '已读取原文，但模型连续取数后没有生成候选题，可以重新生成。'
+      : '本轮没有生成可审核的候选题，可以重新生成。';
+  }
+  const lines = tail.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const message = lines.filter((line) => line.startsWith('✗')).at(-1) ?? lines.at(-1) ?? '任务失败';
+  if (/^✗?\s*The operation was aborted due to timeout\.?$/i.test(message)) {
+    return '模型请求超时，本轮任务已结束，可以重新生成。';
+  }
+  if (/调用失败.*timeout/i.test(message)) {
+    return '模型请求超时，系统已自动重试仍未成功；本轮未入库，可以稍后重新生成。';
+  }
+  if (/调用失败.*HTTP 429|rate.?limit|too many requests/i.test(message)) {
+    return '模型服务当前请求过多，系统已重试仍未成功；请稍后重新生成。';
+  }
+  if (/调用失败.*HTTP 5\d\d|模型工具调用失败（HTTP 5\d\d）/i.test(message)) {
+    return '模型服务暂时不可用，系统已重试仍未成功；请稍后重新生成。';
+  }
+  return message.replace(/^✗\s*/, '').slice(0, 220);
 }
 
 export function registerJobs(accepted: JobState[]) {
@@ -80,37 +84,35 @@ export function watchJob(id: string, onProgress: (job: JobState) => void): Promi
 
 /** 同一轮轮询同时供任务侧栏与等待结果的流程使用。 */
 export function tickJobs(now: number) {
-  tickDetail(now);
   if (polling || now < nextPoll) return;
-  nextPoll = now + (watchers.size ? 1000 : 2200);
+  const active = jobs.some((job) => job.state === 'running' || job.state === 'queued');
+  nextPoll = now + (watchers.size || active ? 1000 : 2200);
   polling = true;
 
   const polledRevision = revision;
   const ids = [...watchers.keys()];
-  void Promise.all([
-    serviceJobs(),
-    Promise.all(ids.map(async (id) => [id, await jobState(id)] as const)),
-  ]).then(([rows, details]) => {
-    if (polledRevision === revision) {
-      const done = new Set(jobs.filter((job) => job.state === 'done').map((job) => job.id));
-      if (loaded && rows.some((job) => job.bankId && job.state === 'done' && !done.has(job.id))) {
-        void refreshRemoteBanks();
-      }
-      jobs = rows.slice().reverse();
-      loaded = true;
+  return serviceJobs().then(async (rows) => {
+    if (!rows || polledRevision !== revision) return;
+    const done = new Set(jobs.filter((job) => job.state === 'done').map((job) => job.id));
+    if (loaded && rows.some((job) => job.bankId && job.state === 'done' && !done.has(job.id))) {
+      void refreshRemoteBanks();
     }
-    for (const [id, job] of details) {
+    jobs = rows.slice().reverse();
+    loaded = true;
+
+    for (const id of ids) {
       const watcher = watchers.get(id);
       if (!watcher) continue;
-      if (!job) {
-        watchers.delete(id);
-        watcher.resolve(null);
-      } else if (job.state === 'running' || job.state === 'queued') {
+      const job = rows.find((row) => row.id === id);
+      if (job?.state === 'running' || job?.state === 'queued') {
         watcher.onProgress(job);
-      } else {
-        watchers.delete(id);
-        watcher.resolve(job);
+        continue;
       }
+      // 分章结果只在任务详情中返回。详情请求失败时，下轮继续取。
+      const result = job?.state === 'done' && job.taskType === 'plan' ? await jobState(id) : job;
+      if (result === null) continue;
+      watchers.delete(id);
+      watcher.resolve(result ?? null);
     }
   }).finally(() => { polling = false; });
 }

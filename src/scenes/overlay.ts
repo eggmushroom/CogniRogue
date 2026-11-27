@@ -13,6 +13,7 @@ import { curFloor } from '../core/map';
 import {
   activeBankId, allQuestions, isRetired, listBanks, requestRunPool,
   serviceOnline, sourceBank,
+  bankTopicTitle,
 } from '../core/library';
 import {
   BASICS, costOf, defOf, isUpgraded, upgradedId,
@@ -885,7 +886,7 @@ function drawTopics(p: { mode: ModeId | null; picks: string[]; msg?: string; loa
     const nameW = cw - 26 - 14;
     g.save();
     g.font = font(17, 700, FONT_UI);
-    const wrapped = wrapText(name, nameW);
+    const wrapped = wrapText(bankTopicTitle(src, name), nameW);
     g.restore();
     const titleLines = wrapped.length > 2 ? [wrapped[0], `${wrapped[1]}…`] : wrapped;
     titleLines.forEach((ln, k) => {

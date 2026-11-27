@@ -1,14 +1,17 @@
 import { G, panelOf } from '../core/infra';
 import type { PlanView } from '../core/model';
+import { AGENTIC_OVERLAP_CHARS, AGENTIC_WINDOW, MAX_AGENTIC_WINDOW, MIN_AGENTIC_WINDOW } from '../core/model/plan';
 import {
-  importDocumentTopics, readBank, refreshDocuments, serviceInfo, remoteDocument, startGenerate, startPlan, uploadDoc,
+  importDocumentTopics, readBank, refreshDocuments, refreshRemoteBanks, serviceInfo, remoteDocument, resetRemoteDocument, deleteRemoteDocument, startGenerate, startPlan, uploadDoc,
 } from '../core/library';
 import type { PlanRemote } from '../core/library';
 import { pickFile } from './filepick';
-import { jobsSnapshot, registerJobs, watchJob } from './jobstate';
+import { editField, fieldOf, type KeyIn } from './textfield';
+import { jobFailureReason, jobsSnapshot, registerJobs, watchJob } from './jobstate';
 
 const fresh = (docId: string, name: string): PlanView => ({
   docId, name, tier: '', chars: 0, topics: [], notes: [],
+  agenticWindow: AGENTIC_WINDOW, agenticOverlapChars: AGENTIC_OVERLAP_CHARS,
   canAgentic: false, imported: false, selected: new Set(), busy: '', msg: '', ok: true, planId: '',
 });
 
@@ -60,7 +63,8 @@ async function loadDocument(v: PlanView) {
     v.msg = saved.job.title;
     const result = await watchJob(saved.job.id, (job) => { v.msg = job.progress?.label ?? job.title; });
     v.busy = '';
-    if (!result || result.state === 'fail') { fail(v, '任务未完成，可从已保存的文档重试'); return; }
+    if (!result) { fail(v, '任务未完成，可从已保存的文档重试'); return; }
+    if (result.state === 'fail') { fail(v, jobFailureReason(result.tail)); return; }
     await loadDocument(v);
     return;
   }
@@ -71,7 +75,48 @@ async function loadDocument(v: PlanView) {
 /** 换一种切法。`agentic` 会调模型，所以只有玩家点它才会走到这儿。 */
 export async function replan(mode: 'auto' | 'fixed' | 'agentic') {
   if (G.panel.k !== 'plan' || G.panel.data.busy || G.panel.data.imported) return;
-  await runPlan(G.panel.data, mode);
+  const v = G.panel.data;
+  if (mode === 'agentic' && !commitAgenticOverlap(v)) return;
+  v.agenticOverlapInput = undefined;
+  await runPlan(v, mode);
+}
+
+export function adjustAgenticWindow(delta: number) {
+  if (G.panel.k !== 'plan' || G.panel.data.busy || G.panel.data.imported) return;
+  const v = G.panel.data;
+  v.agenticWindow = Math.max(MIN_AGENTIC_WINDOW, Math.min(MAX_AGENTIC_WINDOW, v.agenticWindow + delta));
+  v.agenticOverlapChars = Math.min(v.agenticOverlapChars, v.agenticWindow);
+}
+
+export function focusAgenticOverlap() {
+  const v = panelOf('plan')?.data;
+  if (!v || v.busy || v.imported || !v.canAgentic) return;
+  v.agenticOverlapInput ??= fieldOf();
+}
+
+function commitAgenticOverlap(v: PlanView): boolean {
+  const value = v.agenticOverlapInput?.value;
+  if (value) {
+    const chars = Number(value);
+    if (chars > v.agenticWindow) {
+      fail(v, `重叠字符数请输入 0–${v.agenticWindow.toLocaleString()} 之间的整数`);
+      return false;
+    }
+    v.agenticOverlapChars = chars;
+    if (!v.ok) { v.ok = true; v.msg = ''; }
+  }
+  v.agenticOverlapInput = undefined;
+  return true;
+}
+
+export function planKey(k: KeyIn): boolean {
+  const v = panelOf('plan')?.data;
+  const input = v?.agenticOverlapInput;
+  if (!v || !input || v.busy || v.imported || v.confirmAction) return false;
+  if (k.key === 'Enter') { commitAgenticOverlap(v); return true; }
+  if (k.key === 'Escape') { v.agenticOverlapInput = undefined; return true; }
+  if (k.key.length === 1 && !/^\d$/.test(k.key)) return true;
+  return editField(input, k, String(MAX_AGENTIC_WINDOW).length);
 }
 
 export async function approvePlan(v: PlanView) {
@@ -89,6 +134,42 @@ export async function approvePlan(v: PlanView) {
 
 export function documentJobs(v: PlanView) {
   return jobsSnapshot().filter((job) => job.bankId === v.docId);
+}
+
+export function requestDocumentAction(action: 'reset' | 'delete') {
+  if (G.panel.k !== 'plan' || G.panel.data.busy || !G.panel.data.docId) return;
+  G.panel.data.confirmAction = action;
+}
+
+export function cancelDocumentAction() {
+  if (G.panel.k === 'plan' && !G.panel.data.busy) G.panel.data.confirmAction = undefined;
+}
+
+export async function confirmDocumentAction() {
+  if (G.panel.k !== 'plan') return;
+  const view = G.panel.data;
+  const action = view.confirmAction;
+  if (!action || view.busy) return;
+  view.busy = action;
+  view.msg = action === 'reset' ? '正在重置文档题库…' : '正在删除文档…';
+  const result = action === 'reset' ? await resetRemoteDocument(view.docId) : await deleteRemoteDocument(view.docId);
+  if (!result.ok) {
+    view.busy = '';
+    view.ok = false;
+    view.msg = result.error ?? '操作失败';
+    return;
+  }
+  if (action === 'reset') {
+    view.confirmAction = undefined;
+    view.busy = '';
+    view.ok = true;
+    view.msg = '已重置；原文件仍保留';
+    await refreshRemoteBanks();
+    await loadDocument(view);
+    return;
+  }
+  await Promise.all([refreshDocuments(), refreshRemoteBanks()]);
+  G.panel = { k: 'pack', msg: '已删除上传文档及其生成内容', ok: true };
 }
 
 export async function generateSelectedTopics(v: PlanView, selected: number[]) {
@@ -132,33 +213,36 @@ async function runPlan(v: PlanView, mode: 'auto' | 'fixed' | 'agentic') {
   v.ok = true;
   const label = mode === 'agentic' ? '模型分章' : '解析文档主题';
   v.msg = `${label}…`;
-  const started = await startPlan(v.docId, mode, v.name);
+  const started = await startPlan(v.docId, mode, v.name, v.agenticWindow, v.agenticOverlapChars);
   if (!started.ok || !started.job) {
     fail(v, started.error ?? '划分任务起不来。');
     return;
   }
 
   const st = await watchJob(started.job, (job) => {
-    v.msg = `${label}… ${Math.round(job.ms / 1000)} 秒`;
+    v.msg = `${job.progress?.label ?? label}… ${Math.round(job.ms / 1000)} 秒`;
   });
   if (!st) {
     fail(v, '暂时无法获取进度，请稍后查看任务');
     return;
   }
-  if (st.state === 'fail' || !st.plan) {
+  if (st.state === 'fail') { fail(v, jobFailureReason(st.tail)); return; }
+  if (!st.plan) {
     fail(v, `${label}失败，请重试或更换文档`);
     return;
   }
   apply(v, st.plan, started.planId ?? '');
-  if (st.plan.tier === 'fixed') {
-    if (mode === 'auto') v.msg = '未识别到目录主题，已按段落划分';
-    if (mode === 'agentic') v.msg = '模型未能划分主题，已按段落划分';
-  }
+  if (st.plan.tier === 'fixed' && mode === 'auto') v.msg = '未识别到目录主题，已按段落划分';
   void refreshDocuments();
 }
 
 function apply(v: PlanView, plan: PlanRemote, planId: string) {
   v.tier = plan.tier;
+  if (plan.agenticWindow) v.agenticWindow = plan.agenticWindow;
+  if (plan.tier === 'agentic') {
+    // 旧分章计划按窗口的 10% 重叠，当时没有单独保存这个值。
+    v.agenticOverlapChars = plan.agenticOverlapChars ?? Math.floor(v.agenticWindow / 10);
+  }
   v.chars = plan.chars || v.chars;
   v.topics = plan.topics.map((t) => ({
     id: t.id,
@@ -167,6 +251,9 @@ function apply(v: PlanView, plan: PlanRemote, planId: string) {
     ...(t.pageFrom ? { pageFrom: t.pageFrom, pageTo: t.pageTo } : {}),
     summary: t.summary,
     summarized: t.summarized,
+    ...(t.subtopics?.length ? { subtopics: t.subtopics.map((sub) => ({
+      title: sub.title, summary: sub.summary, ...(sub.pageFrom ? { pageFrom: sub.pageFrom, pageTo: sub.pageTo } : {}),
+    })) } : {}),
     ...(t.merged && t.merged > 1 ? { merged: t.merged } : {}),
     ...(t.sim !== undefined ? { sim: t.sim } : {}),
   }));

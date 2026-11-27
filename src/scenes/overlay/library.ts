@@ -6,8 +6,9 @@ import { AccordionMotion } from '../../gfx/motion';
 import { drawMarkdown, layoutMarkdown } from '../../gfx/markdown';
 import { hover, onClick } from '../../input';
 import { BAL } from '../../core/model';
+import { MAX_AGENTIC_WINDOW, MIN_AGENTIC_WINDOW } from '../../core/model/plan';
 import { G, panelOf } from '../../core/infra';
-import { clearQuestionMemory, countQuestions, isRetired, listBanks, listDocuments, rightCount, serviceModelName, serviceReady, sourceBank, wrongCount, type BankRow } from '../../core/library';
+import { bankTopicTitle, clearQuestionMemory, countQuestions, isRetired, listBanks, listDocuments, rightCount, serviceModelName, serviceReady, sourceBank, wrongCount, type BankRow } from '../../core/library';
 import type { BankPage, ModelForm, Panel, PlanView, Question, QuestionBank } from '../../core/model';
 import {
   box, heading, overflowAffordance, scrollArea,
@@ -15,10 +16,12 @@ import {
   MENU_W, MENU_X, MENU_Y,
 } from './common';
 import { openBank, openBankTopic, selectBank, askToDeleteBank, confirmBankDeletion, requestPackFile } from '../packio';
-import { startDocFlow, openSavedDocument, replan, approvePlan, documentJobs, generateSelectedTopics } from '../plangen';
+import { generationLabel, jobFailureReason } from '../jobstate';
+import { openTaskDetail } from '../taskbar';
+import { startDocFlow, openSavedDocument, replan, adjustAgenticWindow, focusAgenticOverlap, approvePlan, documentJobs, generateSelectedTopics, requestDocumentAction, cancelDocumentAction, confirmDocumentAction } from '../plangen';
 import { openModelForm, toggleReveal, focusModelField, saveModelForm, modelFields } from '../settings';
 import { leavePanel, panelExit } from '../navigation';
-import { drawField } from '../textfield';
+import { drawField, fieldOf } from '../textfield';
 
 /* ── 题库 ─────────────────────────────────────────────────── */
 
@@ -128,7 +131,7 @@ function drawBankTopics(row: BankRow, title: string, fromDocument: boolean, bank
   for (const [name, questions] of topics) {
     if (y + rowH > view.y0 && y < view.y0 + view.h) {
       const mastered = questions.filter((q) => isRetired(q)).length;
-      menuRow(view, y, rowH, name, '', `${mastered}/${questions.length}`, `topic:${name}`,
+      menuRow(view, y, rowH, bankTopicTitle(bank, name), '', `${mastered}/${questions.length}`, `topic:${name}`,
         loading ? undefined : () => openBankTopic(name),
         { visited: name === lastTopic, progress: questions.length ? mastered / questions.length : 0 });
     }
@@ -174,7 +177,7 @@ function menuRow(
 
 function drawBankQuestions(page: BankPage, name: string, bank: QuestionBank, topic: string, t: number) {
   const list = packSorted(bank.byTopic[topic] ?? []);
-  packHeading(topic, name);
+  packHeading(bankTopicTitle(bank, topic), name);
   let motion = questionMotion.get(page);
   if (!motion) questionMotion.set(page, motion = new AccordionMotion());
   const progress = motion.update(page.question, t);
@@ -354,6 +357,22 @@ export function drawPlanPanel(v: PlanView) {
   const h = 736;
   const y = (VH - h) / 2;
   box(x, y, w, h, C.gold, panelExit(), MENU_RADIUS);
+  if (v.confirmAction) {
+    const deleting = v.confirmAction === 'delete';
+    heading(deleting ? '删除上传文档？' : '重置文档题库？', x + pad, y + 110);
+    text(v.name, x + pad, y + 164, { size: 20, weight: 600, maxW: cw });
+    text(deleting ? '原文件、主题划分、生成题目和出题记忆都会删除。' : '生成题目、主题划分和出题记忆会清除；原文件保留，可重新划分和生成。',
+      x + pad, y + 210, { size: 16, color: C.ink2, maxW: cw });
+    text('已归档的答题记录会保留。', x + pad, y + 242, { size: 14, color: C.dim });
+    if (v.busy) {
+      text(v.msg || '处理中…', x + pad, y + 600, { size: 14, color: C.gold });
+    } else {
+      action(x + w - pad - 340, y + 608, 140, 46, '取消', cancelDocumentAction, 'ghost', { r: MENU_ROW_RADIUS });
+      action(x + w - pad - 184, y + 608, 184, 46, deleting ? '确认删除' : '确认重置', () => void confirmDocumentAction(), 'danger', { r: MENU_ROW_RADIUS });
+    }
+    if (v.msg && !v.busy) text(v.msg, x + pad, y + 680, { size: 14, color: C.red, maxW: cw });
+    return;
+  }
 
   const planned = !!v.planId && v.topics.length > 0;
   const jobs = v.imported ? documentJobs(v) : [];
@@ -386,12 +405,25 @@ export function drawPlanPanel(v: PlanView) {
   const listTop = y + 184;
   const listH = 404;
   const gap = 8;
-  const layouts = v.topics.map((topic) => {
+  const pageLabel = ({ pageFrom, pageTo }: { pageFrom?: number; pageTo?: number }) =>
+    pageFrom ? `第 ${pageFrom}${pageTo && pageTo !== pageFrom ? `–${pageTo}` : ''} 页` : '';
+  const layouts = v.topics.map((topic, i) => {
+    const titleW = cw - (v.imported ? 216 : 40);
     g.font = font(16, 500, FONT_UI);
-    const title = wrapText(topic.title, cw - 216);
+    const title = wrapText(topic.title, titleW);
     g.font = font(13, 400, FONT_UI);
-    const summary = v.imported ? [] : wrapText(topic.summary, cw - 216).slice(0, 2);
-    return { title, summary, h: 40 + title.length * 24 + (topic.pageFrom ? 24 : 0) + summary.length * 20 };
+    const summary = v.imported ? [] : wrapText(topic.summary, cw - 40);
+    const children = v.imported ? [] : (topic.subtopics ?? []).map((sub) => {
+      const pages = pageLabel(sub);
+      const heading = `· ${sub.title}${pages ? `  ·  ${pages}` : ''}`;
+      return { title: wrapText(heading, cw - 56), summary: wrapText(sub.summary, cw - 68) };
+    });
+    const childrenH = children.reduce((height, sub) => height + 6 + (sub.title.length + sub.summary.length) * 20, 0);
+    const job = latest.get(i);
+    const failure = job?.state === 'fail' ? jobFailureReason(job.tail) : '';
+    const failureLines = failure ? wrapText(`原因：${failure}`, cw - 40).slice(0, 2) : [];
+    return { title, titleW, summary, children, failureLines,
+      h: 40 + title.length * 24 + (topic.pageFrom ? 24 : 0) + summary.length * 20 + childrenH + failureLines.length * 18 };
   });
   const need = layouts.reduce((n, layout) => n + layout.h + gap, 0);
   const view = scrollArea(x + pad, listTop, cw, listH, need, v.docId + (v.imported ? ':topics' : ':preview'));
@@ -414,21 +446,34 @@ export function drawPlanPanel(v: PlanView) {
     g.fill();
 
     layout.title.forEach((line, j) => text(line, view.x + 20, cy + 28 + j * 24,
-      { size: 16, weight: 500, color: C.ink, maxW: cw - 216 }));
-    const pages = t.pageFrom
-      ? `第 ${t.pageFrom}${t.pageTo !== t.pageFrom ? `-${t.pageTo}` : ``} 页`
-      : '';
-    const metaY = cy + 28 + layout.title.length * 24;
-    if (pages) text(pages, view.x + 20, metaY, { size: 12, color: C.dim, maxW: cw - 216 });
-    layout.summary.forEach((line, j) => text(line, view.x + 20, metaY + (pages ? 24 : 0) + j * 20,
-      { size: 13, color: C.dim, maxW: cw - 216 }));
+      { size: 16, weight: 500, color: C.ink, maxW: layout.titleW }));
+    const pages = pageLabel(t);
+    let detailY = cy + 28 + layout.title.length * 24;
+    if (pages) {
+      text(pages, view.x + 20, detailY, { size: 12, color: C.dim, maxW: layout.titleW });
+      detailY += 24;
+    }
+    for (const line of layout.summary) {
+      text(line, view.x + 20, detailY, { size: 13, color: C.dim, maxW: cw - 40 });
+      detailY += 20;
+    }
+    for (const sub of layout.children) {
+      detailY += 6;
+      for (const line of sub.title) {
+        text(line, view.x + 36, detailY, { size: 13, color: C.ink, maxW: cw - 56 });
+        detailY += 20;
+      }
+      for (const line of sub.summary) {
+        text(line, view.x + 48, detailY, { size: 13, color: C.dim, maxW: cw - 68 });
+        detailY += 20;
+      }
+    }
+    layout.failureLines.forEach((line, j) => text(line, view.x + 20, detailY + j * 18,
+      { size: 12, color: C.red, maxW: cw - 40 }));
     if (v.imported) {
-      const state = latest.get(i)?.state;
-      const status = state === 'queued' ? '排队中' : state === 'running' ? '生成中'
-        : state === 'done' ? '已完成' : state === 'fail' ? '失败' : '';
+      const job = latest.get(i);
       const bx = view.x + cw - 54;
       const by = cy + 18;
-      if (status) text(status, bx - 16, by + 12, { align: 'right', size: 13, color: state === 'fail' ? C.red : C.dim });
       if (available.has(i)) {
         panel(bx, by, 24, 24, { radius: 4, fill: checked ? withAlpha(C.gold, 0.22) : C.bg, stroke: checked ? C.gold : C.lineHi });
         if (selectable && hitBottom > hitTop) onClick(view.x, hitTop, cw, hitBottom - hitTop, () => {
@@ -436,6 +481,10 @@ export function drawPlanPanel(v: PlanView) {
           else v.selected.add(i);
         }, `select-topic:${i}`);
         if (checked) drawArtIcon('check', bx + 12, by + 12, 20, C.gold);
+      }
+      if (job && by - 4 >= hitTop && by + 28 <= hitBottom) {
+        action(bx - 144, by - 4, 132, 32, generationLabel(job) + ' ›',
+          () => openTaskDetail(job.id), 'ghost', { size: 13, r: MENU_ROW_RADIUS });
       }
     }
     cy += rowH + gap;
@@ -458,6 +507,8 @@ export function drawPlanPanel(v: PlanView) {
     }
     text(legacyRunning ? '整库出题进行中' : `已选 ${selected.length} 个主题`, x + pad + (available.size ? 148 : 0), fy + 23,
       { size: 14, color: C.dim });
+    action(x + pad + 360, fy, 100, 46, '重置', () => requestDocumentAction('reset'), 'ghost', { r: MENU_ROW_RADIUS });
+    action(x + pad + 472, fy, 120, 46, '删除文档', () => requestDocumentAction('delete'), 'ghost', { r: MENU_ROW_RADIUS });
     action(x + w - pad - 200, fy, 200, 46, '生成所选主题', () => void generateSelectedTopics(v, selected), 'primary', {
       disabled: !selected.length || !v.canAgentic, r: MENU_ROW_RADIUS,
     });
@@ -468,9 +519,32 @@ export function drawPlanPanel(v: PlanView) {
       action(x + w - pad - 200, fy, 200, 46, '划分主题', () => void replan('auto'), 'primary', { r: MENU_ROW_RADIUS });
     }
     if (v.docId && v.canAgentic) {
-      action(x + pad + 212, fy, 168, 46, '模型分章', () => void replan('agentic'), 'ghost', { size: 14, r: MENU_ROW_RADIUS });
+      const controlX = x + pad + 184;
+      const canAdjust = !v.busy && !v.imported;
+      action(controlX, fy, 36, 46, '−', () => adjustAgenticWindow(-1000), 'ghost', {
+        size: 18, disabled: !canAdjust || v.agenticWindow <= MIN_AGENTIC_WINDOW, r: MENU_ROW_RADIUS,
+      });
+      panel(controlX + 42, fy, 88, 46, { radius: MENU_ROW_RADIUS, fill: C.panel, stroke: C.lineHi });
+      text(`${v.agenticWindow.toLocaleString()} 字`, controlX + 86, fy + 23,
+        { size: 13, weight: 600, color: C.ink, align: 'center' });
+      action(controlX + 136, fy, 36, 46, '+', () => adjustAgenticWindow(1000), 'ghost', {
+        size: 18, disabled: !canAdjust || v.agenticWindow >= MAX_AGENTIC_WINDOW, r: MENU_ROW_RADIUS,
+      });
+      const overlapX = controlX + 184;
+      const overlapText = v.agenticOverlapChars.toLocaleString();
+      text('重叠', overlapX, fy + 23, { size: 13, color: C.ink2 });
+      drawField(overlapX + 38, fy, 134, 46, v.agenticOverlapInput ?? fieldOf(overlapText), {
+        focused: !!v.agenticOverlapInput, placeholder: overlapText, rightGap: 28,
+      });
+      text('字符', overlapX + 160, fy + 23, { size: 13, color: C.dim, align: 'right' });
+      if (canAdjust) onClick(overlapX + 38, fy, 134, 46, focusAgenticOverlap, '重叠字符数');
+      action(overlapX + 192, fy, 108, 46, '模型分章', () => void replan('agentic'), 'ghost', {
+        size: 14, disabled: !canAdjust, r: MENU_ROW_RADIUS,
+      });
     }
-    action(x + pad, fy, 200, 46, '更换文档', () => void startDocFlow(), 'ghost', { size: 14, r: MENU_ROW_RADIUS });
+    action(x + pad, fy, 176, 46, '更换文档', () => void startDocFlow(), 'ghost', { size: 14, r: MENU_ROW_RADIUS });
+    action(x + pad + 680, fy, 108, 46, '删除文档', () => requestDocumentAction('delete'), 'ghost', { size: 14, r: MENU_ROW_RADIUS });
+    action(x + pad + 800, fy, 88, 46, '重置', () => requestDocumentAction('reset'), 'ghost', { size: 14, r: MENU_ROW_RADIUS });
   }
 
   if (!v.busy) {

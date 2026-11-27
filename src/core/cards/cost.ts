@@ -24,6 +24,3 @@ export function costNow(c: CardDef): number {
 export function canPay(c: CardDef): boolean {
   return isXCost(c) ? G.ap > 0 : G.ap >= (costOf(c) as number);
 }
-
-/** 答对退点，上限由 rulesOf().refund 传入。 */
-export const refundOf = (spent: number, cap = 0): number => Math.min(spent, cap);

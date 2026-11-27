@@ -8,14 +8,18 @@
  * 这一层只做传输与重试，不懂题、不懂记忆 —— 提示词在 `generate.ts`。
  */
 
+import { traceSpan } from './trace';
+
 export interface LlmConfig {
   baseUrl: string;
   model: string;
   apiKey: string;
   /** 单次请求超时（毫秒）。 */
   timeoutMs?: number;
-  /** 失败重试次数（只重试网络错误与 429 / 5xx）。 */
+  /** 首次请求之外的重试次数。 */
   retries?: number;
+  /** 默认要求 JSON；二元审核响应设为 false，只接受模型原始文本。 */
+  jsonMode?: boolean;
   /** 打印每次调用的 token 用量，方便看账。 */
   verbose?: boolean;
 }
@@ -26,33 +30,86 @@ export interface Llm {
   tool?(system: string,
     messages: Array<{ role: 'user' | 'assistant' | 'tool'; content: string; toolCallId?: string; calls?: Array<{ id: string; name: string; arguments: string }> }>,
     tools: Array<{ name: string; description: string; parameters: unknown }>,
-  ): Promise<{ text: string; calls: Array<{ id: string; name: string; arguments: string }>; reportToolResult?: (id: string, result: { ok: boolean; detail: string }) => void }>;
+  ): Promise<{ text: string; calls: Array<{ id: string; name: string; arguments: string }> }>;
 }
 
 type Usage = { prompt_tokens?: number; completion_tokens?: number };
 type Reply = { text: string; usage?: Usage; toolCalls?: Array<{ id: string; name: string; arguments: string }> };
-type ToolTrace = { id: string; name: string; arguments: string; state: 'streaming' | 'running' | 'complete' | 'failed'; detail?: string };
-type Output = {
-  call: number;
-  phase: 'waiting' | 'live' | 'batch' | 'tools' | 'complete';
-  text: string;
-  toolCalls?: ToolTrace[];
-  inputTokens?: number;
-  outputTokens?: number;
-};
+type ProviderError = { message?: string; code?: string | number; type?: string };
+
+type ToolDelta = { index: number; id?: string; function?: { name?: string; arguments?: string } };
 
 type ModelFrame = {
-  choices?: Array<{ delta?: { content?: string }; message?: { content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }; finish_reason?: string }>;
+  choices?: Array<{ delta?: { content?: string; tool_calls?: ToolDelta[] }; message?: { content?: string }; finish_reason?: string }>;
   usage?: Usage;
-  error?: { message?: string };
+  error?: ProviderError;
 };
 
+type AttemptDetails = {
+  kind: 'timeout' | 'network' | 'http' | 'provider' | 'invalid-response' | 'empty-response';
+  code?: string;
+  message: string;
+};
+type AttemptFailure = AttemptDetails & { retry: number; durationMs: number; status?: number };
+
+export class LlmRequestError extends Error {
+  constructor(readonly failures: readonly AttemptFailure[]) {
+    const last = failures.at(-1);
+    const status = last?.status === undefined ? '' : ` HTTP ${last.status}`;
+    super(`调用失败（${failures.length} 次请求）：${last?.kind ?? ''}${status} ${last?.message ?? ''}`);
+    this.name = 'LlmRequestError';
+  }
+}
+
+class ProviderReplyError extends Error {
+  readonly code?: string;
+
+  constructor(error: ProviderError, fallback: string) {
+    super(typeof error.message === 'string' && error.message ? error.message : fallback);
+    this.code = providerCode(error);
+  }
+}
+
+function providerCode(error?: ProviderError): string | undefined {
+  const code = error?.code ?? error?.type;
+  return typeof code === 'string' || typeof code === 'number' ? String(code) : undefined;
+}
+
+function httpFailure(status: number, body: string): AttemptDetails {
+  let error: ProviderError | undefined;
+  try { error = (JSON.parse(body) as ModelFrame | null)?.error; } catch { /* plain-text gateway error */ }
+  const message = typeof error?.message === 'string' ? error.message : body;
+  return { kind: 'http', message: message || `HTTP ${status}`, code: providerCode(error) };
+}
+
+function thrownFailure(error: unknown, signal: AbortSignal, reading: boolean): AttemptDetails {
+  const err = error as { name?: string; code?: unknown; cause?: { code?: unknown } } | undefined;
+  const value = err?.cause?.code ?? err?.code;
+  const code = typeof value === 'string' ? value : undefined;
+  if (signal.aborted || err?.name === 'TimeoutError' || code === 'ETIMEDOUT' || /^UND_ERR_.*TIMEOUT$/.test(code ?? '')) {
+    return { kind: 'timeout', message: '模型请求超时', code };
+  }
+  const message = error instanceof Error ? error.message : '未知模型请求错误';
+  if (error instanceof ProviderReplyError) return { kind: 'provider', message, code };
+  if (!reading || code === 'UND_ERR_SOCKET' || code === 'ECONNRESET') return { kind: 'network', message, code };
+  return { kind: 'invalid-response', message, code };
+}
+
+function errorExcerpt(text: string, apiKey: string, limit: number): string {
+  const redacted = apiKey ? text.replaceAll(apiKey, '[REDACTED]') : text;
+  return redacted
+    .replace(/\bBearer\s+[^\s"',;]+/gi, 'Bearer [REDACTED]')
+    .replace(/\bsk-[a-z0-9_-]{8,}\b/gi, '[REDACTED]')
+    .replace(/(["']?(?:api[_-]?key|access[_-]?token|authorization)["']?\s*[=:]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s&,;}]+)/gi, '$1[REDACTED]')
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .slice(0, limit);
+}
+
 const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504]);
-const LIVE_SNAPSHOT_MS = 50;
 const tokenCount = (value?: number) => Number.isSafeInteger(value) && value! >= 0 ? value : undefined;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-async function readStream(res: Response, onText: (text: string) => void, onToolCalls?: (calls: Array<{ id: string; name: string; arguments: string }>) => void): Promise<Reply> {
+async function readStream(res: Response, onChunk: () => void): Promise<Reply> {
   const reader = res.body?.getReader();
   if (!reader) throw new Error('模型没有返回输出流');
   const decoder = new TextDecoder();
@@ -68,21 +125,21 @@ async function readStream(res: Response, onText: (text: string) => void, onToolC
     fields = [];
     if (payload.trim() === '[DONE]') { done = true; return; }
     const frame = JSON.parse(payload) as ModelFrame;
-    if (frame.error) throw new Error(frame.error.message || '模型中断了输出');
+    if (frame.error) throw new ProviderReplyError(frame.error, '模型中断了输出');
     if (frame.usage) usage = frame.usage;
     const choice = frame.choices?.[0];
     if (choice?.finish_reason) finished = true;
     if (typeof choice?.delta?.content === 'string' && choice.delta.content) {
       text += choice.delta.content;
-      onText(text);
+      onChunk();
     }
-    for (const call of (choice as typeof choice & { delta?: { tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> } })?.delta?.tool_calls ?? []) {
+    for (const call of choice?.delta?.tool_calls ?? []) {
       const item = toolCalls.get(call.index) ?? { id: '', name: '', arguments: '' };
       item.id += call.id ?? '';
       item.name += call.function?.name ?? '';
       item.arguments += call.function?.arguments ?? '';
       toolCalls.set(call.index, item);
-      onToolCalls?.([...toolCalls.values()].map((entry) => ({ ...entry })));
+      onChunk();
     }
   }
 
@@ -115,26 +172,36 @@ async function readStream(res: Response, onText: (text: string) => void, onToolC
   }
 }
 
-export function openAiLlm(cfg: LlmConfig, onOutput?: (output: Output) => void): Llm {
+function modelAttempt(cfg: LlmConfig, retry: number, requestMode: number, tools: boolean) {
+  const started = performance.now();
+  const finish = traceSpan('model.request', { model: cfg.model, retry, stream: requestMode > 0, streamUsage: requestMode === 2, tools });
+  let status: number | undefined;
+  let providerRequestId: string | undefined;
+  let firstChunkMs: number | undefined;
+  let headersMs: number | undefined;
+  return {
+    response(res: Response) {
+      status = res.status;
+      headersMs = Math.round(performance.now() - started);
+      const id = res.headers.get('x-request-id') ?? res.headers.get('request-id');
+      if (id && /^[A-Za-z0-9_.:-]{1,128}$/.test(id) && !/^sk[-_]/i.test(id) && !id.includes(cfg.apiKey)) providerRequestId = id;
+    },
+    firstChunk() { firstChunkMs ??= Math.round(performance.now() - started); },
+    finish(outcome: 'ok' | 'error' | 'fallback', usage?: Usage, errorKind?: AttemptDetails['kind']) {
+      finish(outcome, { status, providerRequestId, headersMs, firstChunkMs, errorKind,
+        inputTokens: tokenCount(usage?.prompt_tokens), outputTokens: tokenCount(usage?.completion_tokens) });
+    },
+  };
+}
+
+export function openAiLlm(cfg: LlmConfig): Llm {
   const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
   const retries = cfg.retries ?? 3;
-  const timeoutMs = cfg.timeoutMs ?? 120_000;
-  // 缓存兼容端点支持的模式，后续 JIT 回合不用重复试探。
-  let mode = onOutput ? 2 : 0;
-  let currentCall = 0;
-
-  function publish(phase: Output['phase'], text = '', usage?: Usage, toolCalls?: ToolTrace[]) {
-    if (!onOutput) return;
-    onOutput({ call: currentCall, phase, text,
-      ...(toolCalls ? { toolCalls: toolCalls.map((call) => ({ ...call })) } : {}),
-      inputTokens: tokenCount(usage?.prompt_tokens), outputTokens: tokenCount(usage?.completion_tokens) });
-  }
-
-  /** OpenAI-compatible tool round; downgrade usage streaming, then streaming itself when rejected. */
-  let toolMode: 0 | 1 | 2 = 2;
-  const tool = async (system: string, messages: Array<{ role: 'user' | 'assistant' | 'tool'; content: string; toolCallId?: string; calls?: Array<{ id: string; name: string; arguments: string }> }>, tools: Array<{ name: string; description: string; parameters: unknown }>) => {
-    currentCall++;
-    publish('waiting');
+  const toolRetries = cfg.retries ?? 1;
+  const timeoutMs = cfg.timeoutMs ?? 180_000;
+  // 缓存服务商对 SSE 用量参数的兼容性，后续 JIT 回合直接使用。
+  let toolMode: 1 | 2 = 2;
+  const toolAttempt = async (system: string, messages: Array<{ role: 'user' | 'assistant' | 'tool'; content: string; toolCallId?: string; calls?: Array<{ id: string; name: string; arguments: string }> }>, tools: Array<{ name: string; description: string; parameters: unknown }>, retry: number) => {
     const requestMessages = [{ role: 'system', content: system }, ...messages.map((m) => m.role === 'tool'
       ? { role: 'tool', tool_call_id: m.toolCallId, content: m.content }
       : m.role === 'assistant' && m.calls
@@ -142,169 +209,161 @@ export function openAiLlm(cfg: LlmConfig, onOutput?: (output: Output) => void): 
         : { role: m.role, content: m.content })];
     const toolDefs = tools.map((item) => ({ type: 'function', function: { name: item.name, description: item.description, parameters: item.parameters } }));
     let response: Response;
+    let observation: ReturnType<typeof modelAttempt>;
+    let signal: AbortSignal;
     for (;;) {
-      const stream = toolMode > 0;
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.apiKey}` },
-        body: JSON.stringify({ model: cfg.model, stream, ...(toolMode === 2 ? { stream_options: { include_usage: true } } : {}),
-          temperature: 0.2, messages: requestMessages, tools: toolDefs, tool_choice: 'auto' }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      observation = modelAttempt(cfg, retry, toolMode, true);
+      signal = AbortSignal.timeout(timeoutMs);
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.apiKey}` },
+          body: JSON.stringify({ model: cfg.model, stream: true, ...(toolMode === 2 ? { stream_options: { include_usage: true } } : {}),
+            temperature: 0.2, messages: requestMessages, tools: toolDefs, tool_choice: 'auto' }),
+          signal,
+        });
+      } catch (error) {
+        observation.finish('error', undefined, thrownFailure(error, signal, false).kind);
+        throw error;
+      }
+      observation.response(response);
       if (response.ok) break;
       const body = (await response.text().catch(() => '')).slice(0, 300);
-      if (toolMode === 2 && [400, 422, 501].includes(response.status) && /stream_options|include_usage/i.test(body)) { toolMode = 1; continue; }
-      if (toolMode > 0 && /stream/i.test(body) && [400, 422, 501].includes(response.status)) { toolMode = 0; continue; }
+      if (toolMode === 2 && [400, 422, 501].includes(response.status) && /stream_options|include_usage/i.test(body)) {
+        observation.finish('fallback', undefined, 'http');
+        toolMode = 1;
+        continue;
+      }
+      observation.finish('error', undefined, 'http');
       throw new Error(`模型工具调用失败（HTTP ${response.status}）：${body}`);
     }
 
-    let latest = '';
-    let trace: ToolTrace[] = [];
-    let reply: Reply;
     if (!response.headers.get('content-type')?.includes('text/event-stream')) {
-      const data = await response.json() as ModelFrame;
-      if (data.error) throw new Error(data.error.message || '模型返回错误');
-      const message = data.choices?.[0]?.message;
-      latest = message?.content ?? '';
-      const calls = message?.tool_calls ?? [];
-      reply = { text: latest, usage: data.usage, toolCalls: calls.map((call) => ({
-        id: call.id, name: call.function.name, arguments: call.function.arguments,
-      })) };
-      publish('batch', latest, reply.usage);
-    } else {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let sentLive = false;
-      let lastLive = '';
-      const flushLive = () => {
-        timer = undefined;
-        if (!sentLive) return;
-        const signature = JSON.stringify([latest, trace]);
-        if (signature === lastLive) return;
-        lastLive = signature;
-        publish('live', latest, undefined, trace);
-      };
-      const streamUpdate = () => {
-        if (!onOutput) return;
-        if (!sentLive) {
-          sentLive = true;
-          lastLive = JSON.stringify([latest, trace]);
-          publish('live', latest, undefined, trace);
-        } else {
-          timer ??= setTimeout(flushLive, LIVE_SNAPSHOT_MS);
-        }
-      };
+      observation.finish('error', undefined, 'invalid-response');
+      throw new Error('模型接受了流式请求，但没有返回 SSE 输出流；为避免长时间同步等待，本次生成已中止。');
+    }
+    try {
+      const reply = await readStream(response, observation.firstChunk);
+      observation.finish('ok', reply.usage);
+      return { text: reply.text, calls: reply.toolCalls ?? [] };
+    } catch (error) {
+      observation.finish('error', undefined, thrownFailure(error, signal, true).kind);
+      throw error;
+    }
+  };
+
+  const tool = async (system: string, messages: Parameters<NonNullable<Llm['tool']>>[1], tools: Parameters<NonNullable<Llm['tool']>>[2]) => {
+    const failures: AttemptFailure[] = [];
+    for (let attempt = 0; attempt <= toolRetries; attempt++) {
+      if (attempt > 0) {
+        await sleep(Math.min(1000 * 2 ** (attempt - 1), 8000));
+      }
+      const started = performance.now();
       try {
-        reply = await readStream(response,
-          (text) => { latest = text; streamUpdate(); },
-          (calls) => { trace = calls.map((call) => ({ ...call, state: 'streaming' })); streamUpdate(); });
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-        timer = undefined;
-        flushLive();
+        return await toolAttempt(system, messages, tools, attempt);
+      } catch (error) {
+        const err = error as { name?: string; code?: unknown; cause?: { code?: unknown } } | undefined;
+        const raw = error instanceof Error ? error.message : '未知模型请求错误';
+        const codeValue = err?.cause?.code ?? err?.code;
+        const code = typeof codeValue === 'string' ? codeValue : undefined;
+        const status = /HTTP (\d{3})/.exec(raw)?.[1];
+        const httpStatus = status ? Number(status) : undefined;
+        const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+          || /aborted due to timeout|timed out|请求超时/i.test(raw) || /^UND_ERR_.*TIMEOUT$/.test(code ?? '');
+        const failure: AttemptDetails = timedOut
+          ? { kind: 'timeout', message: '模型工具调用超时', ...(code ? { code } : {}) }
+          : httpStatus !== undefined
+            ? httpFailure(httpStatus, raw)
+            : error instanceof ProviderReplyError
+              ? { kind: 'provider', message: raw, ...(error.code ? { code: error.code } : {}) }
+              : error instanceof TypeError || code === 'ECONNRESET' || code === 'UND_ERR_SOCKET'
+                ? { kind: 'network', message: raw, ...(code ? { code } : {}) }
+                : { kind: 'invalid-response', message: raw, ...(code ? { code } : {}) };
+        failures.push({ ...failure, retry: attempt, durationMs: Math.round(performance.now() - started),
+          ...(httpStatus === undefined ? {} : { status: httpStatus }),
+          ...(failure.code ? { code: errorExcerpt(failure.code, cfg.apiKey, 100) } : {}),
+          message: errorExcerpt(failure.message, cfg.apiKey, 400) });
+        const retryable = timedOut || failure.kind === 'network'
+          || (httpStatus !== undefined && RETRYABLE.has(httpStatus));
+        if (!retryable || attempt === toolRetries) throw new LlmRequestError(failures);
       }
     }
-    const calls = reply.toolCalls ?? [];
-    trace = calls.map((call) => ({ ...call, state: 'running' }));
-    if (trace.length) publish('tools', reply.text || latest, reply.usage, trace);
-    else publish('complete', reply.text || latest, reply.usage);
-    return { text: reply.text, calls, reportToolResult: (id: string, result: { ok: boolean; detail: string }) => {
-      trace = trace.map((call) => call.id === id
-        ? { ...call, state: result.ok ? 'complete' : 'failed', detail: result.detail }
-        : call);
-      publish('tools', reply.text || latest, reply.usage, trace);
-    } };
+    throw new LlmRequestError(failures);
   };
 
   return {
     async ask(system, user) {
-      currentCall++;
-      let lastErr = '';
+      const failures: AttemptFailure[] = [];
       for (let attempt = 0; attempt <= retries; attempt++) {
-        publish('waiting');
         if (attempt > 0) {
           // 指数退避：429 连着来时不要一秒内再撞三次。
           await sleep(Math.min(1000 * 2 ** (attempt - 1), 8000));
         }
         let res: Response;
+        const started = performance.now();
+        const signal = AbortSignal.timeout(timeoutMs);
+        const observation = modelAttempt(cfg, attempt, 0, false);
+        const record = (failure: AttemptDetails, status?: number) => {
+          failures.push({ kind: failure.kind, retry: attempt, durationMs: Math.round(performance.now() - started),
+            status, code: failure.code && errorExcerpt(failure.code, cfg.apiKey, 100),
+            message: errorExcerpt(failure.message, cfg.apiKey, 400) });
+        };
         try {
-          for (;;) {
-            if (!mode && onOutput) publish('batch');
-            res = await fetch(url, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.apiKey}` },
-              body: JSON.stringify({
-                model: cfg.model,
-                messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-                temperature: 0.2,
-                response_format: { type: 'json_object' },
-                ...(mode ? { stream: true } : {}),
-                ...(mode === 2 ? { stream_options: { include_usage: true } } : {}),
-              }),
-              signal: AbortSignal.timeout(timeoutMs),
-            });
-            if (res.ok) break;
-            const body = (await res.text().catch(() => '')).slice(0, 400);
-            lastErr = `HTTP ${res.status}：${body}`;
-            if (mode && [400, 422, 501].includes(res.status) && /stream|include_usage/i.test(body)) {
-              mode = mode === 2 && /stream_options|include_usage/i.test(body) ? 1 : 0;
-              continue;
-            }
-            break;
-          }
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.apiKey}` },
+            body: JSON.stringify({
+              model: cfg.model,
+              messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+              temperature: 0.2,
+              ...(cfg.jsonMode === false ? {} : { response_format: { type: 'json_object' } }),
+            }),
+            signal,
+          });
+          observation.response(res);
         } catch (err) {
-          lastErr = `网络错误：${(err as Error).message}`;
+          const failure = thrownFailure(err, signal, false);
+          observation.finish('error', undefined, failure.kind);
+          record(failure);
           continue;
         }
         if (!res.ok) {
+          try {
+            record(httpFailure(res.status, await res.text()), res.status);
+          } catch (err) {
+            record(thrownFailure(err, signal, true), res.status);
+          }
+          observation.finish('error', undefined, failures.at(-1)?.kind);
           if (RETRYABLE.has(res.status)) continue;
-          throw new Error(lastErr);
+          throw new LlmRequestError(failures);
         }
 
         let reply: Reply;
-        let latest = '';
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        let sent = false;
-        let lastLive = '';
         try {
           if (res.headers.get('content-type')?.includes('text/event-stream')) {
-            reply = await readStream(res, (text) => {
-              latest = text;
-              if (!sent) {
-                publish('live', latest);
-                sent = true;
-                lastLive = latest;
-              } else {
-                // Coalesce tiny provider fragments without delaying the final visible text.
-                timer ??= setTimeout(() => {
-                  timer = undefined;
-                  lastLive = latest;
-                  publish('live', latest);
-                }, LIVE_SNAPSHOT_MS);
-              }
-            });
+            reply = await readStream(res, observation.firstChunk);
           } else {
             const data = await res.json() as ModelFrame;
-            if (data.error) throw new Error(data.error.message || '模型返回错误');
+            if (data.error) throw new ProviderReplyError(data.error, '模型返回错误');
             reply = { text: data.choices?.[0]?.message?.content ?? '', usage: data.usage };
           }
-          if (!reply.text.trim()) { lastErr = '模型返回了空内容'; continue; }
-        } catch (err) {
-          lastErr = `读取模型回复失败：${(err as Error).message}`;
-          continue;
-        } finally {
-          if (timer !== undefined) clearTimeout(timer);
-          timer = undefined;
-          if (sent && latest !== lastLive) {
-            lastLive = latest;
-            publish('live', latest);
+          if (!reply.text.trim()) {
+            observation.finish('error', reply.usage, 'empty-response');
+            record({ kind: 'empty-response', message: '模型返回了空内容' }, res.status);
+            continue;
           }
+        } catch (err) {
+          const failure = thrownFailure(err, signal, true);
+          observation.finish('error', undefined, failure.kind);
+          record(failure, res.status);
+          continue;
         }
         const { text, usage } = reply;
-        publish('complete', text, usage);
+        observation.finish('ok', usage);
         if (cfg.verbose) console.log(`  · tokens ${usage?.prompt_tokens ?? '?'} in / ${usage?.completion_tokens ?? '?'} out`);
         return text;
       }
-      throw new Error(`调用失败（重试 ${retries} 次后放弃）：${lastErr}`);
+      throw new LlmRequestError(failures);
     },
     tool,
   };
@@ -320,6 +379,17 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): LlmConfig {
     baseUrl: env.GEN_BASE_URL ?? 'https://api.deepseek.com',
     model: env.GEN_MODEL ?? 'deepseek-chat',
     verbose: env.GEN_VERBOSE === '1',
+  };
+}
+
+/** 审核配置可单独覆盖；未填写的字段回退到生成模型，确保默认可用且仍执行审核。 */
+export function reviewConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LlmConfig {
+  return {
+    apiKey: env.REVIEW_API_KEY?.trim() || env.GEN_API_KEY?.trim() || env.OPENAI_API_KEY?.trim() || '',
+    baseUrl: env.REVIEW_BASE_URL?.trim() || env.GEN_BASE_URL?.trim() || 'https://api.deepseek.com',
+    model: env.REVIEW_MODEL?.trim() || env.GEN_MODEL?.trim() || 'deepseek-chat',
+    jsonMode: false,
+    verbose: env.REVIEW_VERBOSE === '1',
   };
 }
 

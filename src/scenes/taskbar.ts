@@ -1,12 +1,11 @@
-import { g, roundRect, VH, VW } from '../gfx/canvas';
-import { C, FONT_NUM, FONT_TITLE, withAlpha } from '../gfx/theme';
-import { button, panel, text } from '../gfx/ui';
-import { drawMarkdown, layoutMarkdown } from '../gfx/markdown';
+import { g, roundRect, wrapText, VH, VW } from '../gfx/canvas';
+import { C, font, FONT_NUM, FONT_TITLE, withAlpha } from '../gfx/theme';
+import { action, button, panel, text } from '../gfx/ui';
 import { hover, onBlock, onClick, onDismiss, consumeModalWheel } from '../input';
-import type { JobState } from '../core/library';
-import { generationStage, inspectJob, inspectedJob, jobsSnapshot } from './jobstate';
+import { jobTraceUrl, type JobActivity, type JobState } from '../core/library';
+import { generationLabel, generationStep, jobFailureReason, jobsSnapshot } from './jobstate';
 import { DrawerMotion, reduceMotion } from '../gfx/motion';
-import { drawScribe, type SpiritKind } from '../gfx/art/scribe';
+import { drawScribe, drawScribeAtWork, type ScribeAction, type SpiritKind } from '../gfx/art/scribe';
 import { drawExitControl, type ExitAction } from './exit-control';
 
 const PANEL = { x: VW - 426, y: 78, w: 402, h: 754 };
@@ -20,51 +19,30 @@ const SPIRIT_NAMES = [
 ] as const;
 let opened = false;
 let selected = '';
-let outputScroll: number | null = null;
-const outputExpanded = new Map<string, boolean>();
-type ModelCall = NonNullable<NonNullable<JobState['modelOutput']>['calls']>[number];
-type OutputStep = {
-  kind: 'assistant' | 'tool';
-  key: string;
-  collapsed: boolean;
-  y: number;
-  h: number;
-  left: number;
-  cardW: number;
-  title: string;
-  status: string;
-  color: string;
-  layout?: ReturnType<typeof layoutMarkdown>;
-  bodyY: number;
-  detail?: string;
-};
-let outputLayout: { key: string; width: number; steps: OutputStep[]; height: number } | null = null;
-
-function selectJob(id: string, poll = true) {
-  selected = id;
-  inspectJob(poll ? id : '');
-  outputScroll = null;
-  outputExpanded.clear();
-}
 let listScroll = 0;
 const motion = new DrawerMotion();
 
 export const taskbarOpen = () => motion.visible(opened);
 function openTaskbar() {
   if (opened) return;
-  selectJob('');
+  selected = '';
   listScroll = 0;
   opened = true;
 }
+export function openTaskDetail(id: string) {
+  openTaskbar();
+  selected = id;
+}
+
 export function closeTaskbar(immediate = false) {
   opened = false;
-  selectJob('');
+  selected = '';
   if (immediate) motion.reset();
 }
 
 export function taskbarExit(): ExitAction | null {
   if (!opened) return null;
-  return selected ? { kind: 'back', run: () => selectJob('') } : { kind: 'close', run: closeTaskbar };
+  return selected ? { kind: 'back', run: () => { selected = ''; } } : { kind: 'close', run: closeTaskbar };
 }
 
 function elapsed(ms: number): string {
@@ -97,9 +75,50 @@ function drawHandle(running: number, onOpen: () => void) {
   }, '后台任务');
 }
 
-function scribeWork(job: JobState) {
-  if (job.state !== 'running' || reduceMotion()) return 'idle';
-  return generationStage(job).index === 2 ? 'bind' : 'write';
+function currentWork(job: JobState): { action: ScribeAction; label: string; active: boolean } {
+  const label = generationLabel(job);
+  if (job.state === 'done') return { action: 'bind', label, active: false };
+  if (job.state !== 'running') return { action: 'idle', label, active: false };
+  if (job.progress?.phase === 'commit' || job.progress?.phase === 'complete') {
+    return { action: 'bind', label: job.progress.label ?? label, active: job.progress.phase === 'commit' };
+  }
+  const latest = job.activity?.at(-1);
+  if (latest) {
+    if (!latest.active) {
+      const detail = latest.kind === 'source' ? `已读取《${latest.title}》` :
+        latest.kind === 'reviewed' ? `核验完成 · ${latest.passed} 道通过 · ${latest.rejected} 道拒绝` : label;
+      return { action: 'idle', label: detail, active: false };
+    }
+    if (latest.kind === 'index') return { action: 'read', label: '查找参考章节', active: true };
+    if (latest.kind === 'draft') return { action: 'draft', label: '构思题目中', active: true };
+    if (latest.kind === 'review') return { action: 'review', label, active: true };
+  }
+  if (generationStep(job) === 1) return { action: 'review', label, active: true };
+  return { action: 'idle', label: job.progress?.phase === 'starting' ? '准备中' : label, active: false };
+}
+
+function activityLabel(event: JobActivity): string {
+  switch (event.kind) {
+    case 'index': return '开始查找参考章节';
+    case 'source': return `已读《${event.title}》`;
+    case 'draft': return '已请求模型出题';
+    case 'review': return `提交 ${event.total} 道候选题审核`;
+    case 'reviewed': return `${event.passed} 道通过 · ${event.rejected} 道拒绝${event.pending ? ` · ${event.pending} 道待审` : ''}`;
+  }
+}
+
+function drawActivity(job: JobState, x: number, y: number, w: number, limit: number) {
+  const events = job.activity?.slice(-limit);
+  if (!events?.length) return;
+  text('最近动作', x, y, { size: 12, weight: 600, color: C.dim });
+  events.forEach((event, i) => {
+    const rowY = y + 28 + i * 32;
+    const latest = i === events.length - 1 && event.active;
+    g.fillStyle = latest ? C.gold : C.lineHi;
+    g.fillRect(x + 4, rowY - 2, 4, 4);
+    text(activityLabel(event), x + 20, rowY, { size: 13, color: latest ? C.ink : C.ink2, maxW: w - 120 });
+    text(`+${elapsed(event.ms)}`, x + w, rowY, { size: 12, family: FONT_NUM, color: C.dim, align: 'right' });
+  });
 }
 
 function spiritOf(job: JobState): { name: string; kind: SpiritKind } {
@@ -121,241 +140,58 @@ function drawTaskRow(job: JobState, y: number, t: number, listY: number, listBot
   const lit = hover(x, top, w, bottom - top);
   panel(x, y, w, ROW_H, { radius: 8, fill: lit ? C.panelHi : withAlpha(active ? C.gold : C.ink, active ? 0.06 : 0.025),
     stroke: active ? C.goldDim : C.line });
-  const tx = x + (agent ? 56 : 16);
-  if (spirit) drawScribe(x + 32, y + 40, 40, scribeWork(job), t, spirit.kind);
+  const tx = x + (agent ? 72 : 16);
+  const work = agent ? currentWork(job) : null;
+  if (spirit && work) {
+    if (active && work?.active) {
+      g.save();
+      g.translate(x + 36, y + 40);
+      g.scale(0.54, 0.54);
+      drawScribeAtWork(0, 0, work.action, t, spirit.kind, !reduceMotion());
+      g.restore();
+    } else {
+      drawScribe(x + 36, y + 40, 48, 'idle', t, spirit.kind);
+    }
+  }
   text(spirit?.name ?? '文档处理', tx, y + 22, { size: 13, weight: 600, color: agent ? C.gold : C.dim });
-  text(agent ? generationStage(job).label : stateText(job.state),
+  text(work?.label ?? stateText(job.state),
     x + w - 16, y + 22, { size: 12, align: 'right', color: stateColor(job.state) });
   text(job.title, tx, y + 43, { size: 14, weight: 600, maxW: x + w - 16 - tx });
   if (job.name) text(job.name, tx, y + 63, { size: 11, color: C.dim, maxW: x + w - 16 - tx });
-  onClick(x, top, w, bottom - top, () => selectJob(job.id, agent), `任务:${job.id}`);
+  onClick(x, top, w, bottom - top, () => openTaskDetail(job.id), `任务:${job.id}`);
 }
 
-function formatJsonPrefix(source: string): string {
-  let result = '';
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (const char of source.trimStart()) {
-    if (inString) {
-      result += char;
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') { inString = true; result += char; }
-    else if (/\s/.test(char)) continue;
-    else if (char === '{' || char === '[') {
-      result += char + '\n';
-      depth++;
-      result += '  '.repeat(depth);
-    } else if (char === '}' || char === ']') {
-      const lineStart = result.lastIndexOf('\n');
-      if (lineStart >= 0 && !result.slice(lineStart + 1).trim()) result = result.slice(0, lineStart);
-      else result = result.replace(/[ \t]+$/, '');
-      depth = Math.max(0, depth - 1);
-      result += '\n' + '  '.repeat(depth) + char;
-    } else if (char === ',') result += ',\n' + '  '.repeat(depth);
-    else if (char === ':') result += ': ';
-    else result += char;
+const GENERATION_STEPS = ['出题', '审核', '入库'] as const;
+
+function drawGenerationProgress(job: JobState, x: number, y: number, w: number) {
+  const current = generationStep(job);
+  const running = job.state === 'running';
+  const failed = job.state === 'fail';
+  const stepW = w / GENERATION_STEPS.length;
+  const railY = y + 10;
+  const cx = (index: number) => x + (index + 0.5) * stepW;
+  g.fillStyle = C.lineHi;
+  g.fillRect(cx(0), railY - 0.5, cx(2) - cx(0), 1);
+  if (current > 0) {
+    g.fillStyle = C.goldDim;
+    g.fillRect(cx(0), railY - 0.5, cx(Math.min(current, 2)) - cx(0), 1);
   }
-  return result;
-}
-
-function renderedReply(source: string) {
-  // Format valid JSON prefixes too, so code appears as it streams and does not reflow when parsing finally succeeds.
-  if (/^\s*[\[{]/.test(source)) return '```json\n' + formatJsonPrefix(source) + '\n```';
-  return source;
-}
-function renderedArguments(source: string) {
-  try { return JSON.stringify(JSON.parse(source), null, 2); }
-  catch { return source || '…'; }
-}
-
-function callPresentation(call: ModelCall, job: JobState) {
-  if (job.state === 'fail' && call.phase !== 'complete') return { label: '中断', color: C.red };
-  if (call.phase === 'waiting') return { label: '连接中', color: C.dim };
-  if (call.phase === 'live') return { label: '生成中', color: C.blue };
-  if (call.phase === 'batch') return { label: '等待完整回复', color: C.gold };
-  if (call.phase === 'tools') return { label: '工具执行', color: C.orange };
-  return { label: '完成', color: C.green };
-}
-
-function buildOutputSteps(calls: ModelCall[], job: JobState, width: number): OutputStep[] {
-  const steps: OutputStep[] = [];
-  let y = 0;
-  const add = (kind: OutputStep['kind'], key: string, title: string, status: string, color: string,
-    body: string, detail = '') => {
-    const left = kind === 'tool' ? 40 : 24;
-    const cardW = width - left - 4;
-    const bodyY = kind === 'tool' ? 43 : 30;
-    const layout = body ? layoutMarkdown(body, cardW - 24, kind === 'tool' ? 11 : 12) : undefined;
-    const latestAssistant = `${job.id}:${calls.at(-1)?.call}:assistant`;
-    const defaultExpanded = kind === 'assistant' && key === latestAssistant;
-    const collapsed = !(outputExpanded.get(key) ?? defaultExpanded);
-    const h = collapsed ? Math.max(46, kind === 'tool' ? 50 : 46)
-      : Math.max(42, bodyY + (layout?.h ?? 0) + (detail ? 20 : 8));
-    steps.push({ kind, key, collapsed, y, h, left, cardW, title, status, color, layout, bodyY, detail: detail || undefined });
-    y += h + 8;
-  };
-
-  for (const call of calls) {
-    const phase = callPresentation(call, job);
-    const tools = call.toolCalls ?? [];
-    const usage = call.inputTokens == null && call.outputTokens == null ? ''
-      : ` · ${call.inputTokens ?? '—'}→${call.outputTokens ?? '—'} tok`;
-    if (call.text) add('assistant', `${job.id}:${call.call}:assistant`, `模型 · 第 ${call.call} 轮`, phase.label + usage, phase.color, renderedReply(call.text));
-    else if (!tools.length) {
-      const body = call.phase === 'batch' ? '此模型未提供流式响应，等待完整回复。'
-        : call.phase === 'complete' ? '没有文本内容。' : '等待模型输出……';
-      add('assistant', `${job.id}:${call.call}:assistant`, `模型 · 第 ${call.call} 轮`, phase.label + usage, phase.color, body);
-    }
-
-    for (const tool of tools) {
-      const interrupted = job.state === 'fail' && (tool.state === 'streaming' || tool.state === 'running');
-      const state = interrupted ? { label: '中断', color: C.red }
-        : tool.state === 'streaming' ? { label: '接收调用', color: C.blue }
-          : tool.state === 'running' ? { label: '执行中', color: C.orange }
-            : tool.state === 'complete' ? { label: '已完成', color: C.green }
-              : { label: '未完成', color: C.red };
-      const name = tool.name || '工具调用';
-      const args = renderedArguments(tool.arguments);
-      const body = `\`\`\`json\n${args}\n\`\`\``;
-      add('tool', `${job.id}:${call.call}:tool:${tool.id}`, name, state.label, state.color, body, tool.detail ?? '');
-    }
-  }
-  return steps;
-}
-
-function drawModelOutput(job: JobState, x: number, y: number, w: number) {
-  const output = job.modelOutput;
-  const calls: ModelCall[] = output?.calls ?? (output?.text ? [{
-    call: 1, phase: output.phase ?? 'complete', text: output.text,
-    inputTokens: output.inputTokens, outputTokens: output.outputTokens,
-  }] : []);
-  const active = job.state === 'running';
-  const latest = calls.at(-1);
-  const info = active && latest?.phase === 'live' ? `流式输出 · 第 ${latest.call} 轮`
-    : active && latest?.phase === 'tools' ? `工具执行 · 第 ${latest.call} 轮`
-      : calls.length ? `${calls.length} 轮` : '';
-  const infoColor = latest?.phase === 'tools' ? C.orange : latest?.phase === 'live' ? C.blue : C.dim;
-  text('工作过程', x, y, { size: 13, color: C.ink, weight: 600 });
-  if (info) text(info, x + w, y, { size: 12, align: 'right', color: infoColor });
-  const top = y + 18;
-  const h = PANEL.y + PANEL.h - top - 53;
-  const pad = 10;
-  const viewH = h - pad * 2;
-  const innerW = w - pad * 2;
-  panel(x, top, w, h, { radius: 8, fill: C.void, stroke: C.line });
-  const wheel = consumeModalWheel();
-  if (!calls.length) {
-    text(job.state === 'queued' ? '排队中' : !active ? '此任务没有保存模型输出' : '等待模型输出',
-      x + pad, top + 28, { size: 13, color: C.dim });
-    return;
-  }
-
-  const key = `${job.id}:${job.state}:${innerW}:` + calls.map((call) =>
-    `${call.call}/${call.phase}/${call.text.length}/${call.text.slice(-20)}/${call.inputTokens ?? ''}/${call.outputTokens ?? ''}/` +
-    (call.toolCalls ?? []).map((tool) => `${tool.id}:${tool.name}:${tool.state}:${tool.arguments.length}:${tool.arguments.slice(-12)}:${tool.detail ?? ''}`).join(','),
-  ).join('|');
-  if (!outputLayout || outputLayout.key !== key || outputLayout.width !== innerW) {
-    const steps = buildOutputSteps(calls, job, innerW);
-    outputLayout = { key, width: innerW, steps, height: steps.length ? steps.at(-1)!.y + steps.at(-1)!.h : 0 };
-  }
-  const { steps, height } = outputLayout;
-  const max = Math.max(0, height - viewH);
-  if (wheel && hover(x, top, w, h)) {
-    const next = Math.max(0, Math.min(max, (outputScroll ?? max) + Math.sign(wheel) * 42));
-    outputScroll = next === max ? null : next;
-  }
-  const offset = Math.min(max, outputScroll ?? max);
-  g.save();
-  g.beginPath();
-  g.rect(x + 4, top + 4, w - 8, h - 8);
-  g.clip();
-
-  const contentX = x + pad;
-  const contentY = top + pad - offset;
-  const railX = contentX + 9;
-  if (steps.length > 1) {
+  GENERATION_STEPS.forEach((label, index) => {
+    const active = index === current && running;
+    const color = index < current ? C.gold : index === current && failed ? C.red : active ? C.blue : C.dim;
     g.beginPath();
-    g.moveTo(railX, contentY + 16);
-    g.lineTo(railX, contentY + steps.at(-1)!.y + 16);
-    g.strokeStyle = C.line;
-    g.lineWidth = 1;
-    g.stroke();
-  }
-  for (const step of steps) {
-    const stepY = contentY + step.y;
-    if (stepY + step.h < top + 4 || stepY > top + h - 4) continue;
-    const cardX = contentX + step.left;
-    roundRect(cardX, stepY, step.cardW, step.h, 7);
-    g.fillStyle = withAlpha(step.kind === 'tool' ? C.gold : C.panel, step.kind === 'tool' ? 0.07 : 0.72);
+    g.arc(cx(index), railY, 4.5, 0, Math.PI * 2);
+    g.fillStyle = color;
     g.fill();
-    g.strokeStyle = withAlpha(step.color, 0.32);
-    g.lineWidth = 1;
-    g.stroke();
-    g.fillStyle = step.color;
-    g.fillRect(cardX + 1, stepY + 8, 2, Math.max(12, step.h - 16));
-    g.beginPath();
-    g.moveTo(railX, stepY + 16);
-    g.lineTo(cardX, stepY + 16);
-    g.strokeStyle = C.lineHi;
-    g.stroke();
-    g.beginPath();
-    g.arc(railX, stepY + 16, 3.5, 0, Math.PI * 2);
-    g.fillStyle = step.color;
-    g.fill();
+    text(label, cx(index), y + 38, { size: 13, align: 'center', color });
+  });
 
-    text(step.title, cardX + 12, stepY + 16, {
-      size: step.kind === 'tool' ? 11 : 12,
-      family: step.kind === 'tool' ? FONT_NUM : undefined,
-      color: step.kind === 'tool' ? C.gold : C.ink2,
-      weight: 600,
-      maxW: step.cardW - 132,
-    });
-    text(step.status, cardX + step.cardW - 26, stepY + 16, {
-      size: 10, align: 'right', color: step.color, maxW: 86,
-    });
-    g.beginPath();
-    g.moveTo(cardX + step.cardW - 13, stepY + (step.collapsed ? 14 : 18));
-    g.lineTo(cardX + step.cardW - 9, stepY + (step.collapsed ? 18 : 14));
-    g.lineTo(cardX + step.cardW - 5, stepY + (step.collapsed ? 14 : 18));
-    g.strokeStyle = C.dim;
-    g.lineWidth = 1.5;
-    g.stroke();
-    if (step.collapsed) {
-      text(step.kind === 'tool' ? '参数 · 点击展开' : '点击展开', cardX + 12, stepY + 36, { size: 9, color: C.dim });
-    } else {
-      if (step.kind === 'tool') text('参数', cardX + 12, stepY + 33, { size: 9, color: C.dim });
-      if (step.layout) drawMarkdown(step.layout, cardX + 12, stepY + step.bodyY, C.ink2);
-      if (step.detail) text(step.detail, cardX + 12, stepY + step.h - 11,
-        { size: 10, color: step.color, maxW: step.cardW - 24 });
-    }
-    const visibleTop = Math.max(stepY, top + 4);
-    const visibleBottom = Math.min(stepY + step.h, top + h - 4);
-    if (visibleBottom > visibleTop) {
-      onClick(cardX, visibleTop, step.cardW, visibleBottom - visibleTop, () => {
-        outputExpanded.set(step.key, step.collapsed);
-        outputLayout = null;
-        outputScroll = offset >= max ? null : offset;
-      }, '工作步骤:' + step.key);
-    }
-  }
-  g.restore();
-  if (max) {
-    const track = viewH;
-    const thumb = Math.max(14, track * viewH / height);
-    g.fillStyle = C.lineHi;
-    g.fillRect(x + w - 7, top + pad + (track - thumb) * offset / max, 2, thumb);
-  }
-  if (latest?.phase === 'complete') {
-    const input = calls.reduce((sum, call) => sum + (call.inputTokens ?? 0), 0);
-    const output = calls.reduce((sum, call) => sum + (call.outputTokens ?? 0), 0);
-    const hasUsage = calls.some((call) => call.inputTokens != null || call.outputTokens != null);
-    text(hasUsage ? `合计 Token：输入 ${input} · 输出 ${output}` : '未返回 token 用量',
-      x + w, top + h + 19, { size: 11, align: 'right', color: C.dim });
+  const review = job.progress?.phase === 'review' ? job.progress : undefined;
+  if (running && review && review.total > 0) {
+    const trackW = w - 48;
+    const progress = Math.max(0, Math.min(1, review.completed / review.total));
+    panel(x + 24, y + 60, trackW, 6, { radius: 3, fill: C.line, stroke: 'none' });
+    if (progress > 0) panel(x + 24, y + 60, trackW * progress, 6, { radius: 3, fill: C.blue, stroke: 'none' });
   }
 }
 
@@ -364,17 +200,34 @@ function drawDetail(job: JobState, y: number, t: number) {
   const w = PANEL.w - 48;
   if (job.taskType !== 'plan') {
     const spirit = spiritOf(job);
-    drawScribe(x + w / 2, y + 44, 72, scribeWork(job), t, spirit.kind);
-    text(spirit.name, x + w / 2, y + 100, { size: 26, family: FONT_TITLE, align: 'center', color: C.gold });
-    text(generationStage(job).label, x + w / 2, y + 130,
-      { size: 14, align: 'center', color: stateColor(job.state) });
-    g.fillStyle = C.line;
-    g.fillRect(x, y + 160, w, 1);
-    text(job.title, x, y + 192, { size: 18, weight: 600, maxW: w });
-    if (job.name) text(job.name, x, y + 222, { size: 13, color: C.dim, maxW: w });
+    const work = currentWork(job);
+    panel(x, y, w, 164, { radius: 8, fill: withAlpha(C.ink, 0.035), stroke: C.line });
+    g.save();
+    g.translate(x + w / 2, y + 56);
+    g.scale(1.28, 1.28);
+    drawScribeAtWork(0, 0, work.action, t, spirit.kind, work.active && !reduceMotion());
+    g.restore();
+    text(spirit.name, x + w / 2, y + 116, { size: 24, family: FONT_TITLE, align: 'center', color: C.gold });
+    text(work.label, x + w / 2, y + 144, { size: 14, align: 'center', color: stateColor(job.state) });
+
+    text(job.title, x, y + 196, { size: 18, weight: 600, maxW: w });
+    if (job.name) text(job.name, x, y + 224, { size: 13, color: C.dim, maxW: w });
     if (job.state !== 'queued') text((job.state === 'running' ? '已运行 ' : '耗时 ') + elapsed(job.ms),
-      x, y + 254, { size: 12, color: C.dim });
-    drawModelOutput(job, x, y + 286, w);
+      x, y + (job.name ? 248 : 224), { size: 12, color: C.dim });
+    drawGenerationProgress(job, x, y + 272, w);
+
+    g.fillStyle = C.line;
+    g.fillRect(x, y + 360, w, 1);
+    if (job.state === 'fail') {
+      g.save();
+      g.font = font(13);
+      const lines = wrapText(jobFailureReason(job.tail), w).slice(0, 6);
+      g.restore();
+      lines.forEach((line, i) => text(line, x, y + 384 + i * 20, { size: 13, color: C.red }));
+      drawActivity(job, x, y + 388 + lines.length * 20, w, 3);
+    } else {
+      drawActivity(job, x, y + 384, w, 6);
+    }
     return;
   }
   text(stateText(job.state), x + w, y + 10, { size: 12, align: 'right', color: stateColor(job.state) });
@@ -399,7 +252,7 @@ function drawDrawer(t: number) {
   const rows = jobsSnapshot();
   const jobs = [...rows.filter((job) => job.state === 'running'), ...rows.filter((job) => job.state === 'queued'),
     ...rows.filter((job) => job.state === 'done' || job.state === 'fail')];
-  if (selected && !jobs.some((job) => job.id === selected)) selectJob('');
+  if (selected && !jobs.some((job) => job.id === selected)) selected = '';
   panel(x + 5, y + 8, w, h, { fill: withAlpha(C.void, 0.72), stroke: 'none' });
   panel(x, y, w, h, { stroke: C.lineHi, accent: C.gold });
   // 空白处仍属于抽屉；后注册的按钮热区会覆盖这层拦截。
@@ -418,8 +271,21 @@ function drawDrawer(t: number) {
 
   const selectedJob = jobs.find((job) => job.id === selected);
   if (selectedJob) {
-    const current = inspectedJob();
-    drawDetail(current?.id === selectedJob.id ? current : selectedJob, y + 100, t);
+    drawDetail(selectedJob, y + 100, t);
+    const traceId = selectedJob.traceId;
+    if (traceId) {
+      const footerY = y + h - 57;
+      text(traceId.slice(0, 12), x + 24, footerY + 18, { size: 12, family: FONT_NUM, color: C.dim });
+      action(x + w - 248, footerY, 100, 36, '复制 Trace ID', () => {
+        void navigator.clipboard?.writeText(traceId).catch(() => {});
+      }, 'ghost', { size: 12 });
+      action(x + w - 138, footerY, 114, 36, '下载 Trace', () => {
+        const link = document.createElement('a');
+        link.href = jobTraceUrl(traceId);
+        link.download = `trace-${traceId}.jsonl`;
+        link.click();
+      }, 'ghost', { size: 12 });
+    }
     return;
   }
   if (!jobs.length) {
@@ -440,10 +306,10 @@ function drawDrawer(t: number) {
   g.restore();
 }
 
-export function drawTaskbar(dt: number, t: number, onOpen: () => void) {
+export function drawTaskbar(dt: number, t: number, onOpen: () => void, showHandle = true) {
   const jobs = jobsSnapshot();
   const pending = jobs.filter((job) => job.state === 'running' || job.state === 'queued').length;
   if (taskbarOpen()) onDismiss(0, 0, VW, VH, () => closeTaskbar(), '任务抽屉遮罩');
-  drawHandle(pending, onOpen);
+  if (showHandle) drawHandle(pending, onOpen);
   motion.draw(opened, dt, 1, () => drawDrawer(t));
 }

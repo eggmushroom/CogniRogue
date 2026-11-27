@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
@@ -19,11 +18,11 @@ from typing import Any, Literal
 from urllib.parse import unquote
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, StrictBool, StrictInt
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
+from pydantic import BaseModel, Field, StrictBool, StrictInt, ValidationInfo, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from . import answer_store
+from . import answer_store, job_trace
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKS, DIST = ROOT / "packs", ROOT / "dist"
@@ -67,8 +66,18 @@ class PlanInput(BaseModel):
     docId: str
     mode: Literal['auto', 'toc', 'fixed', 'agentic'] = 'auto'
     size: StrictInt = 4000
+    agenticWindow: StrictInt = Field(default=8000, ge=2000, le=20000)
+    agenticOverlapChars: StrictInt = Field(default=800, ge=0)
     summaries: bool = True
     name: str = ''
+
+    @field_validator("agenticOverlapChars")
+    @classmethod
+    def overlap_fits_window(cls, value: int, info: ValidationInfo) -> int:
+        window = info.data.get("agenticWindow")
+        if window is not None and value > window:
+            raise ValueError("重叠字符数不能超过窗口字符数")
+        return value
 
 
 class GenerateInput(BaseModel):
@@ -178,24 +187,22 @@ def trim_jobs() -> None:
             (JOBS / f"{key}.json").unlink(missing_ok=True)
             if job.get("completeFile"):
                 Path(job["completeFile"]).unlink(missing_ok=True)
+            if job.get("traceId"):
+                job_trace.path_for(JOBS, job["traceId"]).unlink(missing_ok=True)
+
+
+def complete_progress(job: dict[str, Any]) -> dict[str, Any]:
+    progress = job.get("progress", {})
+    total = progress.get("total", 1)
+    return {**progress, "phase": "complete", "completed": total, "total": total, "label": "文件已完整写入"}
 
 
 def save_job(job: dict[str, Any]) -> None:
     JOBS.mkdir(parents=True, exist_ok=True)
     target = JOBS / f"{job['id']}.json"
     temporary = target.with_suffix(".tmp")
-    # Live snapshots change much more often than milestones; only archive the final one.
-    record = {k: v for k, v in job.items() if k != "modelOutput" or job["state"] in {"done", "fail"}}
-    temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, target)
-
-
-def record_model_output(job: dict[str, Any], snapshot: dict[str, Any]) -> None:
-    calls = job.setdefault("modelOutput", {"calls": []})["calls"]
-    index = max(0, int(snapshot.get("call", 1)) - 1)
-    while len(calls) <= index:
-        calls.append({"call": len(calls) + 1, "phase": "waiting", "text": ""})
-    calls[index].update(snapshot)
 
 
 def stop_process_tree(pid: int) -> None:
@@ -262,23 +269,25 @@ def dispatch_jobs() -> None:
         if job["state"] != "queued" or doc_id in active_docs:
             continue
         job["state"] = "running"
+        job.pop("activity", None)
         job["progress"] = {"phase": "starting", "completed": 0, "total": 1, "label": "开始运行"}
         job.setdefault("runStarted", time.time())
+        job_trace.ensure(JOBS, job)
+        job["traceExecution"] = {"spanId": secrets.token_hex(8), "startedAt": job_trace.now_ms(),
+                                 "attempt": job.get("traceExecution", {}).get("attempt", 0) + 1}
+        execution = job["traceExecution"]
+        job_trace.lifecycle(JOBS, job, "worker", execution["spanId"], "start", parent=job["traceId"][:16],
+                            attempt=execution["attempt"], queueMs=max(0, execution["startedAt"] - job.get("traceQueuedAt", job["traceStartedAt"])))
         save_job(job)
         active_docs.add(doc_id)
         threading.Thread(target=run_job, args=(job,), daemon=True).start()
 
 
-def start_job(kind: str, args: list[str], output: Path, lock_doc: str, job_id: str,
-              complete_file: Path, **meta: Any) -> str:
-    with job_lock:
-        if lock_doc in active_docs:
-            raise HTTPException(409, "这份文档已有任务运行，请等待完成后再试。")
-        job = make_job(kind, args, output, lock_doc, job_id, complete_file, **meta)
-        save_job(job)
-        jobs[job_id] = job
-        dispatch_jobs()
-    return job_id
+def enqueue_job(job: dict[str, Any]) -> None:
+    # Called with job_lock held, after checking the document and requested topics.
+    job_trace.ensure(JOBS, job)
+    save_job(job)
+    jobs[job["id"]] = job
 
 
 def run_job(job: dict[str, Any]) -> None:
@@ -287,11 +296,21 @@ def run_job(job: dict[str, Any]) -> None:
     completed = False
     try:
         if kind == 'gen' and job.get('topicId'):
-            prepare_feedback(job)
+            started = job_trace.now_ms()
+            span = secrets.token_hex(8)
+            worker = job["traceExecution"]["spanId"]
+            job_trace.lifecycle(JOBS, job, "feedback", span, "start", parent=worker)
+            try:
+                prepare_feedback(job)
+            except Exception:
+                job_trace.lifecycle(JOBS, job, "feedback", span, "end", parent=worker, outcome="error", since=started)
+                raise
+            job_trace.lifecycle(JOBS, job, "feedback", span, "end", parent=worker, outcome="ok", since=started)
         cfg = config()
         env = os.environ.copy()
         env.update(GEN_API_KEY=cfg["key"], GEN_BASE_URL=cfg["baseUrl"], GEN_MODEL=cfg["model"],
-                   GEN_JOB_OUTPUT="0" if kind == "plan" else "1")
+                   COG_TRACE_ID=job["traceId"], COG_JOB_ID=job["id"],
+                   COG_PARENT_SPAN_ID=job["traceExecution"]["spanId"])
         script = ROOT / ".cache" / ("plan.mjs" if kind == "plan" else "gen.mjs")
         process = subprocess.Popen([node(), str(script), *job["args"]], cwd=ROOT, env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -303,20 +322,25 @@ def run_job(job: dict[str, Any]) -> None:
         assert process.stdout is not None
         for line in process.stdout:
             line = line.strip()
-            if line.startswith("@@model-output "):
+            event, _, payload = line.partition(" ")
+            if event == "@@trace":
+                job_trace.accept_child(JOBS, job, payload)
+                continue
+            if event in {"@@progress", "@@activity"}:
                 try:
-                    snapshot = json.loads(line[len("@@model-output "):])
+                    data = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(data, dict):
+                    continue
                 with job_lock:
-                    record_model_output(job, snapshot)
-                continue
-            if line.startswith("@@progress "):
-                try:
-                    job["progress"] = json.loads(line[len("@@progress "):])
-                except json.JSONDecodeError:
-                    pass
-                save_job(job)
+                    if event == "@@progress":
+                        job["progress"] = data
+                    else:
+                        activity = job.setdefault("activity", [])
+                        activity.append({**data, "ms": job_elapsed(job)})
+                        del activity[:-8]
+                    save_job(job)
                 continue
             job["lines"].append(line)
             del job["lines"][:-200]
@@ -332,11 +356,12 @@ def run_job(job: dict[str, Any]) -> None:
         job["lines"].append(str(exc))
     finally:
         with job_lock:
-            job["ms"] = int((time.time() - job.get("runStarted", job["started"])) * 1000)
+            job["ms"] = job_elapsed(job)
             job["state"] = "done" if completed else "fail"
             if completed:
-                job["progress"] = {"phase": "complete", "completed": 1, "total": 1, "label": "文件已完整写入"}
+                job["progress"] = complete_progress(job)
             job.pop("pid", None)
+            finish_trace(job, "ok" if completed else "error")
             save_job(job)
             for path in job["cleanup"]:
                 try:
@@ -346,6 +371,18 @@ def run_job(job: dict[str, Any]) -> None:
             active_docs.discard(job["lock_doc"])
             dispatch_jobs()
         trim_jobs()
+
+
+def finish_trace(job: dict[str, Any], outcome: str, *, finished: bool = True) -> None:
+    execution = job.get("traceExecution")
+    if not execution:
+        return
+    trace_id = job["traceId"]
+    job_trace.lifecycle(JOBS, job, "worker", execution["spanId"], "end", parent=trace_id[:16],
+                        outcome=outcome, since=execution["startedAt"])
+    if finished:
+        job_trace.lifecycle(JOBS, job, "job", trace_id[:16], "end", outcome=outcome,
+                            since=job["traceStartedAt"], executions=execution["attempt"])
 
 
 @app.on_event("startup")
@@ -361,6 +398,7 @@ def startup() -> None:
     for file in JOBS.glob("job-*.json"):
         try:
             job = json.loads(file.read_text(encoding="utf-8"))
+            job.pop("modelOutput", None)
             saved_jobs.append(job)
             if job.get("state") == "running" and not completion_valid(job) and process_matches_job(job):
                 stop_process_tree(int(job["pid"]))
@@ -373,14 +411,17 @@ def startup() -> None:
                 if job["state"] == "running":
                     if completion_valid(job):
                         job["state"] = "done"
-                        job["progress"] = {"phase": "complete", "completed": 1, "total": 1, "label": "文件已完整写入"}
+                        finish_trace(job, "ok")
+                        job["progress"] = complete_progress(job)
                         job["ms"] = int((time.time() - job.get("runStarted", job["started"])) * 1000)
                         if job["kind"] == "plan":
                             job["plan"] = json.loads(Path(job["output"]).read_text(encoding="utf-8"))
                         for path in job.get("cleanup", []):
                             Path(path).unlink(missing_ok=True)
                     else:
+                        finish_trace(job, "interrupted", finished=False)
                         job["state"] = "queued"
+                        job["traceQueuedAt"] = job_trace.now_ms()
                     job.pop("pid", None)
                     save_job(job)
                 jobs[job["id"]] = job
@@ -510,12 +551,61 @@ def list_documents() -> list[dict[str, Any]]:
 
 @app.get("/api/docs/{doc_id}")
 def get_document(doc_id: str) -> dict[str, Any]:
-    row = document(doc_id)
     with job_lock:
+        row = document(doc_id)
         running = next((job_status(job, details=True) for job in jobs.values()
                         if job["kind"] == "plan" and job["lock_doc"] == doc_id and job["state"] == "running"), None)
-    plan = json.loads((PLANS / f"{row['planId']}.json").read_text(encoding="utf-8")) if row.get("planId") else None
+        plan = json.loads((PLANS / f"{row['planId']}.json").read_text(encoding="utf-8")) if row.get("planId") else None
     return {**row, "importedPlanId": imported_plan(row), "plan": plan, "job": running}
+
+
+def require_idle_document(doc_id: str) -> dict[str, Any]:
+    # Caller holds job_lock so checking and cleaning are atomic with job submission.
+    row = document(doc_id)
+    if doc_id in active_docs or any(job.get("lock_doc") == doc_id and job.get("state") in {"queued", "running"}
+                                    for job in jobs.values()):
+        raise HTTPException(409, "这份文档还有任务在处理。")
+    return row
+
+
+def clear_document_artifacts(doc_id: str, row: dict[str, Any], *, delete_source: bool) -> None:
+    # Document-derived artifacts use this validated doc_id as their namespace.
+    for suffix in (".md", ".md.checkpoint.json"):
+        (GEN_BANKS / f"{doc_id}{suffix}").unlink(missing_ok=True)
+    for plan in PLANS.glob(f"{doc_id}-*.json") if PLANS.exists() else []:
+        plan.unlink(missing_ok=True)
+    for directory in (STORE / "memory" / doc_id, STORE / "sections" / doc_id):
+        if directory.exists():
+            shutil.rmtree(directory)
+    for job in jobs.values():
+        if job.get("lock_doc") == doc_id:
+            (STORE / "feedback" / f"{job['id']}.json").unlink(missing_ok=True)
+    if delete_source:
+        for suffix in (".json", ".md", ".pdf", ".tmp"):
+            (DOCS / f"{doc_id}{suffix}").unlink(missing_ok=True)
+    else:
+        row["planId"] = ""
+        row["importedPlanId"] = ""
+        manifest = DOCS / f"{doc_id}.json"
+        temporary = manifest.with_suffix(".tmp")
+        temporary.write_text(json.dumps(row, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, manifest)
+
+
+@app.post("/api/docs/{doc_id}/reset")
+def reset_document(doc_id: str) -> dict[str, Any]:
+    with job_lock:
+        row = require_idle_document(doc_id)
+        clear_document_artifacts(doc_id, row, delete_source=False)
+    return {"ok": True, "docId": doc_id}
+
+
+@app.delete("/api/docs/{doc_id}")
+def delete_document(doc_id: str) -> dict[str, Any]:
+    with job_lock:
+        row = require_idle_document(doc_id)
+        clear_document_artifacts(doc_id, row, delete_source=True)
+    return {"ok": True, "docId": doc_id}
 
 
 @app.post("/api/docs/{doc_id}/topics")
@@ -576,27 +666,31 @@ async def upload_doc(request: Request, x_doc_name: str = Header(default="doc.md"
 @app.post("/api/plan")
 def start_plan(body: PlanInput) -> dict[str, Any]:
     doc_id = body.docId
-    saved = document(doc_id)
-    source = DOCS / f"{doc_id}.md"
-    if not source.exists():
-        raise HTTPException(404, "没有这份文档，可能已经清理掉了。")
-    mode = body.mode
-    cfg = config()
-    if mode == "agentic" and not cfg["key"]:
-        raise HTTPException(400, "模型分章要先用「设置 › 出题模型」配好模型。")
-    size = max(500, min(20000, body.size))
-    plan_id = f"{doc_id}-{secrets.token_hex(6)}"
-    output = PLANS / f"{plan_id}.json"
-    job_id = f"job-{secrets.token_hex(6)}"
-    complete_file = JOBS / f"{job_id}.complete"
-    args = [f"--src={source}", f"--out={output}", f"--mode={mode}", f"--size={size}",
-            f"--name={saved['name']}", f"--complete={complete_file}",
-            f"--memory={STORE / 'memory' / doc_id}", f"--sections={STORE / 'sections' / doc_id}",
-            f"--document={DOCS / (doc_id + '.json')}"]
-    if not body.summaries:
-        args.append("--no-summaries")
-    job_id = start_job("plan", args, output, lock_doc=doc_id, job_id=job_id, complete_file=complete_file,
-                       planId=plan_id, docId=doc_id, name=saved["name"], taskType="plan", title="\u76ee\u5f55\u89e3\u6790")
+    with job_lock:
+        saved = require_idle_document(doc_id)
+        source = DOCS / f"{doc_id}.md"
+        if not source.exists():
+            raise HTTPException(404, "没有这份文档，可能已经清理掉了。")
+        mode = body.mode
+        cfg = config()
+        if mode == "agentic" and not cfg["key"]:
+            raise HTTPException(400, "模型分章要先用「设置 › 出题模型」配好模型。")
+        size = max(500, min(20000, body.size))
+        plan_id = f"{doc_id}-{secrets.token_hex(6)}"
+        output = PLANS / f"{plan_id}.json"
+        job_id = f"job-{secrets.token_hex(6)}"
+        complete_file = JOBS / f"{job_id}.complete"
+        args = [f"--src={source}", f"--out={output}", f"--mode={mode}", f"--size={size}",
+                f"--window={body.agenticWindow}", f"--overlap={body.agenticOverlapChars}",
+                f"--name={saved['name']}", f"--complete={complete_file}",
+                f"--memory={STORE / 'memory' / doc_id}", f"--sections={STORE / 'sections' / doc_id}",
+                f"--document={DOCS / (doc_id + '.json')}"]
+        if not body.summaries:
+            args.append("--no-summaries")
+        job = make_job("plan", args, output, doc_id, job_id, complete_file, planId=plan_id,
+                       docId=doc_id, name=saved["name"], taskType="plan", title="目录解析")
+        enqueue_job(job)
+        dispatch_jobs()
     return {"ok": True, "job": job_id, "planId": plan_id}
 
 
@@ -652,6 +746,8 @@ def start_generate(body: GenerateInput) -> dict[str, Any]:
             raise HTTPException(404, "没有这份文档，可能已经清理掉了。")
         output = GEN_BANKS / f"{doc_id}.md"
         per = max(1, min(40, body.per))
+        plan_trace_id = next((job.get("traceId") for job in jobs.values()
+                              if job["kind"] == "plan" and job.get("planId") == body.plan), None)
         accepted = []
         for index in selection:
             topic = topics[index]
@@ -664,9 +760,8 @@ def start_generate(body: GenerateInput) -> dict[str, Any]:
                     f"--complete={complete_file}", f"--plan={plan_file}", f"--topic-id={topic['id']}", f"--feedback={feedback}"]
             job = make_job("gen", args, output, doc_id, job_id, complete_file, [feedback],
                            bankId=doc_id, planId=body.plan, topic=index, topicId=topic['id'], taskType="generate",
-                           title=topic['title'], name=row["name"])
-            save_job(job)
-            jobs[job_id] = job
+                           title=topic['title'], name=row["name"], planTraceId=plan_trace_id)
+            enqueue_job(job)
             accepted.append(job)
         dispatch_jobs()
         return {"ok": True, "jobs": [job_status(job) for job in accepted]}
@@ -678,6 +773,10 @@ def list_jobs() -> list[dict[str, Any]]:
         return [job_status(job) for job in jobs.values()]
 
 
+def job_elapsed(job: dict[str, Any]) -> int:
+    return int((time.time() - job.get("runStarted", job["started"])) * 1000)
+
+
 def job_status(job: dict[str, Any], details: bool = False) -> dict[str, Any]:
     result = {
         "id": job["id"],
@@ -685,15 +784,17 @@ def job_status(job: dict[str, Any], details: bool = False) -> dict[str, Any]:
         "taskType": job["taskType"],
         "title": job["title"],
         "bankId": job.get("bankId"),
-        "ms": job.get("ms", int((time.time() - job.get("runStarted", job["started"])) * 1000) if job["state"] == "running" else 0),
+        "ms": job.get("ms", job_elapsed(job) if job["state"] == "running" else 0),
         "planId": job.get("planId"),
         "topic": job.get("topic"),
         "name": job.get("name"),
         "tail": "\n".join(job["lines"][-6:]),
         "progress": job.get("progress", {"phase": "starting", "completed": 0, "total": 1}),
     }
-    if details and "modelOutput" in job:
-        result["modelOutput"] = job["modelOutput"]
+    if job.get("traceId"):
+        result["traceId"] = job["traceId"]
+    if job.get("activity"):
+        result["activity"] = list(job["activity"])
     if details and "plan" in job:
         result["plan"] = job["plan"]
     return result
@@ -708,31 +809,18 @@ def get_job(job_id: str) -> dict[str, Any]:
         return job_status(job, details=True)
 
 
-@app.get("/api/jobs/{job_id}/events")
-async def job_events(job_id: str, request: Request) -> StreamingResponse:
-    with job_lock:
-        if job_id not in jobs:
-            raise HTTPException(404, "没有这个任务")
-
-    async def stream():
-        previous = ""
-        while not await request.is_disconnected():
-            with job_lock:
-                job = jobs.get(job_id)
-                snapshot = job_status(job, details=True) if job else None
-            if snapshot is None:
-                break
-            payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
-            if payload != previous:
-                yield f"event: job\ndata: {payload}\n\n"
-                previous = payload
-            if snapshot["state"] in {"done", "fail"}:
-                break
-            await asyncio.sleep(0.04)
-
-    return StreamingResponse(stream(), media_type="text/event-stream", headers={
-        "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
-    })
+@app.get("/api/traces/{trace_id}")
+def get_trace(trace_id: str) -> Response:
+    if not re.fullmatch(r"[0-9a-f]{32}", trace_id):
+        raise HTTPException(404, "没有这条 Trace")
+    try:
+        data = job_trace.path_for(JOBS, trace_id).read_bytes()
+    except FileNotFoundError:
+        raise HTTPException(404, "没有这条 Trace") from None
+    # A running child may be appending its final line while the browser downloads.
+    return Response(data[:data.rfind(b"\n") + 1], media_type="application/x-ndjson",
+                    headers={"Content-Disposition": f'attachment; filename="trace-{trace_id}.jsonl"',
+                             "Cache-Control": "no-store"})
 
 
 @app.get("/api/answers/runs")

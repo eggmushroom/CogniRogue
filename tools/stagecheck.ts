@@ -421,9 +421,17 @@ function missGain(eff: string) {
   askCard(0);
   ok(G.panel.k === 'question', `取消测试：题弹出来了（${G.panel.k}）`);
   ok(G.qLeft.length === leftBefore - 1, `点开就扣掉一道题（${leftBefore} → ${G.qLeft.length}）`);
+  const firstQuestion = panelOf('question')!;
+  const qid = firstQuestion.qid;
+  const view = JSON.stringify(firstQuestion.view);
+  const picked = G.qPicked[qid];
   cancelPanel();
   askCard(0);
   ok(G.panel.k === 'question', '取消后同一张牌还能再点开（不再锁牌）');
+  const reopened = panelOf('question')!;
+  ok(reopened.qid === qid, `取消后重开仍是同一道题（${reopened.qid === qid ? '相同' : `${qid} → ${reopened.qid}`}）`);
+  ok(JSON.stringify(reopened.view) === view, '取消后选项与顺序不变');
+  ok(G.qPicked[qid] === picked, '重开不会重复占用题目次数');
   cancelPanel();
 }
 
@@ -1310,7 +1318,8 @@ function missGain(eff: string) {
   G.enemy!.block = 0;
   const plainPer = effFace(planStrike('c05', { noBoost: true })).per;
 
-  buildSettlement('c85'); // 续火：给下一张留 ×2
+  buildSettlement('c85+'); // 精炼续火也应给下一张留 ×2，而不是 ×3
+  ok(defOf('c85+').link?.nextMul === 2, '精炼续火仍只翻倍');
   const zero = buildSettlement('c93'); // 合页：0 伤害
   ok(!!G.nextBoost && zero.hits.every((h) => h.raw === 0),
     '续火：0 伤害的牌不消耗 ×2，加成留给下一张');
@@ -1457,6 +1466,18 @@ function missGain(eff: string) {
     const withCard = after(['librarycard']);
     ok(without === 1, `没有借书证：2 费答对净花 2 点（3 → ${without}）`);
     ok(withCard === 2, `借书证：2 费答对退回 1 点（3 → ${withCard}）`);
+
+    const zero = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 0)!;
+    battle(1, 'examiner');
+    G.powers = ['librarycard'];
+    G.ap = 1;
+    G.charge = {};
+    G.hand[0] = zero.id;
+    askCard(0);
+    if (panelKind() !== 'question') throw new Error('借书证 0 费牌测试：没弹题');
+    answer((panelOf('question')!).view.answer);
+    ok(G.ap === 2, `借书证：0 费牌答对仍退回 1 点行动力（1 → ${G.ap}）`);
+    if (panelKind() === 'feedback') dismissFeedback();
   }
 
   // 荧光笔：每回合第一次答对多退 1 点。
