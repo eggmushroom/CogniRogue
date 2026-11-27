@@ -4,7 +4,6 @@ import { G, checkPending, topTopic } from '../infra/state';
 import { onPlayerMiss } from './foe';
 import { requestSettle } from './pending';
 import { defOf } from '../cards/registry';
-import { askOf } from '../cards/ask';
 import { onceThisFight, rulesOf } from '../cards/powers';
 import { costNow, isXCost } from '../cards/cost';
 import { recordAnswer } from '../library/stagemem';
@@ -15,7 +14,7 @@ import type { Settlement, StrikeView } from './settlement';
 
 /**
  * 答题结算：答对 / 答错分支只改同一份 `Settlement`，最后由 `finishAnswer`
- * 交给唯一执行器。判定面板与免答记账都从这份计划的 `viewOf()` 派生，
+ * 交给唯一执行器。判定面板从这份计划的 `viewOf()` 派生，
  * 不存在「预演值」和「真实值」两套读数，也不需要逐字段拷贝。
  *
  * 加新增益优先改这里，不要再往通用路径里插分支。
@@ -76,20 +75,9 @@ function resolveRight(ctx: AnswerCtx) {
     addNote(ctx.s, `书签：这一场第一道答对，获得 ${BAL.bookmarkBlock} 点格挡。`);
   }
 
-  // 答对攒答题次数，攒够 `askOf` 这场就免答；按卡 id 记，同名牌副本共用。
-  // 批注在这一场第一次答对时多攒一次，和这次答对本来攒的那次一起加。
-  const need = askOf(ctx.card);
-  const bonus = need > 0 && onceThisFight('margin') ? BAL.marginCharge : 0;
-  if (need > 0) {
-    const before = G.charge[ctx.card.id] ?? 0;
-    G.charge[ctx.card.id] = Math.min(need, before + 1 + bonus);
-    if (bonus) {
-      // 不写（已攒/要求）：答题要求是隐藏属性，前端不显示这个分数。
-      addNote(ctx.s, `批注：这一场第一道答对，这张牌多攒 ${bonus} 次免答。`);
-    }
-    if (G.charge[ctx.card.id] >= need && before < need) {
-      addNote(ctx.s, `这一场「${ctx.card.name}」已免答：再打它不用答题。`);
-    }
+  if (onceThisFight('margin')) {
+    ctx.s.budget.draw += BAL.marginDraw;
+    addNote(ctx.s, `批注：这一场第一次答对，额外抽 ${BAL.marginDraw} 张。`);
   }
 
   G.okThisTurn += 1;
@@ -153,7 +141,7 @@ function settleAnswerAp(ctx: AnswerCtx) {
       addNote(ctx.s, `回形针：这一场第一次打出 ${ctx.spent} 费牌，多退 ${BAL.clipRefund} 点。`);
     }
     G.markerRefund = 0;
-    ctx.s.budget.ap.gain = back;
+    ctx.s.budget.ap.gain += back;
     if (back > 0) {
       addNote(ctx.s, back > ctx.spent
         ? `答对了，退回 ${back} 点：这一手净赚 ${back - ctx.spent} 点。`

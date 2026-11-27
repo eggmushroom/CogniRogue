@@ -9,7 +9,7 @@ import { clamp01, easeOut } from '../gfx/geom';
 import { questionEntry, questionReturn, reduceMotion } from '../gfx/motion';
 import * as FX from '../gfx/fx';
 import { drawEnemy as drawCreatureEnemy, drawHero as drawCreatureHero, enemyWeapon, heroBlade } from '../gfx/creatures';
-import { EFFS, MODE_BY_ID, POWER_BY_ID, mechNote, stageOf } from '../core/model';
+import { MODE_BY_ID, POWER_BY_ID, mechNote, stageOf } from '../core/model';
 import type { EffOut } from '../core/model';
 import { G, panelOf } from '../core/infra';
 import { linkStatus } from '../core/combat/link';
@@ -18,7 +18,7 @@ import { curFloor } from '../core/map';
 import { dismissFeedback } from '../core/journey';
 import { canPay, cardKind, costOf, defOf, isUpgraded, isXCost } from '../core/cards';
 import {
-  askCard, cancelPanel, cardAskState, endTurn, intentText, playBasic, playFree,
+  askCard, cancelPanel, endTurn, intentText, playBasic,
 } from '../core/combat';
 import type { CardDef, Foe } from '../core/model';
 
@@ -615,10 +615,9 @@ function alignHand(prev: string[], hand: string[], skip = -1): number[] {
 function bindHandCard(args: {
   px: number; py: number; w: number; h: number; rot: number; id: string; slot: number;
   card: CardDef; isBase: boolean; isJunk: boolean;
-  askState: ReturnType<typeof cardAskState>;
   drawFace(): void;
 }) {
-  const { px, py, w, h, rot, id, slot, card, isBase, isJunk, askState, drawFace } = args;
+  const { px, py, w, h, rot, id, slot, card, isBase, isJunk, drawFace } = args;
   const payUp = () => {
     if (canPay(card)) return true;
     FX.shake(6);
@@ -650,17 +649,11 @@ function bindHandCard(args: {
       if (i < 0 || !payUp()) return;
       const lift = (handFx[i]?.py ?? py) - py;
       eject = { id, at: i, lift };
-      // 攒满答题要求直接打，否则抽题；新题用完 askCard 会复用，不用单独分支。
-      if (askState === 'free') {
-        cardPulse(EFFS[card.eff]?.color ?? C.gold);
-        playFree(i);
-      } else {
-        askCard(i);
-        const panel = panelOf('question');
-        if (panel?.idx === i && !reduceMotion()) {
-          questionOrigin = { panel, x: px, y: py, w, h, rotation: rot, drawFront: drawFace, progress: 0 };
-          setInputLock(true);
-        }
+      askCard(i);
+      const panel = panelOf('question');
+      if (panel?.idx === i && !reduceMotion()) {
+        questionOrigin = { panel, x: px, y: py, w, h, rotation: rot, drawFront: drawFace, progress: 0 };
+        setInputLock(true);
       }
     }, 'card', slot);
   } else {
@@ -805,8 +798,6 @@ function drawHand(t: number, dt: number) {
     const kind = cardKind(card);
     const isJunk = kind === 'junk';
     const isBase = kind === 'basic';
-    // 知识卡两种状态：ask / free。'free' 不压暗，它是最强状态，压暗会读成用不了。
-    const askState = isJunk || isBase ? 'other' : cardAskState(id);
 
     const drawFace = () => drawCard(-w / 2, -h / 2, w, h, card, out, {
       up: isUpgraded(id), glow: hv || picked, hovered: hv,
@@ -822,7 +813,7 @@ function drawHand(t: number, dt: number) {
 
     // 还在飞的牌不注册热区，但下标必须带上；少一项会让热区和牌整体错位。
     if (flying) continue;
-    bindHandCard({ px, py, w, h, rot, id, slot: s.i, card, isBase, isJunk, askState, drawFace });
+    bindHandCard({ px, py, w, h, rot, id, slot: s.i, card, isBase, isJunk, drawFace });
   }
 
 

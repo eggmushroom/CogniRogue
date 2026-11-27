@@ -1,3 +1,4 @@
+import { throws } from 'node:assert/strict';
 import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,7 +24,8 @@ import { tickJobs, watchJob } from '../../src/scenes/jobstate';
 import { generateTopic } from './generate';
 import { openAiLlm, reviewConfigFromEnv, type Llm } from './llm';
 import { parseReviewReply, reviewQuestion, reviewQuestions } from './review';
-import { indexTopicMemory, memText, mergeSnapshot, newTopicMem, readMemorySection, sourceIndexText, sourceSectionId, syncBankQuestions, topicIdOf } from './memory';
+import { changedTopicMemFiles, readTopicMem, sourceIndexFile } from './memory';
+import { indexTopicMemory, knowledgeProgress, memText, mergeSnapshot, newTopicMem, readMemorySection, recordApprovedQuestions, sourceIndexText, sourceSectionId, syncBankQuestions, topicIdOf } from './memory';
 
 let fails = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -241,6 +243,49 @@ indexed.cursor = 1;
 indexTopicMemory(indexed, BOOK, indexPlan.topics[0]);
 ok(indexed.knowledge.binary.gen === 2 && indexed.cursor === 1, '重新划分保留学习记忆与增量游标');
 ok(sourceIndexText(indexed).includes(`${sectionId} | 1.1 二分查找`), '主题记忆提供标题与文件 ID 对照表');
+{
+  const topicId = indexed.topicId;
+  const legacyPath = join(sectionDir, `${topicId}.json`);
+  const legacy = {
+    ...indexed, v: 6, cursor: 4, stats: { qLegacy: { ok: 1, bad: 1, attempts: [2, 1] } },
+    knowledge: {
+      binary: { ...indexed.knowledge.binary, questions: { qLegacy: {
+        stem: '二分', options: ['A', 'B'], answer: 0, sectionIds: [sectionId],
+      } } },
+    },
+  };
+  const load = () => readTopicMem(sectionDir, indexed.topic, indexed.source, topicId);
+  const catalogPath = join(sectionDir, `${topicId}.questions.json`);
+  const progressPath = join(sectionDir, `${topicId}.progress.json`);
+  const source = sourceIndexFile(sectionDir, { ...indexed, sections: [{ id: sectionId, title: '新章节标题' }] });
+  writeFileSync(legacyPath, JSON.stringify(legacy), 'utf8');
+  const original = load();
+  ok(original.sections?.length === indexed.sections?.length && original.cursor === 4
+    && original.knowledge.binary.questions.qLegacy.sectionIds?.[0] === sectionId, 'v6 单文件完整恢复');
+
+  writeFileSync(source.target, source.content, 'utf8');
+  const mem = load();
+  ok(mem.sections?.[0]?.title === '新章节标题' && mem.cursor === 4
+    && mem.stats.qLegacy.attempts.join(',') === '2,1' && mem.knowledge.binary.gen === 2,
+    '只迁移原文索引时，题目目录和作答进度仍从 v6 恢复');
+  const migrated = changedTopicMemFiles(sectionDir, mem);
+  ok(migrated.length === 2 && migrated[0].target === catalogPath && migrated[1].target === progressPath,
+    '首次提交补齐动态记忆，复用原文索引');
+  for (const file of migrated) writeFileSync(file.target, file.content, 'utf8');
+  ok(changedTopicMemFiles(sectionDir, load()).length === 0, '已落盘且没有变化的组件无需写入');
+
+  mergeSnapshot(mem, { v: 3, topicId, after: 4, through: 6,
+    records: [{ seq: 6, type: 'answer', qid: 'qLegacy', right: false, choice: 2 }] }, {});
+  const progress = changedTopicMemFiles(sectionDir, mem);
+  ok(progress.length === 1 && progress[0].target === progressPath, '仅新增作答时只更新学习进度');
+  for (const file of progress) writeFileSync(file.target, file.content, 'utf8');
+  const updated = load();
+  updated.knowledge.binary.gen++;
+  const catalog = changedTopicMemFiles(sectionDir, updated);
+  ok(updated.cursor === 6 && updated.stats.qLegacy.attempts.join(',') === '2,1,2'
+    && catalog.length === 1 && catalog[0].target === catalogPath, '续读拆分后的游标和作答序列，出题只更新题目目录');
+  for (const file of [legacyPath, source.target, catalogPath, progressPath]) unlinkSync(file);
+}
 const repeated = '# Root\n## Same\nFirst passage.\n## Same\nSecond passage.';
 const repeatedPlan = tocPlan(repeated, { name: 'Root', depth: 2, size: 4000 })!;
 const repeatedMem1 = newTopicMem('Same', 'repeat.md', topicIdOf('repeat.md', repeated, repeatedPlan.topics[0]!));
@@ -275,7 +320,39 @@ ok(answerMem.cursor === 5 && !answerMem.stats.qA, '重置按 qid 清零并推进
 mergeSnapshot(answerMem, feedback(0, [{ seq: 1, qid: 'qA', type: 'answer', right: false, choice: 2 }]), answerMap);
 ok(answerMem.cursor === 5 && stats().bad === 1, '重放旧游标不会重复消费答题流水');
 learned!.questions.qB = { stem: '二分题', options: ['左移', '右移'], answer: 1 };
-ok(memText(answerMem).includes('正确选项 2') && memText(answerMem).includes('选项选择顺序（1-based）'), '记忆从逐题流水组装正确选项与作答顺序');
+ok(memText(answerMem).includes('正确选项 2') && memText(answerMem).includes('选项选择顺序（1-based，'), '记忆从逐题流水组装正确选项与作答顺序');
+
+// 知识点复用题号关系，掌握状态从所有变式的流水推导。
+{
+  const mem = newTopicMem('复练策略', 'book.md', answerMem.topicId);
+  const question = (knowledgeId: string, qid: string) => ({
+    knowledgeId, knowledgeLabel: knowledgeId, qid, stem: qid, options: ['正确', '错误'], answer: 0,
+  });
+  const initial = [question('待作答例', 'unanswered'), question('学习中例', 'learning'),
+    question('已掌握例', 'mastered'), question('轻错例', 'low'), question('高错例', 'high')];
+  recordApprovedQuestions(mem, initial);
+  recordApprovedQuestions(mem, [initial[4]!, question('高错例', 'variant')]);
+  ok(mem.knowledge.高错例.gen === 2 && Object.keys(mem.knowledge.高错例.questions).length === 2,
+    '审核通过的新题补到同一知识点，重复题号不会重复计数');
+  const answer = (seq: number, qid: string, right: boolean) => ({ seq, qid, type: 'answer' as const, right, choice: right ? 1 : 2 });
+  mergeSnapshot(mem, feedback(0, [
+    answer(1, 'learning', true), answer(2, 'mastered', true), answer(3, 'mastered', true), answer(4, 'mastered', true),
+    answer(5, 'low', false), answer(6, 'high', false), answer(7, 'variant', false),
+  ]), {});
+  const states = Object.fromEntries(knowledgeProgress(mem).map(row => [row.id, row.state]));
+  ok(states.待作答例 === 'unanswered' && states.学习中例 === 'learning' && states.已掌握例 === 'mastered'
+    && states.轻错例 === 'review' && states.高错例 === 'review', '按同知识点下逐题流水区分四种学习状态');
+  const prompt = memText(mem, 1);
+  ok(prompt.includes('本轮优先复练 1 个知识点') && prompt.includes('- 高错例 [') && !prompt.includes('- 轻错例 [')
+    && prompt.includes('待作答（1）：待作答例'), '按错误次数排序，复练目标不超过本轮题量');
+  const before = JSON.stringify(mem);
+  throws(() => mergeSnapshot(mem, feedback(7, [answer(8, 'high', false), answer(8, 'high', false)]), {}), /Invalid feedback order/);
+  ok(JSON.stringify(mem) === before, '异常流水整批回滚，已保存的选项和游标保持一致');
+  mergeSnapshot(mem, feedback(7, [answer(8, 'variant', true), answer(9, 'variant', true), answer(10, 'variant', true)]), {});
+  ok(knowledgeProgress(mem).find(row => row.id === '高错例')?.state === 'mastered'
+    && mem.stats.variant.attempts.join(',') === '2,1,1,1', '连续答对后退出待复练，逐题选项顺序完整保留');
+}
+
 let feedbackPrompt = '';
 const targetedSectionId = sectionId;
 const targetedSource = readMemorySection(indexed, sectionDir, targetedSectionId)!;
@@ -389,7 +466,7 @@ ok(chk.ok && chk.count === 2, `渲染出的题库能过游戏自己的解析器�
 ok(packText.includes('~ algo/binary-worst') && packText.includes('= B'),
   '知识点行、题号和答案字母都由代码写入，不靠模型拼');
 
-const qidMap = knowledgeIdByQid(parseQuestionBank(packText));
+const qidMap = knowledgeIdByQid(Object.values(parseQuestionBank(packText).byTopic).flat());
 ok(Object.keys(qidMap).length === 2 && Object.values(qidMap).includes('algo/sort-lower'),
   'qid → knowledgeId 映射能把逐题作答归并到知识点');
 

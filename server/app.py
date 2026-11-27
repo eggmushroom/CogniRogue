@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +34,10 @@ ANSWERS = STORE / "answers"
 CONFIG_FILE = STORE / "gen.json"
 POOL_HELPER = ROOT / ".cache" / "runpool.mjs"
 
-app = FastAPI(docs_url=None, redoc_url=None)
+with (ROOT / "pyproject.toml").open("rb") as project_file:
+    PROJECT_VERSION = tomllib.load(project_file)["project"]["version"]
+
+app = FastAPI(docs_url=None, redoc_url=None, version=PROJECT_VERSION)
 jobs: dict[str, dict[str, Any]] = {}
 job_lock = threading.Lock()
 active_docs: set[str] = set()
@@ -435,7 +439,7 @@ def startup() -> None:
 def health() -> dict[str, Any]:
     rows = [bank_row(bank) for bank in banks()]
     cfg = config()
-    return {"ok": True, "version": "1.0", "apiVersion": 1, "banks": len(rows), "generated": sum(row["kind"] == "generated" for row in rows), "canGenerate": bool(cfg["key"]), "model": cfg["model"], "baseUrl": cfg["baseUrl"]}
+    return {"ok": True, "version": app.version, "apiVersion": 1, "banks": len(rows), "generated": sum(row["kind"] == "generated" for row in rows), "canGenerate": bool(cfg["key"]), "model": cfg["model"], "baseUrl": cfg["baseUrl"]}
 
 
 @app.get("/api/banks")
@@ -714,8 +718,19 @@ def prepare_feedback(job: dict[str, Any]) -> None:
     path = STORE / 'feedback' / f"{job['id']}.json"
     # A recovered task reuses the same input even if more answers have arrived.
     if not path.is_file():
-        memory = STORE / 'memory' / bank_id / f'{topic_id}.json'
-        after = json.loads(memory.read_text(encoding='utf-8'))['cursor'] if memory.is_file() else 0
+        directory = STORE / 'memory' / bank_id
+        progress = directory / f'{topic_id}.progress.json'
+        version = 7
+        if not progress.is_file():
+            progress = directory / f'{topic_id}.json'
+            version = 6
+        after = 0
+        if progress.is_file():
+            memory = json.loads(progress.read_text(encoding='utf-8'))
+            after = memory.get('cursor')
+            if (memory.get('v') != version or memory.get('topicId') != topic_id
+                    or type(after) is not int or not 0 <= after < (1 << 53)):
+                raise ValueError(f'Invalid topic progress: {progress.name}')
         snapshot = answer_store.feedback(ANSWERS, bank_id, topic_id, after)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix('.tmp')

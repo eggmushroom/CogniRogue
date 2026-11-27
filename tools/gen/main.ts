@@ -24,10 +24,12 @@ import { generateTopic } from './generate';
 import { configFromEnv, openAiLlm, reviewConfigFromEnv } from './llm';
 import { reviewQuestions } from './review';
 import { traceIdentity, traced, tracedSync } from './trace';
-import { MEM_V, mergeSnapshot, memText, readTopicMem, sourceIndexText, syncBankQuestions, topicIdOf } from './memory';
+import {
+  MEM_V, changedTopicMemFiles, mergeSnapshot, memText, prepareSections, readMemorySection,
+  readTopicMem, recordApprovedQuestions, sourceIndexText, syncBankQuestions, topicIdOf,
+  type StudySnapshot, type TopicMem,
+} from './memory';
 import { parseQuestionBank } from '../../src/core/library/parse';
-import type { StudySnapshot, TopicMem } from './memory';
-import { memFile, prepareSections, readMemorySection } from './memory';
 import { atomicWrite, commitFiles } from './files';
 
 function checkpointPath(outPath: string): string { return `${outPath}.checkpoint.json`; }
@@ -101,27 +103,6 @@ function parseArgs(argv: string[]): Opts | null {
     ...(val.complete ? { complete: val.complete } : {}),
     dryRun: on.has('dry-run'),
   };
-}
-
-/**
- * 更新记忆：这一轮出了哪些题记进 `gen` 与 `stem`，
- * 老概念保留（题库会被整份重写，记忆不跟着重写）。
- */
-function commitMemory(mem: TopicMem, got: GenTopic): void {
-  for (const q of got.questions) {
-    let c = mem.knowledge[q.knowledgeId];
-    if (c && c.stem === q.stem) {
-      c.gen += 1;
-    } else if (c) {
-      // 概念还在、问法变了：算重出一次，战绩不清零
-      c.stem = q.stem;
-      c.gen += 1;
-    } else {
-      c = { label: q.knowledgeLabel ?? q.knowledgeId, stem: q.stem, gen: 1, questions: {} };
-      mem.knowledge[q.knowledgeId] = c;
-    }
-    c.questions[q.qid] = { stem: q.stem, options: q.options.slice(), answer: q.answer, sectionIds: q.sectionIds?.slice() };
-  }
 }
 
 async function main(): Promise<void> {
@@ -205,7 +186,6 @@ async function main(): Promise<void> {
   const oldQids = new Set(Object.values(oldBank.byTopic).flat().map((question) => question.qid));
   const feedback = opts.feedback ? readFileSync(resolve(opts.feedback), 'utf8') : null;
   const snapshot = feedback === null ? null : JSON.parse(feedback) as StudySnapshot;
-  const map = snapshot ? knowledgeIdByQid(oldBank) : {};
 
   const cfg = configFromEnv();
   if (!opts.dryRun && !cfg.apiKey) {
@@ -266,11 +246,12 @@ async function main(): Promise<void> {
     if (section.sections?.length) {
       mem.sections = section.sections;
     }
-    syncBankQuestions(mem, oldBank.byTopic[topicId] ?? oldBank.byTopic[topic] ?? []);
+    const oldQuestions = oldBank.byTopic[topicId] ?? oldBank.byTopic[topic] ?? [];
+    syncBankQuestions(mem, oldQuestions);
 
     // 检查点已合并这份快照，恢复时直接使用当时的记忆。
     if (snapshot && !cached) {
-      const r = mergeSnapshot(mem, snapshot, map);
+      const r = mergeSnapshot(mem, snapshot, knowledgeIdByQid(oldQuestions));
       mergedAll += r.merged;
       orphanAll += r.orphan;
       if (r.merged || r.orphan) {
@@ -295,7 +276,7 @@ async function main(): Promise<void> {
       topic,
       topicId,
       toc: sourceIndexText(mem),
-      memory: memText(mem),
+      memory: memText(mem, opts.per),
       per: opts.per,
       read: (sectionId: string) => tracedSync('source.read', { sectionId: /^sec_[a-f0-9]{16}$/.test(sectionId) ? sectionId : undefined }, (finish) => {
         const text = readMemorySection(mem, opts.sections, sectionId);
@@ -336,7 +317,7 @@ async function main(): Promise<void> {
     }, null, 2) + '\n'));
     for (const q of fresh) oldQids.add(q.qid);
     const got: GenTopic = { topic, topicId, questions: fresh };
-    commitMemory(mem, got);
+    recordApprovedQuestions(mem, fresh);
     memories.push(mem);
     results.push(got);
     const checkpointData = {
@@ -384,10 +365,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const files: Array<{ target: string; content: string }> = [{ target: outPath, content: pack }, ...memories.map((mem) => ({
-    target: resolve(memFile(opts.memory, mem.topicId)),
-    content: JSON.stringify(mem, null, 2) + '\n',
-  }))];
+  const files = [{ target: outPath, content: pack }, ...memories.flatMap((mem) => changedTopicMemFiles(opts.memory, mem))];
   console.log('@@progress ' + JSON.stringify({ phase: 'commit', completed: jobs.length, total: jobs.length, label: '正在提交题库与主题记忆', written: newCount }));
   tracedSync('bank.commit', { files: files.length }, (finish) => {
     commitFiles(outPath, files, opts.complete ? resolve(opts.complete) : undefined);

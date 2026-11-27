@@ -306,8 +306,8 @@ export const POWERS: PowerDef[] = [
   {
     id: 'margin', name: '批注', color: '#e08a5c',
     scope: 'fight',
-    card: '每场战斗第一次答对，这张牌多攒 1 次免答',
-    desc: '和这次答对本身攒的那次一起算。',
+    card: '每场战斗第一次答对，额外抽 1 张牌',
+    desc: '与卡牌本身的抽牌效果叠加。',
   },
   {
     id: 'corner', name: '护角', color: '#9d8fb8',
@@ -574,13 +574,13 @@ export const BAL = {
   indexHand: 2,
   /** 墨水瓶 / 节拍器：第几张牌算数。原来两处各写死一个 3。 */
   inkAt: 3, pulseCards: 3,
-  /** 批注：这一场第一次答对，这张牌额外多攒几次免答 */
-  marginCharge: 1,
+  /** 批注：每场第一次答对时额外抽牌 */
+  marginDraw: 1,
   /** 草稿纸：每场第一次答错补抽几张 */
   scratchDraw: 1,
   /** 护角：精英 / BOSS 战开局额外格挡 */
   cornerBlock: 4,
-  /** 一场预抽几道题：牌组知识卡的答题要求总和每 `qOf` 次领 `qPer` 道，另加 `qPad` 道余量。 */
+  /** 一场预抽几道题：牌组每 `qOf` 张知识卡领 `qPer` 道，另加 `qPad` 道余量。 */
   qPer: 3, qOf: 5, qPad: 3,
   /**
    * 一道题被答过几次之后就不再抽到（跨局累计，读 `stagemem` 的 ok + bad）。

@@ -37,7 +37,7 @@ export function endRun(win: boolean) {
   if (!asks) {
     verdict = '这一局一道题都没答。点开知识卡才会出题；基础牌不出题，也不退行动力。';
   } else if (acc >= 80) {
-    verdict = `你答对了 ${acc}%。答对才结算，免答次数也是这么攒的。`;
+    verdict = `你答对了 ${acc}%。知识卡每次答对才结算。`;
   } else if (acc >= 60) {
     verdict = `你答对了 ${acc}%。`
       + (weak ? `错得最多的是「${weak.t}」，下一局先把它连着答两轮。` : '');

@@ -153,10 +153,6 @@ export function countByTopic(text: string): Record<string, Question[]> {
  * 玩家导出的快照按 qid 记，并进记忆按 knowledgeId 汇总，中间这一步就在这里。
  * 没写 `~` 的老题不进表：它们的号跟着题干走，映射过去也会错。
  */
-export function knowledgeIdByQid(bank: ReturnType<typeof parseQuestionBank>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const topic of Object.keys(bank.byTopic)) {
-    for (const q of bank.byTopic[topic]) if (q.knowledgeId) out[q.qid] = q.knowledgeId;
-  }
-  return out;
+export function knowledgeIdByQid(questions: readonly Question[]): Record<string, string> {
+  return Object.fromEntries(questions.flatMap(q => q.knowledgeId ? [[q.qid, q.knowledgeId]] : []));
 }

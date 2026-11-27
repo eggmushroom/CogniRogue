@@ -332,6 +332,33 @@ class DocumentPersistenceTests(unittest.TestCase):
             service.get_trace("../test")
         self.assertEqual(missing.exception.status_code, 404)
 
+    def test_feedback_reads_split_progress_and_preserves_inflight_snapshot(self) -> None:
+        bank_id, topic_id = "doc", "t_" + "a" * 24
+        directory = service.STORE / "memory" / bank_id
+        directory.mkdir(parents=True)
+        legacy = directory / f"{topic_id}.json"
+        legacy.write_text(json.dumps({"v": 6, "topicId": topic_id, "cursor": 1}), encoding="utf-8")
+        source = directory / f"{topic_id}.source.json"
+        source.write_text(json.dumps({"v": 7, "topicId": topic_id, "topic": "基础"}), encoding="utf-8")
+        with service.answer_store.connect(service.ANSWERS) as db, db:
+            for seq in range(1, 4):
+                service.answer_store.append(db, bank_id, {"id": str(seq), "topic": topic_id, "qid": "q1",
+                    "type": "answer", "right": True, "choice": seq}, "")
+
+        def snapshot(job_id):
+            service.prepare_feedback({"id": job_id, "bankId": bank_id, "topicId": topic_id})
+            return json.loads((service.STORE / "feedback" / f"{job_id}.json").read_text(encoding="utf-8"))
+
+        before = snapshot("job-legacy")
+        self.assertEqual(before["after"], 1)
+        self.assertEqual([row["seq"] for row in before["records"]], [2, 3])
+        progress = directory / f"{topic_id}.progress.json"
+        progress.write_text(json.dumps({"v": 7, "topicId": topic_id, "cursor": 2, "stats": {}}), encoding="utf-8")
+        self.assertEqual(snapshot("job-legacy"), before)
+        after = snapshot("job-split")
+        self.assertEqual(after["after"], 2)
+        self.assertEqual([row["seq"] for row in after["records"]], [3])
+
     def test_interrupted_plan_commit_recovers_memories_and_active_plan(self) -> None:
         doc = self.upload()
         doc_id = doc["docId"]

@@ -9,13 +9,13 @@
  *   4. **X 费**是不是每点行动力都有产出，**联动牌**有没有给玩家看的说明；
  *   5. 每个费用档 / 每种效果够不够组一副牌；
  *   6. **基础牌**：不答题、不带签名改动，且弱于同费知识卡（不答题的代价）；
- *   7. **答题要求**：每张知识卡在数据里显式写 `ask`；0 = 不问，正数 = 要答对几次。
+ *   7. **答题要求**：基础牌配置为 0，知识卡配置为 99。
  *      它是隐藏属性，不画在卡面，也不在奖励 / 牌组 / 帮助页显示。
  *
  * 奖励屏不按费用 / 效果 / 强弱预筛：除“同一张卡同 id”外，怎么选由玩家自己看牌面决定。
  */
 import {
-  PACK, BASICS, defOf, planStrike, effFace, costOf, isXCost, cardKind, askOf,
+  PACK, BASICS, defOf, planStrike, effFace, costOf, isXCost, cardKind,
 } from '../src/core';
 import type { CardDef } from '../src/core/model';
 
@@ -37,7 +37,7 @@ const rows: Row[] = PACK.cards.map((c) => {
     c, id: c.id, name: c.name, cost: isXCost(c) ? 'X' : String(costOf(c)),
     eff: c.eff, per: f.per, hits: f.hits, blk: f.blk, pierce: f.pierce,
     heal: f.healMax, draw: f.drawMax, selfHp: f.selfHp, link: !!c.link,
-    ask: askOf(c),
+    ask: c.ask,
   };
 });
 
@@ -125,7 +125,7 @@ console.log('');
       c, id: c.id, name: c.name, cost: isXCost(c) ? 'X' : String(costOf(c)),
       eff: c.eff, per: f.per, hits: f.hits, blk: f.blk, pierce: f.pierce,
       heal: f.healMax, draw: f.drawMax, selfHp: f.selfHp, link: !!c.link,
-      ask: askOf(c),
+      ask: c.ask,
     };
   });
   for (const r of basicRows) {
@@ -162,20 +162,8 @@ console.log('');
     `基础牌弱于同费知识卡${weak.length ? `：${weak.join('；')}` : '（不答题的代价）'}`);
 }
 
-// ── 7. 答题要求：写进卡牌数据的隐藏属性 ──────────────────────
-{
-  ok(rows.every((r) => Number.isInteger(r.c.ask) && r.c.ask >= 0),
-    '每张知识卡都在数据里写了非负整数的答题要求');
-  ok(rows.every((r) => r.ask === r.c.ask),
-    'askOf() 直接读卡牌数据，不从费用推导');
-  ok(rows.some((r) => r.ask === 0) && rows.some((r) => r.ask > 0),
-    '答题要求同时覆盖"不问"与"要答"');
-  const byAsk = new Map<number, number>();
-  for (const r of rows) byAsk.set(r.ask, (byAsk.get(r.ask) ?? 0) + 1);
-  const dist = [...byAsk.entries()].sort((a, b) => a[0] - b[0])
-    .map(([n, c]) => `${n} 次 ${c} 张`).join(' / ');
-  console.log(`  · 答题要求（隐藏）：${dist}`);
-}
+// ── 7. 答题配置 ──────────────────────
+ok(rows.every((r) => r.ask === 99), '知识卡的答题配置统一为 99');
 
 // ── 8. 精炼：每张牌都要声明方向，且必须真的变强 ──────────────
 {

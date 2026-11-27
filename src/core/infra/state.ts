@@ -14,7 +14,7 @@ export function newRunState(): GameState {
     hp: BAL.baseHp, maxHp: BAL.baseHp, block: 0, ap: BAL.baseAp, apMax: BAL.baseAp,
     turn: 1, enemy: null, draw: [], discard: [], hand: [],
     map: [], pos: null, node: null, seen: {}, eventsSeen: [],
-    charge: {}, qLeft: [], pendingQuestion: null, qPicked: {}, topics: [], runQueue: [], runQuestions: [], runBankId: '', runId: '', runCursor: 0, qSolved: {},
+    qLeft: [], pendingQuestion: null, qPicked: {}, topics: [], runQueue: [], runQuestions: [], runBankId: '', runId: '', runCursor: 0, qSolved: {},
     topicWrong: {}, okThisTurn: 0, topOkTopic: null,
     markerRefund: 0, syllabusTurn: 0,
     onceUsed: {}, onceStage: {}, onceRun: {},
@@ -47,7 +47,7 @@ export function panelOf<K extends Panel['k']>(k: K): Extract<Panel, { k: K }> | 
   return p.k === k ? (p as Extract<Panel, { k: K }>) : null;
 }
 
-/** 一回合内会重置的字段集中在这里；`charge` 按场清，`nextBoost` 跨回合保留。 */
+/** 一回合内会重置的字段集中在这里，`nextBoost` 跨回合保留。 */
 export function resetTurnState() {
   G.okThisTurn = 0;
   G.topOkTopic = null;
@@ -59,7 +59,7 @@ export function resetTurnState() {
 
 /**
  * 进入下一场 / 过幕 / 开局 / 续档前要清的场次字段。`deck`、血量和这一局牌组不在这里。
- * 所有“开新场”的路径都应该先过它，避免下一场还带着上一场的免答计数或题池。
+ * 所有“开新场”的路径都应该先过它，避免下一场还带着上一场的题池。
  * 它只碰 `G`，所以放在 infra：combat / journey 都从这里取，不再各写一份清单。
  */
 export function resetBattleFields() {
@@ -71,7 +71,6 @@ export function resetBattleFields() {
   G.draw = [];
   G.discard = [];
   G.hand = [];
-  G.charge = {};
   G.syllabusTurn = 0;
   G.cardPlays = {};
   G.nextBoost = null;

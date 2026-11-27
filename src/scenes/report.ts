@@ -72,7 +72,6 @@ export function drawReport(d: ReportData) {
     text(`${Math.round(r.mast * 100)}%`, x + 430, ry, { size: 11, color: C.gold, weight: 700 });
   });
 
-  // 右：这一局的输出是怎么来的：押注机制拿掉之后，这里换成"答题还是免答"
   const cx = x + 636;
   const total2 = d.runOk + d.runBad;
   const acc = total2 ? Math.round((d.runOk / total2) * 100) : 0;

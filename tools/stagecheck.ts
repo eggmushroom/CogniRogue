@@ -1,4 +1,4 @@
-﻿/** 过幕与新机制的结构检查：`npm run stage`。 */
+/** 过幕与新机制的结构检查：`npm run stage`。 */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -11,7 +11,7 @@ import {
   loadQuestionBank, PACK, startRun, ackPower, mergePacks, genStage, floorOf,
   allQuestions, stageMemOf, resetStageMemory, recordAnswer, studySnapshot, STUDY_SNAPSHOT_V,
   rightCount, runPool, isRetired, buildRunPool, nextQuestions, sourceBank,
-  cardKind, BASICS, drawBattleQuestions,  askOf, costOf, cardAskState, battleQuestionCount, playFree, takeQuestion, MAX_PICK_PER_RUN,
+  cardKind, BASICS, drawBattleQuestions, costOf, battleQuestionCount, takeQuestion, MAX_PICK_PER_RUN,
   openCardPick, statOf, isUpgraded, makeFoe, resumeRun, onceThisFight, restHeal,
   rulesOf, onceThisStage, onceThisRun, applyInstant, clearStageOnce, clearRunOnce,
   grantBlock, setBlock, loseHp, healHp, spendAp, gainAp, resetAp, drawCards, JUNK_ID,
@@ -251,7 +251,7 @@ function battle(stage: number, key: string) {
   G.drawCut = e.mech === 'fog' ? mechAmt(e) : 0;
   // 保证手里至少有一张能答的牌。
   if (!G.hand.some((c) => canAsk(c) && canPay(defOf(c)))) {
-    const k = PACK.cards.find((c) => c.kind === 'knowledge' && askOf(c) === 1)!;
+    const k = PACK.cards.find((c) => c.kind === 'knowledge')!;
     G.hand[0] = k.id;
   }
   return e;
@@ -516,7 +516,7 @@ function missGain(eff: string) {
   G.powers = ['bookmark'];
   G.ap = 9;
   G.block = 0;
-  G.hand[0] = PACK.cards.find((c) => c.kind === 'knowledge' && c.blk > 0 && askOf(c) > 0)!.id;
+  G.hand[0] = PACK.cards.find((c) => c.kind === 'knowledge' && c.blk > 0)!.id;
   askCard(0);
   if (G.panel.k !== 'question') throw new Error('书签测试：没弹题');
   answer(G.panel.view.answer);
@@ -844,8 +844,8 @@ function missGain(eff: string) {
   startRun();
   startRun();
   ok(Object.keys(G.cardPlays).length === 0 && G.nextBoost === null
-    && Object.keys(G.charge).length === 0 && G.qLeft.length === 0 && G.enemy === null,
-    '开局把战斗瞬时字段清空（cardPlays / nextBoost / charge / qLeft）');
+    && G.qLeft.length === 0 && G.enemy === null,
+    '开局把战斗瞬时字段清空（cardPlays / nextBoost / qLeft）');
   const ids = G.deck.slice();
   ok(G.deck.length === 10, `起手 10 张（实为 ${G.deck.length}）`);
   ok(ids.filter((id) => id === 'base:strike').length === 4, `基础斩击 ×4（实为 ${ids.filter((id) => id === 'base:strike').length}）`);
@@ -998,7 +998,7 @@ function missGain(eff: string) {
     ['eraser', `补 ${BAL.eraserBlock} 点格挡`],
     ['syllabus', `获得 ${BAL.syllabusBlock} 点格挡`],
     ['scratch', `补抽 ${BAL.scratchDraw} 张`],
-    ['margin', `多攒 ${BAL.marginCharge} 次免答`],
+    ['margin', `额外抽 ${BAL.marginDraw} 张牌`],
     ['corner', `多 ${BAL.cornerBlock} 点格挡`],
     ['mend', `${BAL.mendRest} 点生命`],
     ['press', `伤害 +${BAL.pressAtk}`],
@@ -1335,7 +1335,6 @@ function missGain(eff: string) {
   battle(1, 'examiner');
   G.powers = [];
   G.nextBoost = null;
-  G.charge = {};
   G.hand[0] = 'c43';
   G.ap = 2;
   G.enemy!.hp = 999;
@@ -1426,7 +1425,6 @@ function missGain(eff: string) {
   battle(1, 'examiner');
   G.powers = [];
   G.ap = 9;
-  G.charge = {};
   G.hand[0] = 'c05';
   askCard(0);
   if (panelKind() !== 'question') throw new Error('本章统计测试：没弹题');
@@ -1434,7 +1432,6 @@ function missGain(eff: string) {
   ok(G.stageOk === 1, `本章答对计数 +1（${G.stageOk}）`);
   if (panelKind() === 'feedback') dismissFeedback();
 
-  G.charge = {};
   G.hand[0] = 'c06';
   askCard(0);
   if (panelKind() !== 'question') throw new Error('本章统计测试：第二次没弹题');
@@ -1451,7 +1448,6 @@ function missGain(eff: string) {
       battle(1, 'examiner');
       G.powers = powers as never;
       G.ap = 3;
-      G.charge = {};
       G.markerRefund = 0;
       G.okThisTurn = 0;
       G.hand[0] = two.id;
@@ -1471,7 +1467,6 @@ function missGain(eff: string) {
     battle(1, 'examiner');
     G.powers = ['librarycard'];
     G.ap = 1;
-    G.charge = {};
     G.hand[0] = zero.id;
     askCard(0);
     if (panelKind() !== 'question') throw new Error('借书证 0 费牌测试：没弹题');
@@ -1485,7 +1480,6 @@ function missGain(eff: string) {
   G.powers = ['marker', 'librarycard'];
   const card = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 1)!;
   G.ap = 3;
-  G.charge = {};
   G.markerRefund = 0;
   G.okThisTurn = 0;
   G.hand[0] = card.id;
@@ -1502,7 +1496,6 @@ function missGain(eff: string) {
   const card = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 1)!;
   const missAndReadBlock = () => {
     G.ap = 9;
-    G.charge = {};
     G.hand[0] = card.id;
     G.block = 0;
     askCard(0);
@@ -1538,12 +1531,11 @@ function missGain(eff: string) {
 
 // ── 10h. 书套 / 批注挂在活机制上
 // 这两条增益原来挂在「稳固度 / 到期日」上，而那张表只写不读：卡面写着一条规则，
-// 打起来什么也没发生。现在改挂错题簿与免答充能 —— 两个真的会改出题和出牌的东西，
+// 验证错题记录与答对抽牌这两条结算路径，
 // 所以它们也必须有断言，否则下次重构又只剩文案。
 {
   const askMiss = (id: string) => {
     G.ap = 9;
-    G.charge = {};
     G.hand[0] = id;
     askCard(0);
     if (panelKind() !== 'question') throw new Error('书套测试：没弹题');
@@ -1576,17 +1568,14 @@ function missGain(eff: string) {
     answer(panelOf('question')!.view.answer);
     if (panelKind() === 'feedback') dismissFeedback();
   };
-  const heavy = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 2)!;
-  const light = PACK.cards.find((c) => c.kind === 'knowledge' && c.cost === 1)!;
-
   battle(1, 'examiner');
   G.powers = ['margin'];
-  askRight(heavy.id);
-  ok(G.charge[heavy.id] === 2,
-    `批注：这一场第一道答对，2 费牌直接攒满免答（${G.charge[heavy.id]}/2）`);
-  askRight(light.id);
-  ok(G.charge[light.id] === 1,
-    `批注：一场只多攒一次，第二道答对回到 1（${G.charge[light.id]}）`);
+  G.hand = [oneCost.id, oneCost.id];
+  G.draw = [BASICS[0].id, BASICS[0].id];
+  askRight(oneCost.id);
+  ok(G.hand.length === 1 + BAL.marginDraw, '批注：第一道答对额外抽牌');
+  askRight(oneCost.id);
+  ok(G.hand.length === BAL.marginDraw, '批注：一场只额外抽一次');
 }
 
 // ── 10i. 机制结算
@@ -1602,7 +1591,6 @@ function missGain(eff: string) {
     e.hp = 999;
     e.block = 0;
     G.ap = 9;
-    G.charge = {};
     G.hand[0] = plain.id;
     const before = e.hp;
     askCard(0);
@@ -1670,7 +1658,6 @@ function missGain(eff: string) {
     G.powers = powers as never;
     G.enemy!.hp = 999;
     G.ap = 9;
-    G.charge = {};
     G.hand[0] = plain.id;
     const before = G.hand.length;
     askCard(0);
@@ -1762,15 +1749,14 @@ function missGain(eff: string) {
     answer(right ? p.view.answer : (p.view.answer + 1) % p.view.options.length);
     if (panelKind() === 'feedback') dismissFeedback();
   };
-  const bCard = PACK.cards.find((c) => c.kind === 'knowledge' && askOf(c) === 1)!;
+  const bCard = PACK.cards.find((c) => c.kind === 'knowledge')!;
   const strikeCard = PACK.cards.find((c) => c.kind === 'knowledge' && c.eff === 'strike'
     && c.atk > 0 && !c.link && !c.mods)!;
 
   // 双面镜：每回合第一次答对抽一张，一回合只给一次。
   // 这条此前只在卡面文案区里出现过 —— 文案断言证明"数字抄得对"，
   // 证明不了那张牌真的会抽。
-  // 每次用一张**不同的**要答 1 次的牌：同 id 答对一次就攒满免答，第二次直接打、不弹题。
-  const twoB = PACK.cards.filter((c) => c.kind === 'knowledge' && askOf(c) === 1
+  const twoB = PACK.cards.filter((c) => c.kind === 'knowledge'
     && c.eff !== 'focus' && !c.mods?.draw && !c.link);
   const drawAfterRight = (powers: PowerId[], times = 1) => {
     open(powers);
@@ -1794,8 +1780,7 @@ function missGain(eff: string) {
     `双面镜：答对抽 ${BAL.answerDraw} 张，一回合只给一次（无 ${drawNone} / 一次 ${drawOne} / 两次 ${drawTwo}）`);
 
   // 签名改动里的抽牌：卡面写「抽 2 张」的牌，打完手里就该多出这两张。
-  const drawModCard = PACK.cards.find((c) => (c.mods?.draw ?? 0) > 0 && !c.link
-    && askOf(c) > 0)!;
+  const drawModCard = PACK.cards.find((c) => (c.mods?.draw ?? 0) > 0 && !c.link)!;
   open([]);
   const handDraw0 = G.hand.length;
   G.ap = 9;
@@ -1808,9 +1793,9 @@ function missGain(eff: string) {
     `「${drawModCard.name}」：签名改动抽 ${wantDraw} 张，手牌 ${handDraw0} → ${G.hand.length}`);
 
   // 专注：打出后抽一张 —— 六种效果里只有它自带抽牌。
-  // 要一张**会出题**的：答题要求 0 的牌直接打，`askCard` 不会弹面板。
+  // 用一张没有额外结算效果的知识卡。
   const focusCard = PACK.cards.find((c) => c.kind === 'knowledge' && c.eff === 'focus'
-    && !c.link && !c.mods && askOf(c) > 0)!;
+    && !c.link && !c.mods)!;
   open([]);
   const handBefore = G.hand.length;
   G.ap = 9;
@@ -2246,7 +2231,6 @@ function missGain(eff: string) {
     G.ap = 3;
     G.hand[0] = drain.id;
     // 清空本场计数，强制走弹题分支。
-    G.charge = {};
     askCard(0);
     if (G.panel.k !== 'question') throw new Error('内化测试：没弹题');
     answer(G.panel.view.answer);
@@ -2374,7 +2358,7 @@ function missGain(eff: string) {
 
 // ── 15. 卡 id
 // 记忆表（稳固度 / 到期）已经删掉：它只写不读，`npm run sim` 连跑都不受影响。
-// 留下的是 id 本身 —— 存档、牌组、免答计数都按它认牌，所以它必须是稳定短键。
+// 留下的是 id 本身 —— 存档和牌组都按它认牌，所以它必须是稳定短键。
 {
   const ids = PACK.cards.map((c) => c.id);
   ok(ids.length === 101 && ids.every((id) => /^c\d{2,3}$/.test(id)), 'card id 是稳定短键，不含题干');
@@ -2557,7 +2541,7 @@ function missGain(eff: string) {
   G.ap = 9;
 
   // 卡和题解耦：随便一张知识卡，抽的都是本局主题里的题。
-  const other = PACK.cards.find((c) => c.kind === 'knowledge' && askOf(c) === 1 && (c.cost ?? 1) === 1)!;
+  const other = PACK.cards.find((c) => c.kind === 'knowledge' && (c.cost ?? 1) === 1)!;
   G.hand[0] = other.id;
   askCard(0);
   const p1 = panelOf('question')!;
@@ -2600,8 +2584,8 @@ C) 3
   startBattle(G.node);
   G.ap = 9;
   const before = G.deck.join('|');
-  // 起手 2 张知识卡可能答题要求都是 0，那就不出题；塞一张要答 1 次的进去保证这一手要问。
-  const bCard = PACK.cards.find((c) => askOf(c) === 1)!;
+  // 固定一张知识卡，让起手测试不依赖洗牌。
+  const bCard = PACK.cards.find((c) => c.cost === 1)!;
   G.hand[0] = bCard.id;
   const i = G.hand.findIndex((e) => canAsk(e));
   if (i < 0) throw new Error('题库替换测试：没有可问的牌');
@@ -2614,7 +2598,7 @@ C) 3
 
 // ── 19. v0.5 规则 ──────────────────────────────────────────
 // 答题要求的数据形状由 `npm run cards` 管；这里只验运行时行为：
-// 答错不扣行动力、取消不锁牌、答题要求攒满免答、每题本局最多 3 次。
+// 答错不扣行动力、取消不锁牌、知识卡重复出牌仍要答题、每题本局最多 3 次。
 {
   loadQuestionBank(mergePacks(
     [readFileSync(join(here, '..', 'packs', 'words.md'), 'utf8')],
@@ -2632,7 +2616,7 @@ C) 3
   ok(new Set(picked).size === picked.length, '预抽的题不重复');
 
   // (b) 答错：不扣行动力、不锁牌、消耗一道题
-  const cb = PACK.cards.find((x) => askOf(x) === 1)!;
+  const cb = PACK.cards.find((c) => c.id === 'c93')!;
   const qBefore = G.qLeft.length;
   const apBefore = G.ap;
   G.hand[0] = cb.id;
@@ -2644,33 +2628,23 @@ C) 3
   if (panelKind() === 'feedback') dismissFeedback();
   ok(G.ap === apBefore, `答错不扣行动力（${apBefore} → ${G.ap}）`);
   ok(G.qLeft.length === qBefore - 1, `答错消耗一道题（${qBefore} → ${G.qLeft.length}）`);
-  ok(!G.charge[cb.id], '答错不计入免答次数');
 
-  // (c) 答题要求攒满：答对 X 次之后，这一场直接打、不再出题
-  G.charge = {};
-  for (let i = 0; i < askOf(cb); i++) {
-    G.ap = 3;
-    G.hand[0] = cb.id;
-    askCard(0);
-    if (panelKind() !== 'question') throw new Error(`v0.5：第 ${i + 1} 次答题没弹题`);
-    answer(qv().answer);
-    if (panelKind() === 'feedback') dismissFeedback();
-  }
-  ok(G.charge[cb.id] === askOf(cb), `答题要求 1 次的牌攒满 ${G.charge[cb.id]}/${askOf(cb)} 次`);
-  ok(cardAskState(cb.id) === 'free', '攒满之后这张牌是 free（不再出题）');
-  const qBeforeFree = G.qLeft.length;
-  const hpBefore = G.enemy!.hp;
-  G.ap = 3;
+  // 曾经直接打出的 0 费知识卡，现在每次都出题，包括同一场答对后再次打出。
   G.hand[0] = cb.id;
-  playFree(0);
-  ok(G.qLeft.length === qBeforeFree, '免答直打不消耗题目');
-  ok(G.enemy!.hp < hpBefore, `免答直打照样结算伤害（${hpBefore} → ${G.enemy!.hp}）`);
+  G.ap = 0;
+  playBasic(0);
+  ok(G.hand[0] === cb.id, '0 费知识卡不能走基础牌路径');
+  askCard(0);
+  if (panelKind() !== 'question') throw new Error('0 费知识卡没有出题');
+  answer(qv().answer);
   if (panelKind() === 'feedback') dismissFeedback();
+  G.hand[0] = cb.id;
+  askCard(0);
+  ok(panelKind() === 'question', '0 费知识卡已经答对后再次打出，仍要答题');
+  if (panelKind() === 'question') cancelPanel();
 
-  // (d) 每场战斗都在 startBattle 里清空答题计数；跨场不清就会变成永久免答
   G.node = G.map[0][0];
   startBattle(G.node);
-  ok(!G.charge[cb.id], '新一场战斗清空免答计数');
   ok(G.qLeft.length === battleQuestionCount(G.deck), '新一场战斗重新预抽题目');
 
   // (e) 一道题本局最多被抽到 3 次
@@ -2687,15 +2661,10 @@ C) 3
   G.qLeft = [];
   const reuse = takeQuestion();
   ok(reuse !== null, '新题用完仍然能出题（复用本章问得最少的题）');
-  const kb = PACK.cards.find((c) => askOf(c) >= 2)!;
-  ok(cardAskState(kb.id) === 'ask', '新题用完，知识卡仍是 ask（不会锁牌）');
+  ok(canAsk(cb.id), '新题用完，知识卡仍能从题库复用题目');
 
-  // (g) 答题要求 0 的牌不占题量：10 张 0 次 + 10 张 2 次 = 20 次 → round(12)+3 = 15
-  const zero = PACK.cards.find((c) => askOf(c) === 0)!;
-  const two = PACK.cards.find((c) => askOf(c) === 2)!;
-  const cDeck = [...Array(10).fill(zero.id), ...Array(10).fill(two.id)];
-  ok(battleQuestionCount(cDeck) === 15,
-    `答题要求 0 的牌不占题量（10 张 0 次 + 10 张 2 次 → ${battleQuestionCount(cDeck)} 道，应 15）`);
+  const cDeck = [...Array(10).fill(BASICS[0].id), ...Array(10).fill(cb.id)];
+  ok(battleQuestionCount(cDeck) === 9, '10 张基础牌和 10 张知识卡只按知识卡数量预抽 9 道题');
 }
 
 // ── 20. 资源写入的不变量 ──────────────────────────────────
@@ -2778,7 +2747,6 @@ C) 3
   G.enemy = { ...FOES.find((f) => f.key === 'shard')!, maxHp: 999, hp: 999, block: 0, mv: 0, stage: 1 };
   G.powers = [];
   G.onceUsed = {};
-  G.charge = {};
   G.panel = { k: 'none' };
   G.busy = false;
   G.ap = 3;
@@ -2791,10 +2759,17 @@ C) 3
   G.draw = [];
   G.discard = [];
 
+  const playCorrect = () => {
+    askCard(0);
+    const question = panelOf('question');
+    if (!question) throw new Error('结算测试没有出题');
+    answer(question.view.answer);
+    if (panelKind() === 'feedback') dismissFeedback();
+  };
+
   const hurt = PACK.cards.find((c) => c.id === 'c87')!;
   G.hand = [hurt.id];
-  G.charge[hurt.id] = askOf(hurt);
-  playFree(0);
+  playCorrect();
   ok(G.hp === 57, `焚稿的自伤落到血量上（60 → ${G.hp}，应 57）`);
 
   // 节拍器：三张真正生效的牌之后退 1 点；三张都用 0 费，避免行动力本身干扰读数。
@@ -2807,9 +2782,9 @@ C) 3
   G.ap = 3;
   G.apMax = 3;
   G.block = 0;
-  playFree(0);
-  playFree(0);
-  playFree(0);
+  playCorrect();
+  playCorrect();
+  playCorrect();
   ok(G.ap === 4, `节拍器：第一次三连后退回 1 点（3 → ${G.ap}）`);
 
   // 亮油：第一张 0 费牌把下一张带出来。
@@ -2821,7 +2796,7 @@ C) 3
   G.cardsThisTurn = 0;
   G.ap = 3;
   G.apMax = 3;
-  playFree(0);
+  playCorrect();
   ok(G.hand.includes('c04'), '亮油：第一张 0 费牌抽到了下一张');
 
   // 墨水瓶：每回合第 3 张才抽，前两张不抽。
@@ -2833,9 +2808,9 @@ C) 3
   G.cardsThisTurn = 0;
   G.ap = 3;
   G.apMax = 3;
-  playFree(0);
-  playFree(0);
-  playFree(0);
+  playCorrect();
+  playCorrect();
+  playCorrect();
   ok(G.hand.includes('c04'), '墨水瓶：第 3 张牌把下一张摸上来');
 
   // 一回合只数一次：卡面写的就是「一回合只数一次」，第 6 张不该再抽。
@@ -2845,9 +2820,9 @@ C) 3
   G.cardsThisTurn = 3;
   G.ap = 3;
   G.apMax = 3;
-  playFree(0);
-  playFree(0);
-  playFree(0);
+  playCorrect();
+  playCorrect();
+  playCorrect();
   ok(!G.hand.includes('c04'), '墨水瓶：一回合只数第 3 张，第 6 张不再抽');
 
   // 档案盒：洗牌时补 2 点格挡。直接制造“抽牌堆空、弃牌堆有牌”的洗牌条件。
@@ -2887,12 +2862,11 @@ C) 3
   G.hp = 60;
   const atk = PACK.cards.find((c) => c.id === 'c05')!;
   G.hand = [atk.id];
-  G.charge[atk.id] = askOf(atk);
   G.draw = [];
   G.discard = [];
   G.block = 0;
   G.cardsThisTurn = 0;
-  playFree(0);
+  playCorrect();
   ok(G.block === 6, `种纸：第一张攻击牌补 2 点格挡（4 + 2 = ${G.block}）`);
 
   // 种纸按**类别**判，不按"这一手有没有伤害段"：带伤害的防御牌不算攻击牌，

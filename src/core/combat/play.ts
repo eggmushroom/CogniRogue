@@ -7,8 +7,7 @@ import { floorOf } from '../map/gen';
 import { shuffleOptions } from '../library/question';
 import { defOf } from '../cards/registry';
 import { clearOnceUsed, onceThisFight, syllabusBasicBlock } from '../cards/powers';
-import { canPay, costNow, isXCost } from '../cards/cost';
-import { needsAsk } from '../cards/ask';
+import { canPay, costNow } from '../cards/cost';
 import { cardKind } from '../cards/kinds';
 import { startTurn } from './deck';
 import { makeFoe } from './foe';
@@ -17,7 +16,6 @@ import { drawBattleQuestions, takeQuestion } from './questions';
 import {
   buildSettlement, emptySettlement, planThorns, settle,
 } from './settlement';
-import type { Settlement } from './settlement';
 
 /**
  * 战斗开局与玩家出牌的全部路径。
@@ -51,49 +49,9 @@ export function startBattle(nd: MapNode) {
   startTurn();
 }
 
-/**
- * 这张知识卡此刻的状态，给卡面和点击路由用（也是"能不能问"的唯一判断）：
- *
- *   'free'   答题要求已攒满，这一场直接打，不出题
- *   'ask'    还要答题
- *   'empty'  要答题，但这一章一道题都没有（题库载入失败时的兜底）
- *   'other'  不是知识卡
- *
- * **不读 `qLeft`**：本场新题用完不会锁牌，`takeQuestion` 会进入复用路径。
- * 所以"还剩几道新题"（顶栏读数）和"这张牌能不能点"是两个问题。
- */
-export function cardAskState(id: CardId | null | undefined): 'free' | 'ask' | 'empty' | 'other' {
-  if (!id) return 'other';
-  const card = defOf(id);
-  if (cardKind(card) !== 'knowledge') return 'other';
-  if (!needsAsk(id, G.charge)) return 'free';
-  return runPool().length ? 'ask' : 'empty';
-}
-
-/** 这张牌现在点下去会不会出题。费用是另一回事（`canPay`）。 */
-export const canAsk = (id: CardId | null | undefined): boolean => cardAskState(id) === 'ask';
-
-/**
- * 答题要求攒满后直接打：构造同一份 Settlement，不抽题、不判对错、不进答题流水。
- * 不弹反馈面板，结果只留一条内部文字记录。
- */
-export function playFree(idx: number) {
-  if (G.busy || G.panel.k !== 'none') return;
-  const id = G.hand[idx];
-  if (!id) return;
-  const card = defOf(id);
-  if (cardKind(card) !== 'knowledge') return;
-  // 没攒够的牌不能从这条路绕过去，规则在这里守一次。
-  if (needsAsk(id, G.charge)) return;
-  if (!canPay(card)) return;
-
-  const xcost = isXCost(card);
-  const spent = xcost ? G.ap : costNow(card);
-  const repeat = xcost ? Math.max(1, spent) : 1;
-  const s = buildSettlement(id, { repeat });
-  planThorns(s);
-  commitSimplePlay(id, idx, s, { spent });
-}
+/** 题池有内容时，知识卡可以发题。行动力由出牌时检查。 */
+export const canAsk = (id: CardId | null | undefined): boolean =>
+  Boolean(id && cardKind(defOf(id)) === 'knowledge' && runPool().length);
 
 /** 点一张知识卡 = 从**本场预抽的题**里取一道。 */
 export function askCard(idx: number) {
@@ -104,8 +62,6 @@ export function askCard(idx: number) {
   // 付不起就不弹题：让人答完才发现打不出去是最难受的白费。
   if (!canPay(card)) return;
   if (cardKind(card) !== 'knowledge') return;
-  // 攒满答题要求：直接打，不抽题
-  if (!needsAsk(id, G.charge)) { playFree(idx); return; }
 
   const pending = G.pendingQuestion;
   const q = pending?.q ?? takeQuestion();
@@ -172,26 +128,6 @@ export function cancelPanel() {
 }
 
 /**
- * 免答直打 / 基础牌共用的收尾：把扣费并入计划、牌离手，再交给执行器。
- * 知识卡的答题路径不用它——那条路径要留反馈面板，不能演完自动收。
- */
-function commitSimplePlay(
-  id: CardId, idx: number, s: Settlement,
-  opts: { spent: number },
-) {
-  s.budget.ap.spend += opts.spent;
-  G.discard.push(id);
-  G.hand.splice(idx, 1);
-  checkPending();
-  G.busy = true;
-  settle(s, {
-    // 以前是固定 200ms 解锁：多段演出比它长时，玩家能在最后几段落地前动手，
-    // 胜负也判得太早。现在跟着执行器走完才解锁。
-    onDone: () => { G.busy = false; requestSettle(); },
-  });
-}
-
-/**
  * 打出一张基础牌：不答题、不退款、不进记忆调度。
  * 它是这一局的地板，数值刻意低于知识卡，同样花 1 点。
  */
@@ -208,5 +144,14 @@ export function playBasic(idx: number) {
   // 课表只认基础牌，和题目池无关；它同样只报预算，由执行器统一写入。
   s.budget.blk += syllabusBasicBlock();
   planThorns(s);
-  commitSimplePlay(id, idx, s, { spent });
+  s.budget.ap.spend += spent;
+  G.discard.push(id);
+  G.hand.splice(idx, 1);
+  checkPending();
+  G.busy = true;
+  settle(s, {
+    // 以前是固定 200ms 解锁：多段演出比它长时，玩家能在最后几段落地前动手，
+    // 胜负也判得太早。现在跟着执行器走完才解锁。
+    onDone: () => { G.busy = false; requestSettle(); },
+  });
 }

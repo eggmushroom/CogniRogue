@@ -6,6 +6,10 @@ node_modules/
 .shots/
 .cache/
 dist/
+# 本地模型配置
+/.env
+/.env.*
+!/.env.example
 # 语料是中间物：清单进仓库，PDF 与抽出来的 markdown 由 `npm run sources` 重新生成
 data/sources/*.pdf
 data/sources/*.md

@@ -17,7 +17,7 @@ import { AGENTIC_OVERLAP_CHARS, AGENTIC_WINDOW, MAX_AGENTIC_WINDOW, MIN_AGENTIC_
 import { readFileSync } from 'node:fs';
 import { commitFiles } from './files';
 import { traced, tracedSync } from './trace';
-import { memFile, prepareSections, readTopicMem } from './memory';
+import { prepareSections, sourceIndexFile } from './memory';
 import { configFromEnv, openAiLlm } from './llm';
 import type { Llm } from './llm';
 import {
@@ -198,10 +198,7 @@ async function main(): Promise<void> {
       target: resolve(sectionDir, `${section.id}.md`), content: section.content,
   })));
   if (opts.memory) for (const topic of plan.topics) {
-    const existing = resolve(memFile(opts.memory, topic.id!));
-    const mem = readTopicMem(opts.memory, topic.title, source, topic.id!);
-    mem.sections = topic.sections;
-    files.push({ target: existing, content: JSON.stringify(mem, null, 2) + '\n' });
+    files.push(sourceIndexFile(opts.memory, { topicId: topic.id!, topic: topic.title, source, sections: topic.sections }));
   }
   files.push({ target: out, content: JSON.stringify(plan, null, 2) + '\n' });
   if (opts.document) {

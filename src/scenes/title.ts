@@ -34,13 +34,6 @@ export function drawTitle(
 
   cutRule(cx - 230, 295, 460, C.gold, 0.68);
 
-  text('一边打牌，一边把该复习的东西复习掉', cx, 336, {
-    size: 21, align: 'center', color: C.ink2, weight: 500,
-  });
-  text('题不印在卡面上 · 点开才出题', cx, 372, {
-    size: 15, align: 'center', color: C.dim,
-  });
-
   const bw = 460;
   const bx = cx - bw / 2;
   const bh = 64;
@@ -54,14 +47,14 @@ export function drawTitle(
   const save = runSaveInfo();
   let by: number;
   if (save) {
-    action(bx, 416, bw, bh, '继续这一局', () => { resumeRun(); }, 'primary', {
+    action(bx, 352, bw, bh, '继续这一局', () => { resumeRun(); }, 'primary', {
       size: 23, sub: `第 ${save.stage} 幕 · ${save.stageName} · ${save.hp}/${save.maxHp} 生命`,
     });
-    drawNewRunLink(496);
-    by = 512;
+    drawNewRunLink(432);
+    by = 448;
   } else {
-    action(bx, 452, bw, bh, '开始游戏', () => { G.panel = { k: 'boon' }; }, 'primary', { size: 23 });
-    by = 532;
+    action(bx, 388, bw, bh, '开始游戏', () => { G.panel = { k: 'boon' }; }, 'primary', { size: 23 });
+    by = 468;
   }
 
   // 题库那颗的副标题就是"正在用哪份、共多少题"，点开是题库面板
@@ -74,7 +67,7 @@ export function drawTitle(
   });
 
   // 进度条的位置两种版式一致：多了一个断点，它不该跟着往下跳
-  drawProgress(720);
+  drawProgress(664);
 
   // 版本和许可合成右下角一行。技术栈对玩家没有意义，读源码的人看 README。
   text('v0.4 · MIT License', VW - 40, VH - 28, { size: 12, color: C.faint, align: 'right' });

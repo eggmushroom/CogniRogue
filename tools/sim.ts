@@ -9,9 +9,9 @@ import { dirname, join } from 'node:path';
 import { BAL, MODE_BY_ID, POWER_BY_ID } from '../src/core/model';
 import type { CardDef, CardId, ModeId, PowerId } from '../src/core/model';
 import {
-  G, PACK, answer, ackCardGet, availableNodes, bankQuestionCount, canPay, cardAskState, chooseEventOption, defOf, dismissFeedback,
-  endTurn, enterNode, forgetCard, loadQuestionBank, openCardPick, playBasic, playFree, restHeal,
-  skipReward, startRun, takeCard, ackPower, askCard, mergePacks, upgradeCard, cardKind, askOf,
+  G, PACK, answer, ackCardGet, availableNodes, bankQuestionCount, canPay, canAsk, chooseEventOption, defOf, dismissFeedback,
+  endTurn, enterNode, forgetCard, loadQuestionBank, openCardPick, playBasic, restHeal,
+  skipReward, startRun, takeCard, ackPower, askCard, mergePacks, upgradeCard, cardKind,
   resetStageMemory,
   moveOf, cancelPanel, isUpgraded, JUNK_ID, setScheduler,
 } from '../src/core';
@@ -192,24 +192,15 @@ interface Stat {
   misses: number;
   /** 一局里打出几张基础牌。它衡量"地板"被用得多不多 */
   basics: number;
-  /**
-   * 免答直打的次数（本场攒满答题要求之后不出题）。这是"高答题要求的牌
-   * 到底兑不兑现"的证据：一场只打两回合的话，要答 2/3 次的牌根本攒不满，
-   * 这个数会全被 1 次档占掉。
-   */
-  free: number;
-  /** 其中答题要求 ≥2 的免答次数 —— 只有这一档才是"通关率杠杆" */
-  freeSA: number;
 }
 
-/** 第 idx 张手牌该怎么打：知识卡→答题 / 已免答直打，基础牌→直接打。 */
+/** 第 idx 张手牌该怎么打：知识卡→答题，基础牌→直接打。 */
 function advance(idx: number) {
   const id = G.hand[idx];
   if (!id) return;
   const k = cardKind(defOf(id));
   if (k === 'basic') playBasic(idx);
-  else if (k === 'knowledge' && cardAskState(id) === 'free') playFree(idx);
-  else if (k === 'knowledge' && cardAskState(id) === 'ask') askCard(idx);
+  else if (canAsk(id)) askCard(idx);
 }
 
 function runOne(p: number, st: Stat) {
@@ -226,8 +217,6 @@ function runOne(p: number, st: Stat) {
   let battles = 0;
   let turns = 0;
   let basics = 0;
-  let freePlays = 0;
-  let freeSA = 0;
 
   while (guard++ < 6000) {
     const panel = G.panel;
@@ -349,29 +338,13 @@ function runOne(p: number, st: Stat) {
             const d = defOf(id);
             if (id === JUNK_ID || !pay(id)) return false;
             const k = cardKind(d);
-            // 免答的防御牌也算数：以前这里写的是 `eff === 'guard' && canAsk(id)`，
-            // 于是"已经攒满、可以免答"的格挡牌被机器人当成不存在：免答一多就不挡，
-            // 死亡全是机器人自己造成的（`--charge=stage` 那一轮胜率被这条压到个位数）。
-            if (k === 'knowledge') return d.eff === 'guard' && pay(id);
+            if (k === 'knowledge') return d.eff === 'guard' && canAsk(id);
             return k === 'basic' && (d.blk || 0) > 0;
           });
           if (gd >= 0) { advance(gd); continue; }
         }
-        // 答题要求攒满的知识卡直接打（playFree），还欠答题的走 askCard。
-        const ask = G.hand.findIndex((id) => cardAskState(id) === 'ask' && pay(id));
+        const ask = G.hand.findIndex((id) => canAsk(id) && pay(id));
         if (ask >= 0) { askCard(ask); continue; }
-        // 免答的知识卡：输出和答对一样，只是不出题。机器人不选它，
-        // 等于把"攒答题要求"这条线整个从模拟里删掉：胜率会塌到 1% 以下。
-        // 这里顺手记下"这张牌是攒满之后直接打的"，并按档位分开统计：
-        // 答题要求 ≥2 的牌能不能兑现，是这个数值框架的核心问题（见 tools/sim.ts 顶部说明）。
-        const freeIdx = G.hand.findIndex((id) => cardAskState(id) === 'free' && pay(id));
-        if (freeIdx >= 0) {
-          const need = askOf(defOf(G.hand[freeIdx]!));
-          freePlays += 1;
-          if (need >= 2) freeSA += 1;
-          advance(freeIdx);
-          continue;
-        }
         // 基础牌：不答题、不可退款，但总比让行动力烂掉好。
         // 它是这一局的地板，模拟不打出它，会把低水平的胜率算得比实际更狠。
         const bas = G.hand.findIndex((id) => id !== JUNK_ID && defOf(id).kind === 'basic' && pay(id));
@@ -400,8 +373,6 @@ function runOne(p: number, st: Stat) {
   st.powers += G.powers.length;
   st.basics += basics;
   st.misses += G.runBad;
-  st.free += freePlays;
-  st.freeSA += freeSA;
 }
 
 const LEVELS = [
@@ -432,14 +403,14 @@ console.log(widths.map((w) => '─'.repeat(w)).join(' '));
 const summary: Array<{
   level: string; p: number; win: number; deck: number; kinds: number;
   turns: number; battles: number; powers: number;
-  misses: number; basics: number; free: number; freeSA: number;
+  misses: number; basics: number;
 }> = [];
 
 for (const lv of LEVELS) {
   const st: Stat = {
     wins: 0, floors: 0, answers: 0, right: 0, runs: 0, draws: 0,
     deck: 0, kinds: 0, battles: 0, turns: 0, powers: 0,
-    misses: 0, basics: 0, free: 0, freeSA: 0,
+    misses: 0, basics: 0,
   };
   for (let i = 0; i < RUNS; i++) runOne(lv.p, st);
   const win = (st.wins / st.runs) * 100;
@@ -450,7 +421,6 @@ for (const lv of LEVELS) {
     turns: st.turns / Math.max(1, st.battles), battles: st.battles / st.runs,
     powers: st.powers / st.runs,
     misses: st.misses / st.runs, basics: st.basics / st.runs,
-    free: st.free / st.runs, freeSA: st.freeSA / st.runs,
   });
   console.log(fmt([
     lv.name,
@@ -469,10 +439,6 @@ if (mid) {
   console.log('');
   console.log(`构筑：熟练结局 ${mid.deck.toFixed(1)} 张 / ${mid.kinds.toFixed(1)} 种`);
   console.log(`节奏：${mid.battles.toFixed(1)} 场 × ${mid.turns.toFixed(1)} 回合`);
-  // 答题要求 ≥2 的免答是"通关率杠杆"，但它要在一场之内攒 2/3 次才兑现：场次太短就等于没有。
-  // 这一行就是为了让这件事可测：`freeSA` 接近 0 说明杠杆是空的。
-  console.log(`免答：${mid.free.toFixed(1)} 次/局（其中答题要求 ≥2 的 ${mid.freeSA.toFixed(1)} 次`
-    + `，每场 ${(mid.free / Math.max(0.01, mid.battles)).toFixed(2)} 次）`);
   console.log(`初始牌组：一局打出 ${mid.basics.toFixed(1)} 张基础牌`
     + `　·　一局拿到 ${mid.powers.toFixed(1)} 个增益`);
   console.log(`答错：${mid.misses.toFixed(1)} 次/局（这一手作废、牌进弃牌堆）`);
@@ -529,14 +495,6 @@ if (gap < gapNeed) {
 if (RUNS < 800) {
   console.log(`· ${RUNS} 局只够分辨"有没有变好"，不足以分辨具体差几个点；`
     + '验收断言是按默认 800 局标定的');
-}
-// 高答题要求的免答"兑现率"也要守：答题要求 ≥2 的牌低于 0.2 次/局，
-// 说明一场战斗短到根本攒不满（一场 2.0 回合时是 0.1；精英 / Boss 加厚之后是 0.7）。
-// 门槛写在 AGENTS 里，但只有断言能拦住回归：否则它只是文档里的一句话。
-if (RUNS >= 400 && mid && mid.freeSA < 0.2) {
-  violated = true;
-  console.log(`✗ 答题要求 ≥2 的免答只有 ${mid.freeSA.toFixed(2)} 次/局（要求 ≥0.20）：`
-    + '高答题要求的牌在空转。先看「节奏」那行的回合数 —— 一场打不到 3 回合，2/3 次就攒不满');
 }
 console.log(violated
   ? '✗ 验收失败：水平更高没有赢更多'

@@ -1,19 +1,10 @@
-/**
- * 每个主题一份记忆文档：**这个主题已经出过什么、玩家在哪些知识点上栽跟头**。
- *
- * 为什么要单独存一份、而不是每次从题库现场统计：题库是生成物，会被整份重写；
- * 记忆必须活得比题库长。玩家在 `algo/binary-worst` 上连错五次这件事，
- * 重写题库时不能丢 —— 丢了就等于每轮重新开始猜"他哪里不会"。
- *
- * 两份记忆各管一段，不许混：
- *   - 这里是**服务侧**主题记忆（本机文件），记录知识点、答题战绩与已消费事件；
- *   - 玩家浏览器保留掌握统计与未确认的答题事件（`library/stagemem.ts`）；
- *   - 服务端按题号保存流水，再由生成器通过 `mergeSnapshot()` 消费。
- */
+/** 服务侧主题记忆由原文索引、题目目录和学习进度组成，生成时按主题组合读取。 */
 import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { BAL } from '../../src/core/model/data';
 import type { Question } from '../../src/core/model/types';
+import type { GenQuestion } from './emit';
 import { headingsOf, sliceLines } from './chunk';
 import { pageRange, type Plan, type PlanTopic } from './plan';
 
@@ -47,20 +38,27 @@ export interface KnowledgeMem {
 
 interface QuestionStats { ok: number; bad: number; attempts: number[] }
 
-export interface TopicMem {
-  v: typeof MEM_V;
+interface TopicSourceIndex {
   topicId: string;
   topic: string;
-  /** 这份记忆对应的源文档，换书时能看出记忆属于哪本。 */
   source: string;
-  knowledge: Record<string, KnowledgeMem>;
-  cursor: number;
-  stats: Record<string, QuestionStats>;
-  /** 章节标题与文件 ID；PDF 同时保留物理页码。 */
+  /** 章节标题与文件 ID，PDF 同时保留物理页码。 */
   sections?: SourceSection[];
 }
 
-export const MEM_V = 6;
+interface TopicQuestionCatalog { knowledge: Record<string, KnowledgeMem> }
+
+interface TopicLearningProgress {
+  cursor: number;
+  stats: Record<string, QuestionStats>;
+}
+
+export interface TopicMem extends TopicSourceIndex, TopicQuestionCatalog, TopicLearningProgress {
+  v: typeof MEM_V;
+}
+
+export const MEM_V = 7;
+const LEGACY_MEM_V = 6;
 
 /** 玩家导出的快照里，这一段和 `library/stagemem.ts` 的 `StudySnapshot` 对齐。 */
 export type StudySnapshot = {
@@ -71,12 +69,42 @@ export type StudySnapshot = {
   topicId: string;
   after: number;
   through: number;
-  records: Array<{ seq: number; type: 'answer' | 'reset'; qid: string; right?: boolean | 0 | 1; choice?: number }>;
+  records: Array<{ seq: number; type: 'answer' | 'reset'; qid: string; right?: boolean | 0 | 1; choice?: number | null }>;
 };
 
-export function memFile(dir: string, topicId: string): string {
+type MemoryPart = 'source' | 'questions' | 'progress';
+
+function memoryPath(dir: string, topicId: string, part?: MemoryPart): string {
   if (!/^t_[a-f0-9]{24}$/.test(topicId)) throw new Error(`Invalid topic ID: ${topicId}`);
-  return join(dir, `${topicId}.json`);
+  return resolve(dir, part ? `${topicId}.${part}.json` : `${topicId}.json`);
+}
+
+function readMemoryFile<T>(file: string, topicId: string, version: number): T | undefined {
+  if (!existsSync(file)) return undefined;
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  if (raw?.v !== version || raw.topicId !== topicId) throw new Error(`Invalid topic memory: ${file}`);
+  return raw as T;
+}
+
+function memoryFile(dir: string, topicId: string, part: MemoryPart, data: object) {
+  return {
+    target: memoryPath(dir, topicId, part),
+    content: JSON.stringify({ v: MEM_V, topicId, ...data }, null, 2) + '\n',
+  };
+}
+
+export function sourceIndexFile(dir: string, { topicId, topic, source, sections }: TopicSourceIndex) {
+  return memoryFile(dir, topicId, 'source', { topic, source, sections });
+}
+
+/** 暂存新建或发生变化的组件，与题库一起提交。缺少的组件在此时从旧格式迁移。 */
+export function changedTopicMemFiles(dir: string, mem: TopicMem) {
+  const { topicId, knowledge, cursor, stats } = mem;
+  return [
+    sourceIndexFile(dir, mem),
+    memoryFile(dir, topicId, 'questions', { knowledge }),
+    memoryFile(dir, topicId, 'progress', { cursor, stats }),
+  ].filter(({ target, content }) => !existsSync(target) || readFileSync(target, 'utf8') !== content);
 }
 
 export function newTopicMem(topic: string, source: string, topicId = `t_${createHash('sha256').update(`${source}\0${topic}`).digest('hex').slice(0, 24)}`): TopicMem {
@@ -84,11 +112,20 @@ export function newTopicMem(topic: string, source: string, topicId = `t_${create
 }
 
 export function readTopicMem(dir: string, topic: string, source: string, topicId: string): TopicMem {
-  const file = memFile(dir, topicId);
-  if (!existsSync(file)) return newTopicMem(topic, source, topicId);
-  const raw = JSON.parse(readFileSync(file, 'utf8')) as TopicMem;
-  if (raw.v !== MEM_V || raw.topicId !== topicId) throw new Error(`Invalid topic memory: ${topicId}`);
-  return { ...raw, topic, source };
+  const index = readMemoryFile<TopicSourceIndex>(memoryPath(dir, topicId, 'source'), topicId, MEM_V);
+  const catalog = readMemoryFile<TopicQuestionCatalog>(memoryPath(dir, topicId, 'questions'), topicId, MEM_V);
+  const progress = readMemoryFile<TopicLearningProgress>(memoryPath(dir, topicId, 'progress'), topicId, MEM_V);
+  // 重新划分可以先于出题迁移索引，逐个组件回退到 v6。
+  const legacy = index && catalog && progress ? undefined : readMemoryFile<Omit<TopicMem, 'v'>>(
+    memoryPath(dir, topicId), topicId, LEGACY_MEM_V,
+  );
+  return {
+    ...newTopicMem(topic, source, topicId),
+    sections: (index ?? legacy)?.sections,
+    knowledge: (catalog ?? legacy)?.knowledge ?? {},
+    cursor: (progress ?? legacy)?.cursor ?? 0,
+    stats: (progress ?? legacy)?.stats ?? {},
+  };
 }
 
 /** 从题库回补旧题的选项；题库 DSL 不含证据，不覆盖未变化题目的记忆。 */
@@ -185,85 +222,139 @@ export function readMemorySection(mem: TopicMem, directory: string, id: string):
   return existsSync(file) ? readFileSync(file, 'utf8') : null;
 }
 
-/** A reset is a change to one question, never subtraction from a shared counter. */
+/** 追加同一主题的流水。整批通过校验后才更新统计和游标。 */
 export function mergeSnapshot(
   mem: TopicMem,
   snapshot: StudySnapshot,
   knowledgeIdByQid: Record<string, string>,
 ): { merged: number; orphan: number } {
+  const questionKnowledge = new Map(Object.entries(knowledgeIdByQid));
+  for (const [id, knowledge] of Object.entries(mem.knowledge)) {
+    for (const qid of Object.keys(knowledge.questions)) questionKnowledge.set(qid, id);
+  }
   let orphan = 0;
   const touched = new Set<string>();
   const accept = (qid: string) => {
-    const id = knowledgeIdByQid[qid];
+    const id = questionKnowledge.get(qid);
     if (!id) { orphan++; return false; }
     touched.add(id);
     return true;
   };
   if (snapshot.v === 3) {
-    if (snapshot.topicId !== mem.topicId || snapshot.through < snapshot.after) throw new Error('Invalid feedback scope');
+    if (snapshot.topicId !== mem.topicId || !Number.isSafeInteger(snapshot.after) || snapshot.after < 0
+        || !Number.isSafeInteger(snapshot.through) || snapshot.through < snapshot.after) {
+      throw new Error('Invalid feedback scope');
+    }
     if (snapshot.through <= mem.cursor) return { merged: 0, orphan: 0 };
     if (snapshot.after !== mem.cursor) throw new Error('Feedback does not follow the committed cursor');
+
+    let cursor = mem.cursor;
+    const updates = new Map<string, QuestionStats | null>();
     for (const row of snapshot.records) {
-      if (row.seq <= mem.cursor || row.seq > snapshot.through) throw new Error('Invalid feedback order');
-      mem.cursor = row.seq;
+      if (!Number.isSafeInteger(row.seq) || row.seq <= cursor || row.seq > snapshot.through) throw new Error('Invalid feedback order');
+      if (!row.qid || (row.type !== 'answer' && row.type !== 'reset')) throw new Error('Invalid feedback event');
+      const validRight = row.right === true || row.right === false || row.right === 0 || row.right === 1;
+      const validChoice = row.choice == null || (Number.isInteger(row.choice) && row.choice >= 1 && row.choice <= 4);
+      if (row.type === 'answer' && (!validRight || !validChoice)) {
+        throw new Error('Invalid feedback answer');
+      }
+      cursor = row.seq;
       if (!accept(row.qid)) continue;
-      if (row.type === 'reset') { delete mem.stats[row.qid]; continue; }
-      const stat = (mem.stats[row.qid] ??= { ok: 0, bad: 0, attempts: [] });
+      if (row.type === 'reset') { updates.set(row.qid, null); continue; }
+      let stat = updates.get(row.qid);
+      if (!stat) {
+        const old = stat === undefined && Object.hasOwn(mem.stats, row.qid) ? mem.stats[row.qid] : undefined;
+        stat = old ? { ...old, attempts: old.attempts.slice() } : { ok: 0, bad: 0, attempts: [] };
+        updates.set(row.qid, stat);
+      }
       stat[row.right ? 'ok' : 'bad']++;
       if (row.choice != null) stat.attempts.push(row.choice);
     }
-    if (mem.cursor !== snapshot.through) throw new Error('Incomplete feedback');
+    if (cursor !== snapshot.through) throw new Error('Incomplete feedback');
+    const entries = new Map(Object.entries(mem.stats));
+    for (const [qid, stat] of updates) {
+      if (stat) entries.set(qid, stat);
+      else entries.delete(qid);
+    }
+    mem.stats = Object.fromEntries(entries);
+    mem.cursor = cursor;
   } else if (snapshot.v === 2) {
     const questions = snapshot.topics[mem.topicId]?.q;
     if (questions) {
-      mem.stats = {};
-      for (const [qid, stat] of Object.entries(questions)) if (accept(qid)) {
-        mem.stats[qid] = { ok: stat.ok, bad: stat.bad, attempts: stat.attempts?.slice() ?? [] };
-      }
+      mem.stats = Object.fromEntries(Object.entries(questions).filter(([qid]) => accept(qid)).map(([qid, stat]) =>
+        [qid, { ok: stat.ok, bad: stat.bad, attempts: stat.attempts?.slice() ?? [] }]));
     }
   } else throw new Error('Unsupported feedback version');
   return { merged: touched.size, orphan };
 }
 
-function tally(mem: TopicMem, c: KnowledgeMem) {
-  let ok = 0, bad = 0;
-  for (const qid of Object.keys(c.questions)) {
-    ok += mem.stats[qid]?.ok ?? 0;
-    bad += mem.stats[qid]?.bad ?? 0;
+/** 审核通过的新题追加到原知识点。重复提交同一题号时保留原记录。 */
+export function recordApprovedQuestions(mem: TopicMem, questions: readonly GenQuestion[]): void {
+  for (const q of questions) {
+    const knowledge = (mem.knowledge[q.knowledgeId] ??= {
+      label: q.knowledgeLabel ?? q.knowledgeId, stem: q.stem, gen: 0, questions: {},
+    });
+    if (Object.hasOwn(knowledge.questions, q.qid)) continue;
+    knowledge.questions[q.qid] = { stem: q.stem, options: q.options.slice(), answer: q.answer, sectionIds: q.sectionIds?.slice() };
+    knowledge.stem = q.stem;
+    knowledge.gen++;
   }
-  return { ok, bad };
 }
 
-function isWeak(c: KnowledgeMem, { ok, bad }: ReturnType<typeof tally>): boolean {
-  return c.gen === 0 || bad >= 2 || (ok + bad > 0 && bad * 2 >= ok + bad);
+export type LearningState = 'unanswered' | 'learning' | 'review' | 'mastered';
+
+/** 状态随逐题作答实时推导。题量和历史汇总无需重复落盘。 */
+export function knowledgeProgress(mem: TopicMem) {
+  return Object.entries(mem.knowledge).map(([id, knowledge]) => {
+    let ok = 0, bad = 0;
+    for (const qid of Object.keys(knowledge.questions)) {
+      ok += mem.stats[qid]?.ok ?? 0;
+      bad += mem.stats[qid]?.bad ?? 0;
+    }
+    const state: LearningState = ok + bad === 0 ? 'unanswered'
+      : bad > 0 && (ok < BAL.retireAt || bad >= ok) ? 'review'
+      : ok >= BAL.retireAt ? 'mastered' : 'learning';
+    return { id, knowledge, ok, bad, state };
+  });
 }
 
-/** 注入给模型的那段文字：它读得懂的、只讲事实的一小段。 */
-export function memText(mem: TopicMem, limit = 40): string {
-  const entries = Object.entries(mem.knowledge);
-  if (!entries.length) return `（主题「${mem.topic}」还没有出过题，这是第一轮。）`;
+const CONTEXT_LIMIT = 40;
+const RECENT_CHOICES = 8;
+const REVIEW_EXAMPLES = 2;
 
-  const weak = entries.filter(([, c]) => isWeak(c, tally(mem, c)));
-  const show = (list: [string, KnowledgeMem][]) =>
-    list.slice(0, limit).map(([id, c]) => {
-      const { ok, bad } = tally(mem, c);
-      const stat = ok + bad ? `玩家 ${ok} 对 ${bad} 错` : '还没有玩家数据';
-      const choices = Object.entries(c.questions).flatMap(([qid, question]) => {
-        const seq = mem.stats[qid]?.attempts;
-        if (!seq?.length) return [];
-        const options = question?.options.map((option, index) => `${index + 1}=${option}`).join('；');
-        const answer = question ? `；正确选项 ${question.answer + 1}` : '';
-        return [`${qid}: [${seq.join(',')}]${options ? `（${options}${answer}）` : ''}`];
-      }).join('；');
-      return `- ${c.label} [${id}]｜${c.stem.slice(0, 40)}｜出过 ${c.gen} 次｜${stat}${choices ? `｜原题选项选择顺序（1-based）${choices}` : ''}`;
-    }).join('\n');
+export function memText(mem: TopicMem, per = CONTEXT_LIMIT): string {
+  const progress = knowledgeProgress(mem);
+  if (!progress.length) return `（主题「${mem.topic}」还没有出过题，这是第一轮。）`;
 
-  const out = [`主题「${mem.topic}」已覆盖 ${entries.length} 个知识点。`];
-  if (weak.length) {
-    out.push('', `这 ${weak.length} 个知识点要重出或换问法（错得多，或者从没出过）：`, show(weak));
+  const priority = progress.filter(row => row.state === 'review')
+    .sort((a, b) => b.bad - a.bad || a.ok - b.ok || a.id.localeCompare(b.id));
+  const targets = priority.slice(0, per);
+  const out = [`主题「${mem.topic}」已有 ${progress.length} 个知识点。`];
+  if (targets.length) {
+    out.push('', `本轮优先复练 ${targets.length} 个知识点（共 ${priority.length} 个待复练）：`);
+    for (const { id, knowledge, ok, bad } of targets) {
+      const choices = Object.entries(knowledge.questions)
+        .filter(([qid]) => mem.stats[qid]?.bad > 0 && mem.stats[qid].attempts.length > 0)
+        .sort(([a], [b]) => mem.stats[b].bad - mem.stats[a].bad || a.localeCompare(b))
+        .slice(0, REVIEW_EXAMPLES)
+        .map(([qid, question]) => {
+          const seq = mem.stats[qid].attempts.slice(-RECENT_CHOICES);
+          const options = question.options.map((option, index) => `${index + 1}=${option.slice(0, 120)}`).join('；');
+          return `${qid}: [${seq.join(',')}]（${options}；正确选项 ${question.answer + 1}）`;
+        });
+      out.push(`- ${knowledge.label} [${id}]｜${knowledge.stem.slice(0, 120)}｜玩家 ${ok} 对 ${bad} 错`
+        + (choices.length ? `｜原题选项选择顺序（1-based，最近 ${RECENT_CHOICES} 次）${choices.join('；')}` : ''));
+    }
   }
-  const solid = entries.filter(([, c]) => !isWeak(c, tally(mem, c)));
-  if (solid.length) out.push('', '这些已经稳了，除非要补新角度，不要重复出：', show(solid));
+  const otherGroups = [
+    ['其余待复练', priority.slice(targets.length)],
+    ['待作答', progress.filter(row => row.state === 'unanswered')],
+    ['学习中', progress.filter(row => row.state === 'learning')],
+    ['已掌握', progress.filter(row => row.state === 'mastered')],
+  ] as const;
+  for (const [label, group] of otherGroups) {
+    if (group.length) out.push(`${label}（${group.length}）：${group.slice(0, CONTEXT_LIMIT).map(row => row.knowledge.label).join('、')}`);
+  }
   return out.join('\n');
 }
 
