@@ -6,6 +6,7 @@ node_modules/
 .shots/
 .cache/
 dist/
+/release/
 # 本地模型配置
 /.env
 /.env.*

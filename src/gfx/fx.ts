@@ -3,6 +3,7 @@ import { C, font, FONT_NUM, PRESS, PRINT, withAlpha } from './theme';
 import { roll } from '../core/infra/util';
 import { drawArtIcon } from './art/icons';
 import { reduceMotion } from './motion';
+import { playBattleSound } from './battle-audio';
 
 /**
  * 表现层的"后果"。逻辑层只发事件，怎么演由这里决定：
@@ -240,8 +241,7 @@ export function heroBlock(at: Vec, n: number, showFx: boolean) {
 }
 
 /**
- * 一次打击。dmg 只用于飘字，敌人的血量在逻辑层已经扣过了：
- * 这里绝不碰任何数值，只负责让这一下"看得见"。
+ * 一次打击。dmg 只用于命中反馈，血量在逻辑层已经扣过了。
  */
 export function attack(o: {
   from: Vec;
@@ -283,6 +283,7 @@ export function attack(o: {
 
 /** 答错的那一手：不朝敌人飞任何东西，反馈只落在出手的地方。 */
 export function fizzle(o: { at: () => Vec; color?: string }) {
+  playBattleSound('fizzle');
   const p = o.at();
   const col = o.color ?? C.red;
   // 亮屑只窜起来一点就熄：力量没能离开手
@@ -306,8 +307,13 @@ function bezPath(s: Strike, u: number): Vec {
 
 function land(s: Strike) {
   const { x, y } = s.b;
+  const stopped = s.target === 'hero' ? s.blocked : s.absorbed > 0 && s.dmg === 0;
+  // Sound follows the player: enemy attacks are silent until they actually
+  // hurt the hero or hit the hero's shield. Hits on the enemy are visual only.
+  if (s.target === 'hero' && (stopped || s.dmg > 0)) {
+    playBattleSound(stopped ? 'block' : 'hurt', stopped ? s.absorbed : s.dmg, s.seq);
+  }
   if (s.target === 'enemy') {
-    const stopped = s.absorbed > 0 && s.dmg === 0;
     if (s.absorbed > 0) {
       enemyGuardT = 0.07;
       shieldPrint(x, y, 132);
@@ -342,7 +348,7 @@ function land(s: Strike) {
     star(x, y, C.red);
     flash(C.red, 0.15);
     shake(18);
-    floatText(x, y - 40, `-${s.dmg}`, '#ff9a92', 62, { vy: -90 });
+    floatText(x, y - 40, `-${Math.max(1, s.dmg)}`, '#ff9a92', 62, { vy: -90 });
   }
 }
 
@@ -428,7 +434,7 @@ export function enemyStrike(o: {
     to: { x: o.to.x + (blocked ? 58 : 0) + (Math.random() - 0.5) * 30, y: o.to.y - 10 },
     color: blocked ? PRINT.ward : PRINT.cord,
     kind: 'strike',
-    dmg: Math.max(1, o.n),
+    dmg: o.n,
     absorbed: o.absorbed,
     target: 'hero',
     seq: o.seq,
@@ -500,8 +506,15 @@ export function update(dt: number) {
   }
   for (let i = strikes.length - 1; i >= 0; i--) {
     const s = strikes[i];
+    const before = s.t;
     s.t += dt;
     if (s.follow && !s.landed) s.a = s.follow();
+    // The sound belongs to the player's forward thrust, not the enemy contact.
+    const thrustAt = s.fly - 0.075;
+    if (s.target === 'enemy' && before < thrustAt && s.t >= thrustAt
+        && (s.dmg > 0 || s.absorbed > 0)) {
+      playBattleSound('thrust', s.dmg + s.absorbed, s.seq);
+    }
     if (!s.landed && s.t >= s.fly) { s.landed = true; land(s); }
     if (s.t > s.fly + 0.26) strikes.splice(i, 1);
   }

@@ -3,7 +3,7 @@
  * 无有效回复不放行，但不视为模型拒绝。
  */
 import type { GenQuestion } from './emit';
-import { LlmRequestError, type Llm } from './llm';
+import { LlmRequestError, modelFailureCode, type Llm } from './llm';
 import { traced } from './trace';
 
 export type ReviewResult = { qid: string } & (
@@ -68,7 +68,10 @@ export async function reviewQuestions(
       results[index] = await traced('question.review', { qid: question.qid, sectionIds: question.sources.map((source) => source.sectionId) },
         async (finish) => {
           const result = await reviewQuestion(llm, question);
-          finish(result.verdict, 'issue' in result ? { issue: result.issue } : {});
+          const failure = result.verdict === 'pending' && result.issue === 'request-failed'
+            ? result.attempts?.at(-1) : undefined;
+          finish(result.verdict, 'issue' in result
+            ? { issue: result.issue, failureCode: failure ? modelFailureCode(failure) : 'review-pending' } : {});
           return result;
         });
       onProgress?.(++completed);

@@ -160,11 +160,12 @@ export function openCardPick(mode: 'up' | 'rm', from?: CardPickFrom): boolean {
  * 这一步只换面板状态，不碰牌组 —— 玩家看到的是「选了会变成什么样」，
  * 还没决定。取消就退回列表，牌组一位没动。
  */
-export function previewUpgrade(i: number) {
+export function previewUpgrade(i: number): boolean {
   const id = G.deck[i];
   const p = G.panel;
-  if (!id || isUpgraded(id) || p.k !== 'cardpick') return;
+  if (!id || isUpgraded(id) || p.k !== 'cardpick') return false;
   G.panel = { ...p, pick: i };
+  return true;
 }
 
 /** 从预览退回列表。和取消整个面板不同：代价还没收，牌组也没动。 */
@@ -185,14 +186,15 @@ export function upgradeCard(i: number) {
   finishNode();
 }
 
-export function forgetCard(i: number) {
+export function forgetCard(i: number): boolean {
   const id = G.deck[i];
-  if (!id) return;
+  if (!id) return false;
   // 少于 5 张时每回合重复抽同一批牌
-  if (G.deck.length <= 4) { finishNode(); return; }
+  if (G.deck.length <= 4) { finishNode(); return false; }
   G.deck.splice(i, 1);
   notePending(settlePendingCost());
   finishNode();
+  return true;
 }
 
 export const EVENTS: EventDef[] = [

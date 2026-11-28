@@ -21,7 +21,7 @@ import type { Plan } from './plan';
 import { appendPack, emitPack, checkPack, knowledgeIdByQid } from './emit';
 import type { GenTopic } from './emit';
 import { generateTopic } from './generate';
-import { configFromEnv, openAiLlm, reviewConfigFromEnv } from './llm';
+import { configFromEnv, LlmRequestError, modelFailureCode, openAiLlm, reviewConfigFromEnv } from './llm';
 import { reviewQuestions } from './review';
 import { traceIdentity, traced, tracedSync } from './trace';
 import {
@@ -33,6 +33,10 @@ import { parseQuestionBank } from '../../src/core/library/parse';
 import { atomicWrite, commitFiles } from './files';
 
 function checkpointPath(outPath: string): string { return `${outPath}.checkpoint.json`; }
+
+function reportFailure(stage: 'generate' | 'review' | 'commit', code: string) {
+  console.log('@@failure ' + JSON.stringify({ stage, code }));
+}
 
 interface Opts {
   src: string;
@@ -228,6 +232,7 @@ async function main(): Promise<void> {
   let mergedAll = 0;
   let orphanAll = 0;
   let candidateCount = 0;
+  const reviewFailureCodes = new Set<string>();
   console.log('@@progress ' + JSON.stringify({ phase: 'topics', completed: completed.size, total: jobs.length, label: '按主题生成题目' }));
 
   for (let index = 0; index < jobs.length; index += 1) {
@@ -288,9 +293,15 @@ async function main(): Promise<void> {
     };
 
     const r = await traced('topic.generate', { topicId }, async (finish) => {
-      const result = await generateTopic(job, llm);
-      finish(result.questions.length ? 'ok' : 'empty', { rounds: result.rounds, candidates: result.questions.length, dropped: result.dropped.length });
-      return result;
+      try {
+        const result = await generateTopic(job, llm);
+        finish(result.questions.length ? 'ok' : 'empty', { rounds: result.rounds, candidates: result.questions.length, dropped: result.dropped.length });
+        return result;
+      } catch (error) {
+        const failure = error instanceof LlmRequestError ? error.failures.at(-1) : undefined;
+        if (failure) reportFailure('generate', modelFailureCode(failure));
+        throw error;
+      }
     });
     const candidates = r.questions.filter((q) => !oldQids.has(q.qid));
     candidateCount += candidates.length;
@@ -309,6 +320,11 @@ async function main(): Promise<void> {
     const fresh = reviewed.filter((r) => r.verdict === 'pass').map(({ question }) => question);
     const rejected = reviewed.filter((r) => r.verdict === 'reject').length;
     const awaiting = reviewed.length - fresh.length - rejected;
+    for (const verdict of verdicts) {
+      if (verdict.verdict !== 'pending') continue;
+      const failure = verdict.issue === 'request-failed' ? verdict.attempts?.at(-1) : undefined;
+      reviewFailureCodes.add(failure ? modelFailureCode(failure) : 'review-pending');
+    }
     if (reviewed.length) activity({ kind: 'reviewed', passed: fresh.length, rejected, pending: awaiting, active: false });
     const report = resolve(opts.memory, 'reviews', reviewRun, `${topicId}.json`);
     tracedSync('review.report', { topicId, reviewRun }, () => atomicWrite(report, JSON.stringify({
@@ -344,6 +360,10 @@ async function main(): Promise<void> {
   const newCount = results.reduce((n, t) => n + t.questions.length, 0);
   if (!newCount) {
     tracedSync('bank.commit', { candidates: candidateCount }, (finish) => finish('skipped', { written: 0 }));
+    if (candidateCount) {
+      reportFailure('review', reviewFailureCodes.size === 1 ? [...reviewFailureCodes][0]!
+        : reviewFailureCodes.size ? 'review-pending' : 'rejected');
+    } else reportFailure('generate', 'no-candidates');
     // 整轮已跑完，清掉空检查点，避免下次原样恢复一个没有新题的结果。
     unlinkSync(checkpoint);
     console.error(candidateCount
@@ -359,6 +379,7 @@ async function main(): Promise<void> {
   const check = checkPack(pack);
   if (!check.ok) {
     tracedSync('bank.commit', {}, (finish) => finish('invalid-bank', { written: 0, issues: check.issues.length }));
+    reportFailure('commit', 'invalid-bank');
     console.error(`\n✗ 生成的题库没通过游戏自己的解析器（${check.issues.length} 处），没有写入：`);
     for (const i of check.issues.slice(0, 10)) console.error(`  ${i}`);
     process.exitCode = 1;

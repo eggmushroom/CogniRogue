@@ -77,9 +77,31 @@ function providerCode(error?: ProviderError): string | undefined {
 
 function httpFailure(status: number, body: string): AttemptDetails {
   let error: ProviderError | undefined;
-  try { error = (JSON.parse(body) as ModelFrame | null)?.error; } catch { /* plain-text gateway error */ }
+  try {
+    const data = JSON.parse(body) as (ModelFrame & ProviderError) | null;
+    error = data?.error ?? data ?? undefined;
+  } catch { /* plain-text gateway error */ }
   const message = typeof error?.message === 'string' ? error.message : body;
   return { kind: 'http', message: message || `HTTP ${status}`, code: providerCode(error) };
+}
+
+/** Map provider details to a stable, non-sensitive code for job diagnostics. */
+export function modelFailureCode(failure: AttemptFailure): string {
+  if (/insufficient[_ ](?:account[_ ])?(?:balance|quota)|余额不足/i.test(failure.code ?? '')
+      || /insufficient\s+(?:account\s+)?(?:balance|quota)|余额不足/i.test(failure.message)) return 'balance';
+  if (failure.status === 401 || /invalid_api_key/i.test(failure.code ?? '')) return 'auth';
+  if (failure.status === 403) return 'forbidden';
+  if (failure.status === 429) return 'rate-limit';
+  if (failure.kind === 'timeout' || failure.status === 408) return 'timeout';
+  if (failure.status !== undefined && failure.status >= 500) return 'unavailable';
+  if (failure.kind === 'network') return 'network';
+  return 'invalid-response';
+}
+
+class ModelHttpError extends Error {
+  constructor(readonly status: number, readonly failure: AttemptDetails) {
+    super(failure.message);
+  }
 }
 
 function thrownFailure(error: unknown, signal: AbortSignal, reading: boolean): AttemptDetails {
@@ -235,7 +257,7 @@ export function openAiLlm(cfg: LlmConfig): Llm {
         continue;
       }
       observation.finish('error', undefined, 'http');
-      throw new Error(`模型工具调用失败（HTTP ${response.status}）：${body}`);
+      throw new ModelHttpError(response.status, httpFailure(response.status, body));
     }
 
     if (!response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -266,15 +288,14 @@ export function openAiLlm(cfg: LlmConfig): Llm {
         const raw = error instanceof Error ? error.message : '未知模型请求错误';
         const codeValue = err?.cause?.code ?? err?.code;
         const code = typeof codeValue === 'string' ? codeValue : undefined;
-        const status = /HTTP (\d{3})/.exec(raw)?.[1];
-        const httpStatus = status ? Number(status) : undefined;
+        const httpStatus = error instanceof ModelHttpError ? error.status : undefined;
         const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
           || /aborted due to timeout|timed out|请求超时/i.test(raw) || /^UND_ERR_.*TIMEOUT$/.test(code ?? '');
-        const failure: AttemptDetails = timedOut
+        const failure: AttemptDetails = error instanceof ModelHttpError
+          ? error.failure
+          : timedOut
           ? { kind: 'timeout', message: '模型工具调用超时', ...(code ? { code } : {}) }
-          : httpStatus !== undefined
-            ? httpFailure(httpStatus, raw)
-            : error instanceof ProviderReplyError
+          : error instanceof ProviderReplyError
               ? { kind: 'provider', message: raw, ...(error.code ? { code: error.code } : {}) }
               : error instanceof TypeError || code === 'ECONNRESET' || code === 'UND_ERR_SOCKET'
                 ? { kind: 'network', message: raw, ...(code ? { code } : {}) }

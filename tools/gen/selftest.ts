@@ -22,7 +22,7 @@ import { parseQuestionBank } from '../../src/core/library/parse';
 import { sendAnswers, serviceBase, setServiceBase } from '../../src/core/library/remote';
 import { tickJobs, watchJob } from '../../src/scenes/jobstate';
 import { generateTopic } from './generate';
-import { openAiLlm, reviewConfigFromEnv, type Llm } from './llm';
+import { LlmRequestError, modelFailureCode, openAiLlm, reviewConfigFromEnv, type Llm } from './llm';
 import { parseReviewReply, reviewQuestion, reviewQuestions } from './review';
 import { changedTopicMemFiles, readTopicMem, sourceIndexFile } from './memory';
 import { indexTopicMemory, knowledgeProgress, memText, mergeSnapshot, newTopicMem, readMemorySection, recordApprovedQuestions, sourceIndexText, sourceSectionId, syncBankQuestions, topicIdOf } from './memory';
@@ -169,6 +169,23 @@ ok(unavailable.verdict === 'pending' && unavailable.issue === 'request-failed', 
     try { await openAiLlm(cfg).tool!('system', [{ role: 'user', content: 'read' }], []); }
     catch (err) { error = err instanceof Error ? err.message : String(err); }
     ok(calls === 2 && error.includes('timeout') && error.includes('2 次请求'), 'JIT 工具调用超时会有限重试并报告尝试次数');
+
+    calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return Response.json({ code: 'INSUFFICIENT_BALANCE', message: 'Insufficient account balance' }, { status: 403 });
+    };
+    let balance = '';
+    try { await openAiLlm(cfg).tool!('system', [], []); }
+    catch (err) {
+      if (err instanceof LlmRequestError && err.failures[0]) balance = modelFailureCode(err.failures[0]);
+    }
+    const review = await reviewQuestion(openAiLlm(cfg), {
+      qid: 'balance', stem: 'Question?', options: ['A', 'B'], answer: 0, explain: '', sources: [],
+    });
+    const reviewFailure = review.verdict === 'pending' && review.issue === 'request-failed' && review.attempts?.[0];
+    ok(calls === 2 && balance === 'balance' && !!reviewFailure && modelFailureCode(reviewFailure) === 'balance',
+      '出题工具和审核请求都能识别余额不足，且各自只发出一次请求');
   } finally {
     globalThis.fetch = fetch;
   }

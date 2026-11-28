@@ -2,7 +2,8 @@ import { G, panelOf } from '../core/infra';
 import {
   activeBankId, readBank, refreshRemoteBanks, removeServiceBank, useBank, type BankRow,
 } from '../core/library';
-import { importRemoteBank } from '../core/library/remote';
+import { importRemoteBank, remoteQuestionSource, remoteSourceSection } from '../core/library/remote';
+import type { BankPage, Question } from '../core/model';
 import { pickFile } from './filepick';
 
 /**
@@ -63,9 +64,48 @@ export function openBankTopic(topic: string) {
   if (p?.page && !p.loading) G.panel = { ...p, page: { ...p.page, topic } };
 }
 
+export function closeQuestionSource(page: BankPage) {
+  if (panelOf('pack')?.page === page) {
+    page.questionSource = undefined;
+    page.sourceReader = undefined;
+  }
+}
+
+export async function openQuestionSource(page: BankPage, q: Question, fromDocument: boolean) {
+  if (panelOf('pack')?.page !== page || page.question !== q.qid) return;
+  if (!fromDocument || !/^t_[a-f0-9]{24}$/.test(q.topic)) {
+    page.questionSource = { qid: q.qid, state: 'empty' };
+    return;
+  }
+  const pending = page.questionSource = { qid: q.qid, state: 'loading' };
+  const source = await remoteQuestionSource(page.bankId, q.topic, q.qid);
+  if (panelOf('pack')?.page !== page || page.questionSource !== pending) return;
+  page.questionSource = source
+    ? { qid: q.qid, state: 'ready', source }
+    : { qid: q.qid, state: source === null ? 'empty' : 'error' };
+}
+
+export async function openSourceSection(page: BankPage, id: string) {
+  if (panelOf('pack')?.page !== page || !page.topic || !page.question) return;
+  const evidence = page.questionSource;
+  if (evidence?.state !== 'ready' || evidence.qid !== page.question) return;
+  const cited = evidence.source.sections.find((section) => section.id === id);
+  if (!cited) return;
+  const target = { id, title: cited.title, documentName: evidence.source.documentName };
+  const pending = page.sourceReader = { ...target, state: 'loading' };
+  const section = await remoteSourceSection(page.bankId, page.topic, page.question, id);
+  if (panelOf('pack')?.page !== page || page.sourceReader !== pending) return;
+  page.sourceReader = section ? { ...target, section, state: 'ready' }
+    : { ...target, state: section === null ? 'empty' : 'error' };
+}
+
 export function backInLibrary() {
   const page = panelOf('pack')?.page;
   if (!page) return;
+  if (page.sourceReader) {
+    page.sourceReader = undefined;
+    return;
+  }
   const { bankId, bank, topic } = page;
   G.panel = { k: 'pack', ok: true, msg: '', page: topic ? { bankId, bank, lastTopic: topic } : undefined };
 }

@@ -3,7 +3,7 @@ import type { CardId, Eff, Foe } from '../model/types';
 import { G, checkPending } from '../infra/state';
 import { after } from '../infra/schedule';
 import { emit } from '../infra/events';
-import type { GameEvent } from '../infra/events';
+import type { CardCommit, GameEvent } from '../infra/events';
 import { gainAp, grantBlock, healHp, loseHp, spendAp } from '../infra/write';
 import { defOf } from '../cards/registry';
 import { cardType } from '../cards/kinds';
@@ -295,14 +295,23 @@ export function settle(s: Settlement, opts: SettleOpts = {}) {
     if (s.budget.ap.gain) gainAp(s.budget.ap.gain);
   });
   for (const run of s.instant) run();
+  const hasHits = s.hits.some((h) => h.raw > 0);
+  const fromCard = s.id !== null;
+  const card: CardCommit | undefined = fromCard ? {
+    t: 'cardCommit', attack: G.enemy !== null && hasHits, wrong: s.wrong && !hasHits,
+    block: s.budget.blkEarly + s.budget.blk,
+    heal: Math.min(s.budget.heal, Math.max(0, G.maxHp - G.hp)),
+    hurt: s.budget.hurt, draw: s.budget.draw,
+  } : undefined;
+  if (card) emit(card);
   if (s.budget.blkEarly > 0) {
     grantBlock(s.budget.blkEarly);
-    emit({ t: 'blk', n: s.budget.blkEarly });
+    emit({ t: 'blk', n: s.budget.blkEarly, card });
   }
   for (const ev of s.events) emit(ev);
 
   const last = s.hits.length - 1;
-  if (s.hits.some((h) => h.raw > 0)) {
+  if (hasHits) {
     let guardLeft = s.guardCap ?? G.block;
     const totalAbsorbed = s.hits.reduce((n, h) => n + h.absorbed, 0);
     s.hits.forEach((h, i) => {
@@ -315,7 +324,7 @@ export function settle(s: Settlement, opts: SettleOpts = {}) {
           if (r.killed) {
             const got = healHp(rulesOf().healOnKill);
             if (got) {
-              emit({ t: 'heal', n: got });
+              emit({ t: 'heal', n: got, fromCard });
             }
           }
         } else {
@@ -339,15 +348,15 @@ export function settle(s: Settlement, opts: SettleOpts = {}) {
   after(tail, () => {
     if (s.budget.blk > 0) {
       grantBlock(s.budget.blk);
-      emit({ t: 'blk', n: s.budget.blk });
+      emit({ t: 'blk', n: s.budget.blk, card });
     }
     if (s.budget.heal > 0) {
       const got = healHp(s.budget.heal);
-      if (got) emit({ t: 'heal', n: got });
+      if (got) emit({ t: 'heal', n: got, fromCard });
     }
     if (s.budget.hurt > 0) {
       loseHp(s.budget.hurt);
-      emit({ t: 'hurt', n: s.budget.hurt });
+      emit({ t: 'hurt', n: s.budget.hurt, fromCard });
     }
     // 所有写入都落地后才判胜负；无头模拟的同步调度器下这就是最后一次。
     checkPending();

@@ -23,16 +23,19 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Res
 from pydantic import BaseModel, Field, StrictBool, StrictInt, ValidationInfo, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from . import answer_store, job_trace
+from . import answer_store, job_failure, job_trace, question_source
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKS, DIST = ROOT / "packs", ROOT / "dist"
-STORE = ROOT / "data" / "service"
+DESKTOP = os.environ.get("COG_DESKTOP") == "1"
+STORE = (Path(os.environ["COG_DESKTOP_DATA"]).resolve() if DESKTOP else
+         Path(os.environ.get("COG_SOURCE_DATA") or ROOT / "data" / "service").resolve())
 GEN_BANKS, DOCS, PLANS = STORE / "banks", STORE / "docs", STORE / "plans"
 JOBS = STORE / "jobs"
 ANSWERS = STORE / "answers"
 CONFIG_FILE = STORE / "gen.json"
-POOL_HELPER = ROOT / ".cache" / "runpool.mjs"
+WORKERS = ROOT / ("workers" if DESKTOP else ".cache")
+POOL_HELPER = WORKERS / "runpool.mjs"
 
 with (ROOT / "pyproject.toml").open("rb") as project_file:
     PROJECT_VERSION = tomllib.load(project_file)["project"]["version"]
@@ -177,6 +180,8 @@ def npm() -> str:
 
 
 def node() -> str:
+    if DESKTOP:
+        return str(ROOT / "runtime" / "node" / "node.exe")
     return shutil.which("node.exe") or shutil.which("node") or "node"
 
 
@@ -274,6 +279,7 @@ def dispatch_jobs() -> None:
             continue
         job["state"] = "running"
         job.pop("activity", None)
+        job.pop("failure", None)
         job["progress"] = {"phase": "starting", "completed": 0, "total": 1, "label": "开始运行"}
         job.setdefault("runStarted", time.time())
         job_trace.ensure(JOBS, job)
@@ -315,7 +321,7 @@ def run_job(job: dict[str, Any]) -> None:
         env.update(GEN_API_KEY=cfg["key"], GEN_BASE_URL=cfg["baseUrl"], GEN_MODEL=cfg["model"],
                    COG_TRACE_ID=job["traceId"], COG_JOB_ID=job["id"],
                    COG_PARENT_SPAN_ID=job["traceExecution"]["spanId"])
-        script = ROOT / ".cache" / ("plan.mjs" if kind == "plan" else "gen.mjs")
+        script = WORKERS / ("plan.mjs" if kind == "plan" else "gen.mjs")
         process = subprocess.Popen([node(), str(script), *job["args"]], cwd=ROOT, env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                    encoding="utf-8", errors="replace",
@@ -330,7 +336,7 @@ def run_job(job: dict[str, Any]) -> None:
             if event == "@@trace":
                 job_trace.accept_child(JOBS, job, payload)
                 continue
-            if event in {"@@progress", "@@activity"}:
+            if event in {"@@progress", "@@activity", "@@failure"}:
                 try:
                     data = json.loads(payload)
                 except json.JSONDecodeError:
@@ -340,10 +346,12 @@ def run_job(job: dict[str, Any]) -> None:
                 with job_lock:
                     if event == "@@progress":
                         job["progress"] = data
-                    else:
+                    elif event == "@@activity":
                         activity = job.setdefault("activity", [])
                         activity.append({**data, "ms": job_elapsed(job)})
                         del activity[:-8]
+                    elif failure := job_failure.from_worker(data):
+                        job["failure"] = failure
                     save_job(job)
                 continue
             job["lines"].append(line)
@@ -364,6 +372,8 @@ def run_job(job: dict[str, Any]) -> None:
             job["state"] = "done" if completed else "fail"
             if completed:
                 job["progress"] = complete_progress(job)
+            else:
+                job["failure"] = job_failure.for_job(job)
             job.pop("pid", None)
             finish_trace(job, "ok" if completed else "error")
             save_job(job)
@@ -386,7 +396,9 @@ def finish_trace(job: dict[str, Any], outcome: str, *, finished: bool = True) ->
                         outcome=outcome, since=execution["startedAt"])
     if finished:
         job_trace.lifecycle(JOBS, job, "job", trace_id[:16], "end", outcome=outcome,
-                            since=job["traceStartedAt"], executions=execution["attempt"])
+                            since=job["traceStartedAt"], executions=execution["attempt"],
+                            **({"failureStage": job["failure"]["stage"], "failureCode": job["failure"]["code"]}
+                               if outcome == "error" and job.get("failure") else {}))
 
 
 @app.on_event("startup")
@@ -395,9 +407,16 @@ def startup() -> None:
         directory.mkdir(parents=True, exist_ok=True)
     with answer_store.connect(ANSWERS):
         pass
-    result = subprocess.run([npm(), "run", "service:build"], cwd=ROOT, capture_output=True, text=True)
-    if result.returncode:
-        raise RuntimeError("无法构建服务任务：" + result.stderr[-1200:])
+    if DESKTOP:
+        required = [DIST / "index.html", Path(node()), POOL_HELPER, WORKERS / "plan.mjs", WORKERS / "gen.mjs",
+                    PACKS / "words.md", ROOT / "tools" / "pdf2md.py"]
+        missing = [str(path.relative_to(ROOT)) for path in required if not path.is_file()]
+        if missing:
+            raise RuntimeError("完整版文件缺失，请完整解压： " + ", ".join(missing))
+    else:
+        result = subprocess.run([npm(), "run", "service:build"], cwd=ROOT, capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError("无法构建服务任务：" + result.stderr[-1200:])
     saved_jobs = []
     for file in JOBS.glob("job-*.json"):
         try:
@@ -439,7 +458,7 @@ def startup() -> None:
 def health() -> dict[str, Any]:
     rows = [bank_row(bank) for bank in banks()]
     cfg = config()
-    return {"ok": True, "version": app.version, "apiVersion": 1, "banks": len(rows), "generated": sum(row["kind"] == "generated" for row in rows), "canGenerate": bool(cfg["key"]), "model": cfg["model"], "baseUrl": cfg["baseUrl"]}
+    return {"ok": True, "version": app.version, "apiVersion": 1, "desktop": DESKTOP, "banks": len(rows), "generated": sum(row["kind"] == "generated" for row in rows), "canGenerate": bool(cfg["key"]), "model": cfg["model"], "baseUrl": cfg["baseUrl"]}
 
 
 @app.get("/api/banks")
@@ -457,6 +476,50 @@ def get_bank(bank_id: str) -> Response:
     return PlainTextResponse(bank["file"].read_text(encoding="utf-8"), media_type="text/markdown")
 
 
+@app.get("/api/banks/{bank_id}/topics/{topic_id}/questions/{qid}/source")
+def get_question_source(bank_id: str, topic_id: str, qid: str, section: str | None = None) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", bank_id):
+        raise HTTPException(400, "题库编号无效。")
+    empty = {"source": None} if section is None else {"section": None}
+    if not re.fullmatch(r"t_[a-f0-9]{24}", topic_id) or not 0 < len(qid) <= 128:
+        return empty
+    doc = question_source.read_object(DOCS / f"{bank_id}.json")
+    if not doc or doc.get("docId") != bank_id or doc.get("kind") not in ("md", "pdf"):
+        return empty
+    name = doc.get("name")
+    if not isinstance(name, str) or not (name := re.split(r"[/\\]", name)[-1].strip()):
+        return empty
+    catalog, index = question_source.topic_files(STORE / "memory" / bank_id, topic_id)
+    saved = question_source.saved_question(catalog, qid)
+    ids = saved.get("sectionIds")
+    if not isinstance(ids, list) or not ids:
+        return empty
+    if section is not None and (not re.fullmatch(r"sec_[a-f0-9]{16}", section) or section not in ids):
+        return empty
+    try:
+        text = (GEN_BANKS / f"{bank_id}.md").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return empty
+
+    # The catalog can outlive a deleted/regenerated pack. Confirm the current question
+    # with the same DSL parser used by the game, not a second interpretation of Markdown.
+    try:
+        result = subprocess.run(
+            [node(), str(POOL_HELPER)], cwd=ROOT,
+            input=json.dumps({"action": "find-question", "text": text, "topic": topic_id, "qid": qid}),
+            capture_output=True, text=True, encoding="utf-8", timeout=5, check=True,
+        )
+        current = json.loads(result.stdout)["question"]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+        raise HTTPException(503, "暂时无法核对题目出处。") from exc
+    if not current or any(current.get(key) != saved.get(key) for key in ("stem", "options", "answer")):
+        return empty
+    sections = question_source.sections_for(STORE / "sections" / bank_id, index, ids, doc, only=section)
+    if section is not None:
+        return {"section": sections[0]} if sections else empty
+    return {"source": {"documentName": name, "sections": sections}} if sections else empty
+
+
 @app.post("/api/run-pool")
 def create_run_pool(body: RunPoolInput) -> dict[str, Any]:
     bank_id = body.bankId
@@ -466,7 +529,7 @@ def create_run_pool(body: RunPoolInput) -> dict[str, Any]:
     topics, retired = body.topics, body.retired
     try:
         result = subprocess.run(
-            ["node", str(POOL_HELPER)], cwd=ROOT,
+            [node(), str(POOL_HELPER)], cwd=ROOT,
             input=json.dumps({"text": bank["file"].read_text(encoding="utf-8"), "topics": topics,
                               "retired": retired, "quota": body.quota}),
             capture_output=True, text=True, encoding="utf-8", timeout=20,
@@ -488,7 +551,7 @@ def import_bank(body: ImportBankInput) -> dict[str, Any]:
         raise HTTPException(400, "题库内容为空或超过 1.5 MB。")
     try:
         result = subprocess.run(
-            ["node", str(POOL_HELPER)], cwd=ROOT,
+            [node(), str(POOL_HELPER)], cwd=ROOT,
             input=json.dumps({"action": "inspect", "text": text}),
             capture_output=True, text=True, encoding="utf-8", timeout=20,
         )
@@ -638,17 +701,19 @@ async def upload_doc(request: Request, x_doc_name: str = Header(default="doc.md"
     md = DOCS / f"{doc_id}.md"
     manifest = DOCS / f"{doc_id}.json"
     kind = "pdf" if Path(name).suffix.lower() == ".pdf" else "md"
-    if Path(name).suffix.lower() == ".pdf":
-        pdf = DOCS / f"{doc_id}.pdf"
-        pdf.write_bytes(raw)
-        result = await run_in_threadpool(
-            subprocess.run,
-            [sys.executable, str(ROOT / "tools" / "pdf2md.py"), str(pdf), str(md)],
-            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        )
-        if result.returncode or not md.exists():
-            raise HTTPException(400, f"抽 PDF 文字失败（{sys.executable}）。请先运行 uv sync。\\n{result.stderr or result.stdout}")
-        text = md.read_text(encoding="utf-8")
+    extraction = None
+    pdf = DOCS / f"{doc_id}.pdf"
+    if kind == "pdf":
+        incoming = DOCS / f"{doc_id}.upload.pdf"
+        draft = DOCS / f"{doc_id}.upload.md"
+        try:
+            incoming.write_bytes(raw)
+            extraction = await extract_pdf(incoming, draft)
+            text = draft.read_text(encoding="utf-8")
+            os.replace(incoming, pdf)
+        finally:
+            incoming.unlink(missing_ok=True)
+            draft.unlink(missing_ok=True)
     else:
         try:
             text = raw.decode("utf-8-sig")
@@ -661,10 +726,34 @@ async def upload_doc(request: Request, x_doc_name: str = Header(default="doc.md"
     os.replace(temporary, md)
     row = {"docId": doc_id, "name": name, "kind": kind, "chars": len(text),
            "createdAt": datetime.now(timezone.utc).isoformat(), "planId": "", "importedPlanId": ""}
+    if extraction is not None:
+        row["pdfExtraction"] = extraction
     temporary = manifest.with_suffix(".tmp")
     temporary.write_text(json.dumps(row, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, manifest)
     return {"ok": True, **row}
+
+
+async def extract_pdf(incoming: Path, draft: Path) -> dict[str, Any]:
+    try:
+        result = await run_in_threadpool(
+            subprocess.run,
+            [sys.executable, *(["-I", "-B"] if DESKTOP else []),
+             str(ROOT / "tools" / "pdf2md.py"), "--report-json", str(incoming), str(draft)],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(408, "PDF 文字提取超时，请拆分文档后重试。") from exc
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        report = None
+    if isinstance(report, dict):
+        if result.returncode == 1 and isinstance(report.get("error"), str):
+            raise HTTPException(400, report["error"])
+        if result.returncode == 0 and "pageCount" in report and draft.is_file() and draft.stat().st_size:
+            return report
+    raise HTTPException(500, "本机服务无法提取 PDF 文字，请检查 Python 依赖。")
 
 
 @app.post("/api/plan")
@@ -740,46 +829,78 @@ def prepare_feedback(job: dict[str, Any]) -> None:
 
 @app.post("/api/generate")
 def start_generate(body: GenerateInput) -> dict[str, Any]:
-    doc_id = body.docId
     with job_lock:
-        row = document(doc_id)
-        plan_file, topics = read_plan(row, body.plan)
-        if imported_plan(row) != body.plan:
-            raise HTTPException(400, "请先导入文档主题。")
-        selection = sorted(set(body.topics))
-        if any(index < 0 or index >= len(topics) for index in selection):
-            raise HTTPException(400, "所选主题不在当前划分计划中。")
-        for job in jobs.values():
-            if job["lock_doc"] != doc_id or job["state"] not in {"queued", "running"}:
-                continue
-            if job.get("topic") is None or (job.get("planId") == body.plan and job["topic"] in selection):
-                raise HTTPException(409, "所选主题已有任务，或文档正在划分。")
-        if not config()["key"]:
-            raise HTTPException(400, "服务还没有模型配置。请在设置中配置。")
-        source = DOCS / f"{doc_id}.md"
-        if not source.is_file():
-            raise HTTPException(404, "没有这份文档，可能已经清理掉了。")
-        output = GEN_BANKS / f"{doc_id}.md"
-        per = max(1, min(40, body.per))
-        plan_trace_id = next((job.get("traceId") for job in jobs.values()
-                              if job["kind"] == "plan" and job.get("planId") == body.plan), None)
-        accepted = []
-        for index in selection:
-            topic = topics[index]
-            job_id = f"job-{secrets.token_hex(6)}"
-            complete_file = JOBS / f"{job_id}.complete"
-            memory = STORE / "memory" / doc_id
-            feedback = STORE / 'feedback' / f'{job_id}.json'
-            args = [f"--src={source}", f"--out={output}", f"--memory={memory}",
-                    f"--sections={STORE / 'sections' / doc_id}", f"--per={per}",
-                    f"--complete={complete_file}", f"--plan={plan_file}", f"--topic-id={topic['id']}", f"--feedback={feedback}"]
-            job = make_job("gen", args, output, doc_id, job_id, complete_file, [feedback],
-                           bankId=doc_id, planId=body.plan, topic=index, topicId=topic['id'], taskType="generate",
-                           title=topic['title'], name=row["name"], planTraceId=plan_trace_id)
-            enqueue_job(job)
-            accepted.append(job)
-        dispatch_jobs()
-        return {"ok": True, "jobs": [job_status(job) for job in accepted]}
+        return {"ok": True, "jobs": queue_generation(body)}
+
+
+def queue_generation(body: GenerateInput, previous: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Validate and enqueue under job_lock; retries use the same path as fresh jobs."""
+    doc_id = body.docId
+    row = document(doc_id)
+    if imported_plan(row) != body.plan:
+        raise HTTPException(409 if previous else 400, "已导入的主题划分已变更，请从文档重新选择主题。"
+                            if previous else "请先导入文档主题。")
+    plan_file, topics = read_plan(row, body.plan)
+    selection = sorted(set(body.topics))
+    if any(index < 0 or index >= len(topics) for index in selection):
+        raise HTTPException(400, "所选主题不在当前划分计划中。")
+    if previous and topics[selection[0]]["id"] != previous.get("topicId"):
+        raise HTTPException(409, "原主题已变更，请从文档重新选择主题。")
+    for job in jobs.values():
+        if job["lock_doc"] != doc_id:
+            continue
+        same_topic = job.get("planId") == body.plan and job.get("topic") in selection
+        if job["state"] in {"queued", "running"} and (job.get("topic") is None or same_topic):
+            raise HTTPException(409, "所选主题已有任务，或文档正在划分。")
+        if previous and same_topic and job["state"] == "done" and job["started"] >= previous["started"]:
+            raise HTTPException(409, "这个主题之后已经成功出题，无需重试旧任务。")
+    if not config()["key"]:
+        raise HTTPException(400, "服务还没有模型配置。请在设置中配置。")
+    source = DOCS / f"{doc_id}.md"
+    if not source.is_file():
+        raise HTTPException(404, "没有这份文档，可能已经清理掉了。")
+    output = GEN_BANKS / f"{doc_id}.md"
+    per = max(1, min(40, body.per))
+    plan_trace_id = next((job.get("traceId") for job in jobs.values()
+                          if job["kind"] == "plan" and job.get("planId") == body.plan and job.get("traceId")),
+                         previous.get("planTraceId") if previous else None)
+    retry = {"retryOfJobId": previous["id"], "retryOfTraceId": previous.get("traceId")} if previous else {}
+    accepted = []
+    for index in selection:
+        topic = topics[index]
+        job_id = f"job-{secrets.token_hex(6)}"
+        complete_file = JOBS / f"{job_id}.complete"
+        memory = STORE / "memory" / doc_id
+        feedback = STORE / 'feedback' / f'{job_id}.json'
+        args = [f"--src={source}", f"--out={output}", f"--memory={memory}",
+                f"--sections={STORE / 'sections' / doc_id}", f"--per={per}",
+                f"--complete={complete_file}", f"--plan={plan_file}", f"--topic-id={topic['id']}", f"--feedback={feedback}"]
+        job = make_job("gen", args, output, doc_id, job_id, complete_file, [feedback],
+                       bankId=doc_id, planId=body.plan, topic=index, topicId=topic['id'], taskType="generate",
+                       title=topic['title'], name=row["name"], per=per, planTraceId=plan_trace_id, **retry)
+        enqueue_job(job)
+        accepted.append(job)
+    dispatch_jobs()
+    return [job_status(job) for job in accepted]
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str) -> dict[str, Any]:
+    """Reuse the direct successor on repeat submissions; never enqueue twice."""
+    with job_lock:
+        previous = jobs.get(job_id)
+        if not previous:
+            raise HTTPException(404, "没有这个任务。")
+        if previous["state"] != "fail" or previous.get("taskType") != "generate" or previous.get("topic") is None:
+            raise HTTPException(409, "只能重试失败的主题出题任务。")
+        successor = next((job for job in jobs.values() if job.get("retryOfJobId") == job_id), None)
+        if successor:
+            return {"ok": True, "job": job_status(successor)}
+        per = previous.get("per")
+        if per is None:  # Jobs saved before the explicit per field.
+            per = next((int(arg[6:]) for arg in previous["args"] if re.fullmatch(r"--per=\d{1,2}", arg)), 20)
+        body = GenerateInput(docId=previous["lock_doc"], plan=previous["planId"], per=per, topics=[previous["topic"]])
+        return {"ok": True, "job": queue_generation(body, previous)[0]}
 
 
 @app.get("/api/jobs")
@@ -808,6 +929,10 @@ def job_status(job: dict[str, Any], details: bool = False) -> dict[str, Any]:
     }
     if job.get("traceId"):
         result["traceId"] = job["traceId"]
+    if job.get("retryOfJobId"):
+        result["retryOfJobId"] = job["retryOfJobId"]
+    if job["state"] == "fail":
+        result["failure"] = job_failure.for_job(job)
     if job.get("activity"):
         result["activity"] = list(job["activity"])
     if details and "plan" in job:

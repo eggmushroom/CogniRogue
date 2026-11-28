@@ -41,15 +41,16 @@ export function openReward() {
   G.panel = { k: 'reward', cards: rewardPool(base + bonus), ledger };
 }
 
-export function takeCard(i: number) {
-  if (G.panel.k !== 'reward') return;
+export function takeCard(i: number): boolean {
+  if (G.panel.k !== 'reward') return false;
   const c = G.panel.cards[i];
-  if (!c) return;
+  if (!c) return false;
   // 牌组里只存 id，精炼过的那一张带 `+` 后缀。账本那一屏选中的牌直接带后缀；
   // 其余奖励拿到的是**新的一张**，想要强化版，得另外花一次精炼在它身上。
   const id = G.panel.ledger ? c.id + UP_MARK : c.id;
   G.deck.push(id);
   afterReward();
+  return true;
 }
 
 export function skipReward() {

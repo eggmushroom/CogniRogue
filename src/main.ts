@@ -4,6 +4,7 @@ import { EFFS, POWER_BY_ID } from './core/model';
 import { beginFrame, g, initCanvas, toLogic } from './gfx/canvas';
 import { loadArt } from './gfx/assets';
 import * as FX from './gfx/fx';
+import { bindBattleAudio, playBattleSound, playCardSound, playGuardGlow } from './gfx/battle-audio';
 import { beginTransition, drawTransition, reduceMotion } from './gfx/motion';
 import { bindInput, beginInput, clearWheel, consumeDragY, endInput, inputScope, keyHandler, setInputLock, setWheelShield } from './input';
 import { C } from './gfx/theme';
@@ -16,7 +17,7 @@ import { ackCardGet, ackPower, dismissFeedback, settlePending } from './core/jou
 import {
   DISCARD_TO, ENEMY, HERO, enemyHand, heroHand,
   animateFeedbackClose, animateQuestion, closeFeedback, feedbackLeaving,
-  questionCard, questionReturning, resetBattleView, syncBattle,
+  markCardHandChange, questionCard, questionReturning, resetBattleView, syncBattle,
 } from './scenes/battle';
 import { drawOverlay } from './scenes/overlay';
 import { drawSceneBackdrop, drawSceneScrim, drawSceneWorld, worldLayer } from './scenes/layers';
@@ -34,6 +35,7 @@ const standalone = location.protocol === 'file:';
 
 initCanvas(canvas);
 bindInput(canvas, toLogic);
+bindBattleAudio();
 
 // 逻辑层只发事件，表现层在这里翻译成"看得见的后果"
 const modalOpen = () => G.panel.k !== 'none';
@@ -76,7 +78,11 @@ const victoryProgress = () => victory ? victory.elapsed / DEFEAT_OUT : null;
 
 // 无头运行仍直接结算；浏览器等最后一击和退场，答错时先保留原有的判定面板。
 setSettleHandler(() => {
-  if (!battleWon() || !G.enemy) { settlePending(); return; }
+  if (!battleWon() || !G.enemy) {
+    if (G.screen === 'battle' && G.pending === 'dead') playBattleSound('defeat');
+    settlePending();
+    return;
+  }
   if (G.panel.k === 'feedback' || victory?.foe === G.enemy) return;
   G.panel = { k: 'none' };
   victory = { foe: G.enemy, elapsed: 0 };
@@ -89,6 +95,7 @@ function advanceVictory(dt: number) {
   if (G.busy || FX.playerStrikeActive()) return;
   if (reduceMotion() || victory.elapsed >= DEFEAT_OUT) {
     victory = null;
+    playBattleSound('victory');
     settlePending();
   } else {
     victory.elapsed = Math.min(DEFEAT_OUT, victory.elapsed + dt);
@@ -107,6 +114,12 @@ const SCENE_HOOKS = {
 onFx((e) => {
   const enemy = G.enemy;
   switch (e.t) {
+    case 'cardCommit':
+      if (G.screen === 'battle') {
+        markCardHandChange();
+        playCardSound(e);
+      }
+      break;
     case 'dmg': {
       if (!enemy) break;
       const kind = e.eff ?? 'strike';
@@ -137,6 +150,7 @@ onFx((e) => {
     }
     case 'hurt':
       // 事件扣血：这时候没有敌人，只做自身受伤的反馈。
+      if (!e.fromCard && G.screen === 'battle' && e.n > 0) playBattleSound('hurt', e.n);
       FX.flash(C.red, 0.12);
       FX.shake(8);
       FX.floatText(HERO.x, HERO.y - 40, `-${e.n}`, C.red, 52, { vy: -80 });
@@ -164,8 +178,10 @@ onFx((e) => {
     }
     case 'blk':
       FX.heroBlock({ x: HERO.x + 90, y: HERO.y - 30 }, e.n, !panelShown());
+      if (G.screen === 'battle' && e.n > 0) playGuardGlow(e.card);
       break;
     case 'heal':
+      if (!e.fromCard && G.screen === 'battle' && e.n > 0) playBattleSound('heal');
       if (!panelShown()) FX.heal(HERO.x, HERO.y - 40, e.n);
       break;
     case 'foeHeal':

@@ -49,7 +49,8 @@ def ensure(job_dir: Path, job: dict[str, Any]) -> None:
     job["traceStartedAt"] = now_ms()
     lifecycle(job_dir, job, "job", job["traceId"][:16], "start", taskType=job["taskType"],
               docId=job.get("lock_doc"), planId=job.get("planId"), topicId=job.get("topicId"),
-              planTraceId=job.get("planTraceId"))
+              planTraceId=job.get("planTraceId"), retryOfJobId=job.get("retryOfJobId"),
+              retryOfTraceId=job.get("retryOfTraceId"))
 
 
 def accept_child(job_dir: Path, job: dict[str, Any], payload: str) -> None:

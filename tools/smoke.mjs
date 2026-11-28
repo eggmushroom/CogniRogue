@@ -731,6 +731,21 @@ await step('题库：超过一屏的长题目仍可展开和收起', async () =>
   await nextFrames(12);
   const first = await evalJs('cog.hots().find((h) => h.label.startsWith("q:"))');
   const label = first.label;
+  // Compare two blank spots in the title: the second is inside the leaked code background.
+  const titleContrast = () => S(`(() => {
+    const row = cog.hots().find(h => h.label === ${JSON.stringify(label)});
+    const canvas = document.querySelector('#game');
+    const rect = canvas.getBoundingClientRect();
+    const ctx = canvas.getContext('2d');
+    const lightness = (dy) => {
+      const { x, y } = cog.toScreen(row.x + 600, row.y + dy);
+      const px = Math.floor((x - rect.left) * canvas.width / rect.width);
+      const py = Math.floor((y - rect.top) * canvas.height / rect.height);
+      const [r, g, b] = ctx.getImageData(px, py, 1, 1).data;
+      return r + g + b;
+    };
+    return lightness(32) - lightness(39);
+  })()`);
   if (first.h > 48) await clickLabel(label);
   await evalJs(`(async () => {
     const m = await import('/src/core/library/index.ts');
@@ -747,10 +762,13 @@ await step('题库：超过一屏的长题目仍可展开和收起', async () =>
     const expanded = await evalJs(`cog.hots().find((h) => h.label === ${JSON.stringify(label)})`);
     if (!expanded || expanded.h <= 48) throw new Error('长题目展开后失去点击区域');
     if (expanded.y < 234 || expanded.y + expanded.h > 770) throw new Error('长题目热区越过列表边界');
+    await nextFrames(24);
+    if ((await titleContrast()) <= 3) throw new Error('展开后题干代码块背景没有显示');
     await clickLabel(label);
     await nextFrames(24);
     const collapsed = await evalJs(`cog.hots().find((h) => h.label === ${JSON.stringify(label)})`);
     if (!collapsed || collapsed.h !== 48) throw new Error('长题目无法收起');
+    if (Math.abs(await titleContrast()) > 3) throw new Error('收起后题干仍有代码块黑线');
   } finally {
     await evalJs('Object.assign(__menuLong.q, __menuLong.old); delete globalThis.__menuLong;');
     await clickLabel('返回');
@@ -758,6 +776,59 @@ await step('题库：超过一屏的长题目仍可展开和收起', async () =>
     await clickLabel('×');
   }
 }, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
+await step('后台任务：区分余额失败并且只重试这个主题', async () => {
+  await evalJs(`(async () => {
+    const { registerJobs } = await import('/src/scenes/jobstate.ts');
+    const originalFetch = window.fetch;
+    const old = { id: 'retry-old', bankId: 'demo', planId: 'demo-plan', topic: 1, title: '引用与借用',
+      taskType: 'generate', state: 'fail', ms: 1, tail: '', traceId: '1'.repeat(32),
+      failure: { stage: 'generate', code: 'balance' } };
+    const job = { ...old, id: 'retry-new', traceId: '2'.repeat(32), retryOfJobId: old.id, state: 'running', failure: undefined };
+    const rows = [old];
+    const ctx = document.querySelector('canvas').getContext('2d');
+    const fillText = ctx.fillText;
+    window.__retryEvidence = { paths: [], shown: new Set() };
+    ctx.fillText = function (text, ...args) {
+      window.__retryEvidence.shown.add(text);
+      return fillText.call(this, text, ...args);
+    };
+    window.__restoreRetry = () => { window.fetch = originalFetch; ctx.fillText = fillText; };
+    window.fetch = (input, init) => {
+      const path = new URL(String(input), location.href).pathname;
+      if (path === '/api/jobs') return Promise.resolve(Response.json(rows));
+      if (path === '/api/jobs/retry-old/retry' && init?.method === 'POST') {
+        window.__retryEvidence.paths.push(path);
+        return new Promise(resolve => {
+          window.__acceptRetry = () => { rows.push(job); resolve(Response.json({ ok: true, job })); };
+        });
+      }
+      return originalFetch(input, init);
+    };
+    registerJobs(rows);
+  })()`);
+  try {
+    await clickLabel('后台任务');
+    if (!await waitFor('任务:retry-old')) throw new Error('任务列表没有显示失败主题');
+    await clickLabel('任务:retry-old');
+    if (!await waitFor('重试这个主题')) throw new Error('失败详情没有重试入口');
+    if (!await S("[...window.__retryEvidence.shown].some(text => text.includes('余额不足'))")) {
+      throw new Error('没有显示出题接口余额不足');
+    }
+    await clickLabel('重试这个主题');
+    if (!await waitGone('重试这个主题')) throw new Error('请求在途仍然可以重试');
+    await evalJs('window.__acceptRetry(); true');
+    if (!await waitFor('查看上次任务')) throw new Error('重试后没有打开新任务及原任务入口');
+    await clickLabel('查看上次任务');
+    if (!await waitFor('查看重试任务') || (await S('window.__retryEvidence.paths.length')) !== 1) {
+      throw new Error('没有复用原任务的重试入口，或重复提交了请求');
+    }
+    await clickLabel('返回');
+    await clickLabel('×');
+  } finally {
+    await evalJs('window.__restoreRetry(); delete window.__retryEvidence;');
+  }
+}, async () => await waitGone('任务抽屉遮罩'));
 
 // 模拟任务只在这一页的内存里，后面的开局流程从正常首页开始。
 await step('出题 Agent：首次出题、混合更新、显式选用与删除', async () => {
@@ -984,25 +1055,134 @@ await step('出题 Agent：首次出题、混合更新、显式选用与删除',
 }, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
 
 await boot();
-await step('上传无目录文档：手动模型分章，导入主题后才可勾选', async () => {
+await step('题库原文：按需查询、无出处、失败重试、迟到响应和滚动阅读全文', async () => {
+  const topic = 't_' + '1'.repeat(24);
+  const bankId = 'source-doc-test';
+  const path = '/api/banks/' + bankId + '/topics/' + topic + '/questions/';
+  const pack = ['# 原文测试题库', '## 测试主题 <!-- topic: ' + topic + ' -->',
+    '### 有出处的题？', '^ q_evidence', 'A) 正确', 'B) 错误', '= A', '+ 解析示例。',
+    '### 旧题？', '^ q_old', 'A) 正确', 'B) 错误', '= A',
+  ].join('\n');
+  await evalJs(`(() => {
+    const fetch = window.fetch;
+    const context = CanvasRenderingContext2D.prototype;
+    const fillText = context.fillText;
+    const shown = new Set();
+    context.fillText = function (text, ...args) {
+      shown.add(text);
+      fillText.call(this, text, ...args);
+    };
+    const doc = { docId: ${JSON.stringify(bankId)}, name: '引用测试.pdf', kind: 'pdf', chars: 100,
+      createdAt: '2026-11-20', planId: '' };
+    const id = 'sec_' + '1'.repeat(16);
+    const source = { documentName: '引用测试.pdf',
+      sections: [{ id, title: '原文小节', excerpt: '这是节选。', pages: [2, 6] }] };
+    const perQuestion = [];
+    window.__sourceSmoke = { shown, perQuestion, restore() {
+      window.fetch = fetch;
+      context.fillText = fillText;
+      delete window.__sourceSmoke;
+    } };
+    const json = (data, status = 200) => new Response(JSON.stringify(data), { status });
+    window.fetch = async (input, init) => {
+      const url = new URL(String(input), location.href);
+      const route = url.pathname;
+      if (route === '/api/health') return json({ ok: true, apiVersion: 1 });
+      if (route === '/api/docs') return json([doc]);
+      if (route === '/api/banks') return json([{ id: doc.docId, kind: 'generated', name: doc.name }]);
+      if (route === '/api/banks/' + doc.docId) return new Response(${JSON.stringify(pack)});
+      if (route.startsWith(${JSON.stringify(path)})) {
+        const qid = route.split('/').at(-2);
+        if (url.searchParams.has('section')) {
+          if (qid !== 'q_evidence' || url.searchParams.get('section') !== id) return json({ section: null });
+          const text = ['全文开头正文', ...Array.from({ length: 80 }, (_, i) => '本节正文第 ' + i + ' 行'), '全文结尾正文'].join(String.fromCharCode(10));
+          return json({ section: { id, title: '原文小节', text, pages: [2, 6, 7] } });
+        }
+        perQuestion.push(qid);
+        if (qid === 'q_old') return json({ source: null });
+        const count = perQuestion.filter(id => id === qid).length;
+        if (count === 1) return json({}, 503);
+        if (count === 2) return new Promise(resolve => {
+          window.__sourceSmoke.finishLate = () => resolve(json({ source }));
+        });
+        return json({ source });
+      }
+      return fetch(input, init);
+    };
+  })()`);
+  try {
+    await evalJs("(async () => (await import('/src/core/library/index.ts')).refreshRemoteBanks())()");
+    await clickLabel('题库');
+    await clickLabel('bank:' + bankId);
+    await clickLabel('topic:' + topic);
+    await clickLabel('q:q_evidence');
+    if ((await S('window.__sourceSmoke.perQuestion')).length) throw new Error('展开题目时提前查询了出处');
+    await clickLabel('查看原文');
+    await clickLabel('重试');
+    await nextFrames(12);
+    if (!await S("window.__sourceSmoke.shown.has('正在查询原文…')")) throw new Error('没有加载状态');
+    await clickLabel('q:q_old');
+    await clickLabel('查看原文');
+    await nextFrames(12);
+    await evalJs('window.__sourceSmoke.finishLate(); true');
+    await nextFrames(12);
+    if (!await S("window.__sourceSmoke.shown.has('暂无原文出处')")) throw new Error('旧题没有无出处提示');
+    if (await S("window.__sourceSmoke.shown.has('原文小节')")) throw new Error('迟到响应写入了另一道题');
+    await clickLabel('q:q_evidence');
+    await clickLabel('查看原文');
+    await nextFrames(24);
+    if (!await S("['章节原文节选', '原文小节', 'PDF 第 2、6 页', '这是节选。'].every(text => window.__sourceSmoke.shown.has(text))")) {
+      throw new Error('原文小节、页码或节选没有画出来');
+    }
+    await clickLabel('阅读本节全文');
+    if (!await waitFor('scroll:pack:source-reader', 4000)) throw new Error('长原文没有滚动条');
+    if (!await S("window.__sourceSmoke.shown.has('全文开头正文')") || await S("window.__sourceSmoke.shown.has('全文结尾正文')")) {
+      throw new Error('全文阅读器没有从小节开头开始');
+    }
+    const thumb = await S(`(() => {
+      const h = cog.hots().find(h => h.label === 'scroll:pack:source-reader');
+      return cog.toScreen(h.x + h.w / 2, h.y + h.h / 2);
+    })()`);
+    const end = await S('cog.toScreen(800, 773)');
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: thumb.x, y: thumb.y, button: 'left', buttons: 1, clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: thumb.x, y: end.y, button: 'left', buttons: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: thumb.x, y: end.y, button: 'left', clickCount: 1 });
+    await nextFrames(12);
+    if (!await S("window.__sourceSmoke.shown.has('全文结尾正文')")) throw new Error('拖到底仍读不到原文结尾');
+    await pressKey('Escape', 'Escape', 27);
+    if (!await waitFor('阅读本节全文', 4000)) throw new Error('退出全文未回到原题的出处节选');
+    await clickLabel('收起原文');
+    if (!await waitFor('查看原文')) throw new Error('无法收起原文');
+    await clickLabel('返回');
+    await clickLabel('返回');
+    await clickLabel('×');
+  } finally {
+    await evalJs('window.__sourceSmoke.restore(); true');
+  }
+}, async () => (await waitFor('开始游戏')) || (await waitFor('继续这一局')));
+
+await boot();
+await step('上传混合 PDF：保留漏读提示，手动分章后可导入主题', async () => {
   await evalJs(`(() => {
     const fetch = window.fetch;
     const click = HTMLInputElement.prototype.click;
-    const canvas = document.querySelector('canvas').getContext('2d');
-    const fillText = canvas.fillText;
+    // 切换面板时可能先绘制到过渡画布，不只监听主画布。
+    const context = CanvasRenderingContext2D.prototype;
+    const fillText = context.fillText;
     const shown = new Set();
     window.__importCaptionShown = (text) => shown.has(text);
-    canvas.fillText = function (text, ...args) {
+    context.fillText = function (text, ...args) {
       shown.add(text);
       fillText.call(this, text, ...args);
     };
     window.__restoreImportMocks = () => {
       window.fetch = fetch;
       HTMLInputElement.prototype.click = click;
-      canvas.fillText = fillText;
+      context.fillText = fillText;
       delete window.__importCaptionShown;
     };
-    const doc = { docId: 'new-doc-test', name: '无目录.md', kind: 'md', chars: 100, planId: '' };
+    const doc = { docId: 'new-doc-test', name: '混合文档.pdf', kind: 'pdf', chars: 100, planId: '',
+      pdfExtraction: { pageCount: 5, imagePages: [3], unreadablePages: [4], blankPages: [5] } };
     const requests = window.__importRequests = [];
     let savedPlan;
     const planJobs = [];
@@ -1066,6 +1246,11 @@ await step('上传无目录文档：手动模型分章，导入主题后才可�
     if (fallback.tier !== 'fixed' || !fallback.msg.includes('未识别到目录主题')) {
       throw new Error('没有标明目录解析回落');
     }
+    const warning = 'PDF 第 3、4 页未提取到正文；出题仅使用已提取的正文。';
+    await nextFrames(3);
+    if (fallback.pdfWarning !== warning || !await S(`window.__importCaptionShown(${JSON.stringify(warning)})`)) {
+      throw new Error('PDF 漏读提示没有显示，或误将空白页列为漏读：' + JSON.stringify(fallback.pdfWarning));
+    }
     if (await waitFor('select-topic:0', 200)) throw new Error('预览期间可以选择出题主题');
     if (fallback.agenticOverlapChars !== 800) throw new Error('默认重叠量应为 800 字符');
     await clickLabel('+');
@@ -1084,6 +1269,7 @@ await step('上传无目录文档：手动模型分章，导入主题后才可�
     if (!await S('window.__importCaptionShown("· 子主题标题  ·  第 2–3 页") && window.__importCaptionShown("子主题摘要")')) {
       throw new Error('分章预览未显示子主题及页码');
     }
+    if (prepared.pdfWarning !== fallback.pdfWarning) throw new Error('重新划分时丢失 PDF 漏读提示');
     await clickLabel('确认主题划分');
     if (!await waitFor('select-topic:0', 5000)) throw new Error('确认后未直接进入主题勾选');
     const imported = await S('window.__importRequests.at(-1)');
@@ -1347,6 +1533,244 @@ await step('五种敌人意图各演一次 → 每种都产生演出单元', asy
   const c = globalThis.__enemyCounts;
   return c.length === 5 && c.every((n) => n > 0);
 });
+
+async function watchBattleSounds(card = 'base:strike') {
+  await evalJs(`cog.state.hand[0] = ${JSON.stringify(card)};
+    Object.assign(cog.state.enemy, { hp: 100, maxHp: 100, block: 0, mech: undefined });
+    cog.state.powers = [];
+  `);
+  if (!await waitHand()) throw new Error('音效测试的手牌没有停稳');
+  await watchSounds();
+}
+
+async function watchSounds() {
+  await evalJs(`(() => {
+    window.__battleSamples = [];
+    window.__blockWhenSoundStarted = [];
+    const nativeStart = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args) {
+      nativeStart.apply(this, args);
+      if (this.buffer) {
+        __battleSamples.push(Math.round(this.buffer.duration * 1000));
+        __blockWhenSoundStarted.push(cog.state.block);
+      }
+    };
+  })()`);
+}
+
+async function expectOnlyBattleSounds(...expected) {
+  const samples = await S('__battleSamples');
+  if (samples.join() !== expected.join()) {
+    throw new Error(`预期音效 ${expected.join()}，实际 ${samples.join()}`);
+  }
+}
+
+async function selectAudioQuizCard() {
+  await clickCard(0);
+  if (!await waitFor('opt')) throw new Error('音效测试的卡牌没有出题');
+  await expectOnlyBattleSounds(84); // select.wav
+  await evalJs('__battleSamples.length = 0');
+}
+
+async function playAudioQuizCard() {
+  await selectAudioQuizCard();
+  await clickLabel('opt', await S('cog.state.panel.view.answer'));
+  if (!await waitReady() || !await waitHand()) throw new Error('卡牌结算未结束');
+}
+
+await boot(URL_ + '?dev=battle');
+await step('战斗音效：玩家出手只播放穿刺，怪物接住攻击不发声', async () => {
+  await watchBattleSounds();
+  await evalJs('cog.state.enemy.block = 99');
+  await clickCard(0);
+  await waitBattleSamples(96); // thrust.wav
+  const deadline = Date.now() + 12000;
+  while (await S('cog.victory().striking')) {
+    if (Date.now() > deadline) throw new Error('玩家攻击未结束');
+    await nextFrames();
+  }
+  await expectOnlyBattleSounds(96);
+}, async () => true);
+
+await step('战斗音效：怪物出手无挥刃声，只反馈玩家受伤或盾被击中', async () => {
+  await evalJs('__battleSamples.length = 0');
+  await evalJs('cog.enemyAct("atk", 6)');
+  await waitBattleSamples(141); // hurt.wav
+  await evalJs('cog.enemyAct("atk", 0)');
+  await waitBattleSamples(181); // block.wav
+}, async () => await S('__battleSamples.join() === "141,181"'));
+
+await step('战斗音效：怪物架盾、塞牌、强化、回血都静默', async () => {
+  await evalJs('__battleSamples.length = 0; cog.enemyAct("def"); cog.enemyAct("jam"); cog.enemyAct("buff")');
+  await evalJs(`import('/src/core/infra/events.ts').then(({ emit }) => emit({ t: 'foeHeal', n: 3 }))`);
+  await nextFrames();
+}, async () => await S('__battleSamples.length === 0'));
+
+await boot(URL_ + '?dev=battle');
+await step('卡牌音效：悬停和无力支付时静音，选中知识牌才响一次', async () => {
+  await ensureQuestions();
+  await watchBattleSounds('c02');
+  const point = await S(`(() => {
+    const h = cog.hots().find((v) => v.label === 'card' && v.idx === 0);
+    return cog.toScreen(h.x + 14, h.y + h.h / 2);
+  })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+  await nextFrames(3);
+  await expectOnlyBattleSounds();
+  const ap = await S('cog.state.ap');
+  await evalJs('cog.state.ap = 0');
+  await clickCard(0);
+  await expectOnlyBattleSounds();
+  await evalJs(`cog.state.ap = ${ap}`);
+  await selectAudioQuizCard();
+  await pressKey('Escape', 'Escape', 27);
+  if (!await waitReady()) throw new Error('取消选牌未回战场');
+  await expectOnlyBattleSounds();
+}, async () => true);
+
+await boot(URL_ + '?dev=battle');
+await step('战斗音效：盾牌生成时播放光晕，不抢播也不播碰盾声', async () => {
+  await watchBattleSounds('base:guard');
+  const block = await S('cog.state.block');
+  await clickCard(0);
+  await waitBattleSamples(520); // guard.wav
+  if (await S('__blockWhenSoundStarted[0]') <= block) throw new Error('格挡生成音在盾牌亮起前抢播');
+  await expectOnlyBattleSounds(520);
+}, async () => true);
+
+await step('战斗音效：同一手攻击并生成格挡，只播穿刺，攻势被挡也一样', async () => {
+  for (const enemyBlock of [0, 99]) {
+    await boot(URL_ + '?dev=battle');
+    await ensureQuestions();
+    await watchBattleSounds('c02');
+    await evalJs(`cog.state.enemy.block = ${enemyBlock}`);
+    const before = await S('({ block: cog.state.block, hp: cog.state.enemy.hp, enemyBlock: cog.state.enemy.block })');
+    await playAudioQuizCard();
+    await waitBattleSamples(96); // thrust.wav
+    const after = await S('({ block: cog.state.block, hp: cog.state.enemy.hp, enemyBlock: cog.state.enemy.block })');
+    if (after.block <= before.block) throw new Error('未实际生成格挡');
+    if (enemyBlock === 0 ? after.hp >= before.hp : (after.hp !== before.hp || after.enemyBlock >= before.enemyBlock)) {
+      throw new Error('攻击未按预期命中或被挡');
+    }
+    await expectOnlyBattleSounds(96);
+  }
+}, async () => true);
+
+await boot(URL_ + '?dev=battle');
+await step('战斗音效：攻击叠加回血、自伤、抽牌，效果照算但只播穿刺', async () => {
+  await ensureQuestions();
+  await watchBattleSounds('c89');
+  await evalJs(`cog.state.powers = ['mirrorcard']; cog.state.hp = cog.state.maxHp - 15;
+    cog.state.draw.push('base:guard')`);
+  const before = await S('({ hp: cog.state.hp, drawn: cog.state.drawnThisTurn })');
+  await playAudioQuizCard();
+  const after = await S('({ hp: cog.state.hp, drawn: cog.state.drawnThisTurn })');
+  if (after.hp !== before.hp + 6 - 2 || after.drawn !== before.drawn + 1) {
+    throw new Error('回血、自伤或抽牌没有实际结算');
+  }
+  await expectOnlyBattleSounds(96);
+}, async () => true);
+
+await boot(URL_ + '?dev=battle');
+await step('战斗音效：多段攻击保留每一段穿刺，附带抽牌静音', async () => {
+  await ensureQuestions();
+  await watchBattleSounds('c17');
+  await evalJs(`cog.state.powers = ['mirrorcard']; cog.state.draw.push('base:guard')`);
+  await playAudioQuizCard();
+  await expectOnlyBattleSounds(96, 96);
+}, async () => true);
+
+await boot(URL_ + '?dev=battle');
+await step('卡牌音效：格挡压过同一手抽牌，回合末先弃牌落堆、再抽牌', async () => {
+  await ensureQuestions();
+  await watchBattleSounds('c96');
+  await evalJs(`cog.state.powers = ['mirrorcard']; cog.state.draw.push('base:guard')`);
+  await playAudioQuizCard();
+  await expectOnlyBattleSounds(520);
+  await evalJs(`__battleSamples.length = 0;
+    cog.state.enemy.moves = [{ k: 'def', v: 4 }]; cog.state.enemy.mv = 0`);
+  await clickLabel('endturn');
+  await waitBattleSamples(168, 152); // discard.wav, draw.wav
+  if (!await waitHand()) throw new Error('新回合发牌未结束');
+  await expectOnlyBattleSounds(168, 152);
+
+  // 0 伤敌招没有动作占位，也不能让新回合抽牌抢在弃牌触底之前。
+  await evalJs(`__battleSamples.length = 0;
+    Object.assign(cog.state.enemy, { dmg: 0, moves: [{ k: 'atk' }], mv: 0 })`);
+  await clickLabel('endturn');
+  await waitBattleSamples(168, 152);
+  if (!await waitHand()) throw new Error('无敌方演出时发牌未结束');
+  await expectOnlyBattleSounds(168, 152);
+}, async () => true);
+
+await boot(URL_ + '?dev=battle');
+await step('战斗音效：答错保留焰灭声，不叠加补救格挡和抽牌', async () => {
+  await ensureQuestions();
+  await watchBattleSounds('c02');
+  await evalJs(`cog.state.powers = ['eraser', 'scratch']; cog.state.draw.push('base:guard')`);
+  const before = await S('({ block: cog.state.block, drawn: cog.state.drawnThisTurn })');
+  await selectAudioQuizCard();
+  await clickLabel('opt', await S('(cog.state.panel.view.answer + 1) % cog.state.panel.view.options.length'));
+  if (!await waitHand()) throw new Error('答错补抽的手牌没有停稳');
+  const after = await S('({ block: cog.state.block, drawn: cog.state.drawnThisTurn })');
+  if (after.block <= before.block || after.drawn !== before.drawn + 1) throw new Error('答错补救未结算');
+  await expectOnlyBattleSounds(146); // fizzle.wav
+}, async () => true);
+
+await boot(URL_ + '?dev=reward');
+await step('卡牌音效：拿走奖励牌时播放一次选牌声', async () => {
+  if (!await waitFor('rewardcard')) throw new Error('奖励面板未打开');
+  await watchSounds();
+  const before = await S('cog.state.deck.length');
+  await clickLabel('rewardcard');
+  await expectOnlyBattleSounds(84);
+  if (await S('cog.state.deck.length') !== before + 1) throw new Error('奖励牌未入牌组');
+}, async () => true);
+
+await boot(URL_ + '?dev=refine');
+await step('卡牌音效：选中精炼预览与拿奖励使用同一选牌声', async () => {
+  if (!await waitFor('pick')) throw new Error('精炼列表未打开');
+  await watchSounds();
+  await clickLabel('pick');
+  await expectOnlyBattleSounds(84);
+  if (!await S("cog.state.panel.k === 'cardpick' && cog.state.panel.pick !== undefined")) {
+    throw new Error('精炼预览未打开');
+  }
+}, async () => true);
+
+async function waitBattleSamples(...expected) {
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    const samples = await S('__battleSamples');
+    if (expected.every((ms) => samples.includes(ms))) return samples;
+    await nextFrames();
+  }
+  throw new Error('战斗动作没有播放预期采样：' + expected.join());
+}
+
+await boot(URL_);
+await step('战斗音效：从设置关闭，刷新后仍静音', async () => {
+  await clickLabel('设置');
+  await clickLabel('战斗音效');
+  try {
+    if (await S('localStorage.getItem("cognirogue.impactSound")') !== 'off') {
+      throw new Error('静音偏好没有保存');
+    }
+    await boot(URL_ + '?dev=battle');
+    await ensureQuestions();
+    await watchBattleSounds('c02');
+    await clickCard(0);
+    if (!await waitFor('opt')) throw new Error('静音时卡牌没有出题');
+    await clickLabel('opt', await S('cog.state.panel.view.answer'));
+    const deadline = Date.now() + 12000;
+    while (await S('cog.victory().striking') && Date.now() < deadline) await nextFrames();
+    if (await S('cog.victory().striking || __battleSamples.length !== 0')) {
+      throw new Error('打击未结束，或关闭后仍播放音效');
+    }
+  } finally {
+    await evalJs('localStorage.removeItem("cognirogue.impactSound")');
+  }
+}, async () => await S('__battleSamples.length === 0'));
 
 await boot(URL_ + '?dev=battle');
 await step('基础格挡与敌人防御 → 抬盾、合甲后恢复操作', async () => {

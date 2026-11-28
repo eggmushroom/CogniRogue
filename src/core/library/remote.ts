@@ -6,7 +6,7 @@
  * 玩家仍可用随程序的英语题库。所以这里的每个函数失败都返回空值，不抛。
  */
 import { AGENTIC_OVERLAP_CHARS, AGENTIC_WINDOW } from '../model/plan';
-import type { Question } from '../model/types';
+import type { Question, QuestionSource, QuestionSourceSection } from '../model/types';
 
 /**
  * 服务地址由 `main.ts` 按页面来源设置：
@@ -111,6 +111,35 @@ export async function remoteBankText(id: string, ms = 15000): Promise<string | n
   return r ? await r.text() : null;
 }
 
+function questionSourcePath(bankId: string, topic: string, qid: string) {
+  const [bank, group, question] = [bankId, topic, qid].map(encodeURIComponent);
+  return `/api/banks/${bank}/topics/${group}/questions/${question}/source`;
+}
+
+/** null = no recorded evidence; undefined = request failed and can be retried. */
+export async function remoteQuestionSource(bankId: string, topic: string, qid: string): Promise<QuestionSource | null | undefined> {
+  const r = await get(questionSourcePath(bankId, topic, qid), 8000);
+  if (!r) return undefined;
+  try {
+    const data = await r.json() as { source?: QuestionSource | null };
+    return data.source === null || (data.source && Array.isArray(data.source.sections)) ? data.source : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function remoteSourceSection(bankId: string, topic: string, qid: string, sectionId: string): Promise<QuestionSourceSection | null | undefined> {
+  const r = await get(questionSourcePath(bankId, topic, qid) + '?section=' + encodeURIComponent(sectionId), 8000);
+  if (!r) return undefined;
+  try {
+    const { section } = await r.json() as { section?: QuestionSourceSection | null };
+    if (section === null) return null;
+    return section?.id === sectionId && typeof section.text === 'string' && Array.isArray(section.pages) ? section : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 把尚未确认的答题事件交给服务；服务确认前保留本地记录。 */
 export async function sendAnswers(payload: unknown): Promise<boolean> {
   return !!(await post('/api/answers', payload, 4000));
@@ -196,12 +225,20 @@ export async function serviceInfo(ms = 1200): Promise<ServiceInfo | null> {
   }
 }
 
+export interface PdfExtraction {
+  pageCount: number;
+  imagePages: number[];
+  unreadablePages: number[];
+  blankPages: number[];
+}
+
 export interface DocUpload {
   ok: boolean;
   docId?: string;
   name?: string;
   chars?: number;
   kind?: string;
+  pdfExtraction?: PdfExtraction;
   error?: string;
 }
 
@@ -213,6 +250,7 @@ export interface RemoteDocument {
   createdAt: string;
   planId: string;
   importedPlanId?: string;
+  pdfExtraction?: PdfExtraction;
 }
 
 export async function remoteDocuments(): Promise<RemoteDocument[]> {
@@ -305,6 +343,12 @@ export async function startGenerate(docId: string, plan: string, topics: number[
     '本机服务没有响应');
 }
 
+/** A retry is a new task; submitting the same failed task again returns its direct successor. */
+export function retryGeneration(id: string) {
+  return postJson<SubmitResult & { job?: JobState }>(`/api/jobs/${encodeURIComponent(id)}/retry`, {}, 8000,
+    '本机服务没有响应，请稍后再试。');
+}
+
 /** 一份划分计划：和 `tools/gen/plan.ts` 的 `Plan` 同形，只取界面要用的字段。 */
 export interface PlanTopicRemote {
   id: string;
@@ -361,6 +405,11 @@ export type JobActivityEvent =
 
 export type JobActivity = JobActivityEvent & { ms: number };
 
+export interface JobFailure {
+  stage: 'plan' | 'prepare' | 'generate' | 'review' | 'commit';
+  code: string;
+}
+
 export interface JobState {
   id: string;
   state: 'queued' | 'running' | 'done' | 'fail';
@@ -373,6 +422,8 @@ export interface JobState {
   ms: number;
   tail: string;
   traceId?: string;
+  retryOfJobId?: string;
+  failure?: JobFailure;
   progress?: { phase: string; completed: number; total: number; label?: string; written?: number };
   activity?: JobActivity[];
   /** 计划任务跑完时带回来的一份计划。 */

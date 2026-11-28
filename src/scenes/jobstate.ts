@@ -40,7 +40,28 @@ export function generationLabel(job: JobState): string {
   return job.progress?.phase === 'starting' ? '准备出题' : '出题中';
 }
 
-export function jobFailureReason(tail: string): string {
+export function jobFailureReason({ failure, tail }: JobState): string {
+  if (failure && failure.code !== 'unknown') {
+    const stage = { plan: '分章', prepare: '准备出题', generate: '出题', review: '审核', commit: '写入题库' }[failure.stage];
+    const model = failure.stage === 'review' ? '审核接口' : '出题模型接口';
+    const settings = failure.stage === 'review' ? '请检查服务端审核模型配置（REVIEW_*）。' : '请检查「设置 → 出题模型」。';
+    const hints: Record<string, string> = {
+      balance: `${model}余额不足。${settings}`,
+      auth: `${model}未通过认证。${settings}`,
+      forbidden: `${model}拒绝访问。${settings}`,
+      configuration: `模型未配置完整。${settings}`,
+      'rate-limit': '模型请求过多，请稍后重试。',
+      timeout: '模型请求超时，请稍后重试。',
+      unavailable: '模型服务暂时不可用，请稍后重试。',
+      network: '无法连接模型服务，请检查网络和接口地址。',
+      'invalid-response': '模型没有返回可用结果，请检查模型兼容性后重试。',
+      'no-candidates': '本轮没有生成可审核的新题。',
+      rejected: '本轮候选题均未通过审核，没有写入题库。',
+      'review-pending': '本轮有题目未得到有效审核结果，未放行入库。',
+      'invalid-bank': '题库未通过格式校验，没有写入。',
+    };
+    if (stage && hints[failure.code]) return `${stage}失败：${hints[failure.code]}`;
+  }
   if (/模型拒绝 0 道，待审 0 道/.test(tail)) {
     return /JIT 取数超过/.test(tail)
       ? '已读取原文，但模型连续取数后没有生成候选题，可以重新生成。'

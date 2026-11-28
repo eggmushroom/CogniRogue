@@ -1,6 +1,7 @@
 import { g, roundRect, VW, wrapText } from '../gfx/canvas';
 import { C, PRESS, font, FONT_NUM, FONT_TITLE, FONT_UI, withAlpha } from '../gfx/theme';
 import { bar, cutRule, drawCard, icon, panel, text } from '../gfx/ui';
+import { playBattleSound } from '../gfx/battle-audio';
 import type { IconName } from '../gfx/ui';
 import { drawPowerIcon } from '../gfx/art/powers';
 import { onClick, hover, setInputLock } from '../input';
@@ -70,6 +71,7 @@ export function syncBattle() {
     handFx = [];
     questionOrigin = null;
     prevTurn = G.turn;
+    cardHandChange = false;
     discardFx.length = 0;
   }
 }
@@ -446,6 +448,7 @@ interface Slot { x: number; y: number; rot: number; i: number }
  */
 interface DrawFx {
   age: number;
+  cue?: boolean;
   px: number;
   py: number;
   /** 含悬停抬升；牌离手时从这里起飞，否则会向下跳。 */
@@ -468,6 +471,7 @@ const DISCARD_GAP = 0.035;
 /** 出牌在逻辑层是瞬时的；不补这段飞行，牌就是凭空消失。 */
 interface DiscardFx {
   card: CardDef;
+  cue?: boolean;
   /** 离手瞬间的卡面数值快照。 */
   out: EffOut;
   up: boolean;
@@ -488,6 +492,9 @@ let prevHand: string[] = [];
 let prevFx: DrawFx[] = [];
 /** 上一帧的回合号：跨回合时整手牌换人，同 id 的副本也不能当「同一张」认。 */
 let prevTurn = G.turn;
+/** 同步出牌产生的手牌变化已在结算时选过音效，飞行只负责画面。 */
+let cardHandChange = false;
+export function markCardHandChange() { cardHandChange = true; }
 /** 被点开的那一张：id + 当时的下标。知识卡答完才离手，记到真的少一张才用掉。 */
 let eject: { id: string; at: number; lift?: number } | null = null;
 interface CardBounds {
@@ -645,15 +652,20 @@ function bindHandCard(args: {
     }, 'card', slot);
   } else if (!isJunk) {
     onClick(px - w / 2, py - h / 2, w, h, () => {
+      if (G.panel.k !== 'none') return;
       const i = idxOf();
       if (i < 0 || !payUp()) return;
       const lift = (handFx[i]?.py ?? py) - py;
       eject = { id, at: i, lift };
       askCard(i);
       const panel = panelOf('question');
-      if (panel?.idx === i && !reduceMotion()) {
-        questionOrigin = { panel, x: px, y: py, w, h, rotation: rot, drawFront: drawFace, progress: 0 };
-        setInputLock(true);
+      if (panel?.idx === i) {
+        // Only a successful pick-up plays; direct plays use their settlement cue.
+        playBattleSound('select');
+        if (!reduceMotion()) {
+          questionOrigin = { panel, x: px, y: py, w, h, rotation: rot, drawFront: drawFace, progress: 0 };
+          setInputLock(true);
+        }
       }
     }, 'card', slot);
   } else {
@@ -680,6 +692,8 @@ function drawHand(t: number, dt: number) {
    */
   const turnChanged = G.turn !== prevTurn;
   if (turnChanged) eject = null;
+  const withCard = cardHandChange && !turnChanged;
+  cardHandChange = false;
 
   // 先对齐，再分谁飞进来、谁飞出去；被点中的那格从对齐里剔掉。
   let skip = -1;
@@ -700,6 +714,7 @@ function drawHand(t: number, dt: number) {
 
   // 离手的牌从最后画到的位置起飞；弃牌堆是唯一去处，杂念也一样飞过去。
   let laneOut = 0;
+  const clearingHand = turnChanged || (skip < 0 && G.hand.length === 0);
   for (let pi = 0; pi < prevHand.length; pi++) {
     if (kept.has(pi)) continue;
     const fx = prevFx[pi];
@@ -712,6 +727,7 @@ function drawHand(t: number, dt: number) {
       card, out: fx.out ?? planStrike(id, { noBoost: true }), up: isUpgraded(id),
       x: fx.dx, y: fx.dy, rot: fx.rot,
       waitFor: fromQuiz ? G.panel : undefined,
+      cue: !withCard && clearingHand && laneOut === 0,
       age: -laneOut * DISCARD_GAP,
     });
     laneOut += 1;
@@ -722,6 +738,7 @@ function drawHand(t: number, dt: number) {
     if (nextFx[j]) continue;
     nextFx[j] = {
       age: -lane * DRAW_GAP,
+      cue: !withCard && lane === 0,
       px: DRAW_FROM.x, py: DRAW_FROM.y,
       dx: DRAW_FROM.x, dy: DRAW_FROM.y,
       rot: -0.42,
@@ -729,7 +746,8 @@ function drawHand(t: number, dt: number) {
     lane += 1;
   }
   handFx = nextFx;
-  // 敌人出手期间新牌留在牌堆，两拨飞行叠在一起会糊；age 推进按牌走，不在这里统一加 dt。
+  // 就算敌人这回合没出手，也先让弃牌碰到牌堆，再让抽牌飞出并发声。
+  const holdDraw = foeActing || discardFx.some((f) => f.cue);
 
   for (const s of slots) {
     const id = G.hand[s.i];
@@ -738,8 +756,12 @@ function drawHand(t: number, dt: number) {
     if (!fx) continue;
     // 排队中的牌也要推进 age；先 continue 再推进，牌会永远停在队列里，一手牌不落位。
     const before = fx.age;
-    if (!foeActing) fx.age += dt;
+    if (!holdDraw) fx.age += dt;
     if (fx.age < 0) continue; // 还在队列里，这张牌此刻不存在
+    if (fx.cue && !holdDraw) {
+      fx.cue = false;
+      playBattleSound('draw');
+    }
     const card = defOf(id);
     // 手牌数字就是这一刻真打出去的每段伤害：与结算共用同一份 planStrike。
     const out = planStrike(id);
@@ -842,6 +864,7 @@ function drawDiscards(dt: number) {
     if (f.age < 0) continue;
     if (f.age >= DISCARD_DUR) {
       discardFx.splice(i, 1);
+      if (f.cue) playBattleSound('discard');
       pulseDiscard();
       continue;
     }
@@ -944,6 +967,7 @@ export function resetBattleView() {
   handFx = [];
   prevTurn = G.turn;
   // 换场时清掉被点走的那格；下标和 id 都是旧的。
+  cardHandChange = false;
   eject = null;
   questionOrigin = null;
   discardFx.length = 0;

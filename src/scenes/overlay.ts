@@ -3,6 +3,7 @@ import { C, PRESS, font, FONT_TITLE, FONT_UI, topicColor, withAlpha } from '../g
 import { action, choiceCard, cutRule, drawCard, panel, text } from '../gfx/ui';
 import { drawArtIcon } from '../gfx/art/icons';
 import { drawPowerIcon } from '../gfx/art/powers';
+import { playBattleSound } from '../gfx/battle-audio';
 import { consumeWheel, hover, onClick } from '../input';
 import { drawMarkdown, layoutMarkdown } from '../gfx/markdown';
 import { easeOut } from '../gfx/geom';
@@ -360,7 +361,9 @@ function drawReward(age: number) {
       glow: hv, up: p.ledger, rule: c.link?.note,
     });
     g.restore();
-    onClick(px, cy, cw, ch, () => takeCard(i), 'rewardcard');
+    onClick(px, cy, cw, ch, () => {
+      if (takeCard(i)) playBattleSound('select');
+    }, 'rewardcard');
   });
 
   action(x + w / 2 - 340, y + h - 74, 300, 54, '跳过，不要卡', () => skipReward());
@@ -593,8 +596,10 @@ function drawCardPick(mode: 'up' | 'rm') {
     const top = Math.max(py, area.y0);
     const bot = Math.min(py + ch, area.y0 + area.h);
     if (bot > top) {
-      onClick(px, top, cw, bot - top,
-        () => (mode === 'up' ? previewUpgrade(o.i) : forgetCard(o.i)), 'pick', o.i);
+      onClick(px, top, cw, bot - top, () => {
+        const picked = mode === 'up' ? previewUpgrade(o.i) : forgetCard(o.i);
+        if (picked) playBattleSound('select');
+      }, 'pick', o.i);
     }
   });
   area.restore();

@@ -488,8 +488,25 @@ export interface BankPage {
   bank: QuestionBank;
   topic?: string;
   question?: string;
+  questionSource?: QuestionSourceView;
+  sourceReader?: QuestionSourceReader;
   lastTopic?: string;
 }
+
+export interface QuestionSource {
+  documentName: string;
+  sections: Array<{ id: string; title: string; excerpt: string; pages: number[] }>;
+}
+
+export interface QuestionSourceSection { id: string; title: string; text: string; pages: number[] }
+
+export type QuestionSourceReader = { id: string; title: string; documentName: string } & (
+  { state: 'loading' | 'empty' | 'error' } | { state: 'ready'; section: QuestionSourceSection }
+);
+
+export type QuestionSourceView = { qid: string } & (
+  { state: 'loading' | 'empty' | 'error' } | { state: 'ready'; source: QuestionSource }
+);
 
 /** 划分计划里的一节：候选主题。 */
 export interface PlanTopicView {
@@ -511,6 +528,7 @@ export interface PlanTopicView {
 export interface PlanView {
   docId: string;
   name: string;
+  pdfWarning?: string;
   /** 这一份计划是怎么切出来的：目录 / 模型 / 固定大小。 */
   tier: 'toc' | 'agentic' | 'fixed' | '';
   agenticWindow: number;

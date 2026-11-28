@@ -100,11 +100,9 @@ function measureMarkdown(source: string, width: number, size: number, weight: nu
   return { rows, blocks, width, size, weight, lineH, h: source.trim() ? y : 0 };
 }
 
-export function drawMarkdown(layout: ReturnType<typeof layoutMarkdown>, x: number, y: number, color: string = C.ink, firstRow = 0, lastRow = Infinity) {
-  const { rows, blocks, width, size, weight, lineH } = layout;
-  g.save();
-  g.textAlign = 'left';
-  g.textBaseline = 'middle';
+type MarkdownLayout = ReturnType<typeof layoutMarkdown>;
+
+function drawCodeBackgrounds({ rows, blocks, width }: MarkdownLayout, x: number, y: number, firstRow: number, lastRow: number) {
   const start = rows[firstRow]?.y ?? Infinity;
   const end = rows[lastRow]?.y ?? Infinity;
   for (const block of blocks) {
@@ -115,7 +113,13 @@ export function drawMarkdown(layout: ReturnType<typeof layoutMarkdown>, x: numbe
     g.fillStyle = withAlpha(C.void, 0.54);
     g.fill();
   }
-  for (const row of rows.slice(firstRow, lastRow)) {
+}
+
+function drawRows({ rows, size, weight, lineH }: MarkdownLayout, x: number, y: number, color: string, firstRow: number, lastRow: number) {
+  g.textAlign = 'left';
+  g.textBaseline = 'middle';
+  for (let i = firstRow; i < Math.min(lastRow, rows.length); i++) {
+    const row = rows[i]!;
     const cy = y + row.y + lineH / 2;
     for (const run of row.runs) {
       g.font = styleFont(run.style, size, weight);
@@ -123,5 +127,25 @@ export function drawMarkdown(layout: ReturnType<typeof layoutMarkdown>, x: numbe
       g.fillText(run.value, x + run.x, cy);
     }
   }
+}
+
+export function drawMarkdown(layout: MarkdownLayout, x: number, y: number, color: string = C.ink, firstRow = 0, lastRow = Infinity) {
+  g.save();
+  drawCodeBackgrounds(layout, x, y, firstRow, lastRow);
+  drawRows(layout, x, y, color, firstRow, lastRow);
+  g.restore();
+}
+
+/** A folded title shows one text row. Code backgrounds fade with the rest of the stem. */
+export function drawMarkdownTitle(layout: MarkdownLayout, x: number, y: number, color: string, reveal: number) {
+  g.save();
+  if (reveal > 0) {
+    const alpha = g.globalAlpha;
+    g.globalAlpha = alpha * reveal;
+    drawCodeBackgrounds(layout, x, y, 0, Infinity);
+    drawRows(layout, x, y, color, 1, Infinity);
+    g.globalAlpha = alpha;
+  }
+  drawRows(layout, x, y, color, 0, 1);
   g.restore();
 }

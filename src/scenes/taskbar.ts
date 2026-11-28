@@ -2,8 +2,8 @@ import { g, roundRect, wrapText, VH, VW } from '../gfx/canvas';
 import { C, font, FONT_NUM, FONT_TITLE, withAlpha } from '../gfx/theme';
 import { action, button, panel, text } from '../gfx/ui';
 import { hover, onBlock, onClick, onDismiss, consumeModalWheel } from '../input';
-import { jobTraceUrl, type JobActivity, type JobState } from '../core/library';
-import { generationLabel, generationStep, jobFailureReason, jobsSnapshot } from './jobstate';
+import { jobTraceUrl, retryGeneration, type JobActivity, type JobState } from '../core/library';
+import { generationLabel, generationStep, jobFailureReason, jobsSnapshot, registerJobs } from './jobstate';
 import { DrawerMotion, reduceMotion } from '../gfx/motion';
 import { drawScribe, drawScribeAtWork, type ScribeAction, type SpiritKind } from '../gfx/art/scribe';
 import { drawExitControl, type ExitAction } from './exit-control';
@@ -20,6 +20,8 @@ const SPIRIT_NAMES = [
 let opened = false;
 let selected = '';
 let listScroll = 0;
+const retrying = new Set<string>();
+let retryError: { id: string; text: string } | undefined;
 const motion = new DrawerMotion();
 
 export const taskbarOpen = () => motion.visible(opened);
@@ -31,7 +33,25 @@ function openTaskbar() {
 }
 export function openTaskDetail(id: string) {
   openTaskbar();
+  if (selected !== id) retryError = undefined;
   selected = id;
+}
+
+async function retryTask(job: JobState) {
+  if (retrying.has(job.id)) return;
+  retrying.add(job.id);
+  retryError = undefined;
+  try {
+    const result = await retryGeneration(job.id);
+    if (result.ok && result.job) {
+      registerJobs([result.job]);
+      if (opened && selected === job.id) selected = result.job.id;
+    } else if (opened && selected === job.id) {
+      retryError = { id: job.id, text: result.error ?? '任务未提交，请稍后再试。' };
+    }
+  } finally {
+    retrying.delete(job.id);
+  }
 }
 
 export function closeTaskbar(immediate = false) {
@@ -221,12 +241,12 @@ function drawDetail(job: JobState, y: number, t: number) {
     if (job.state === 'fail') {
       g.save();
       g.font = font(13);
-      const lines = wrapText(jobFailureReason(job.tail), w).slice(0, 6);
+      const lines = wrapText(jobFailureReason(job), w).slice(0, 4);
       g.restore();
       lines.forEach((line, i) => text(line, x, y + 384 + i * 20, { size: 13, color: C.red }));
-      drawActivity(job, x, y + 388 + lines.length * 20, w, 3);
+      drawActivity(job, x, y + 388 + lines.length * 20, w, lines.length > 2 ? 1 : 2);
     } else {
-      drawActivity(job, x, y + 384, w, 6);
+      drawActivity(job, x, y + 384, w, job.retryOfJobId ? 5 : 6);
     }
     return;
   }
@@ -241,7 +261,7 @@ function drawDetail(job: JobState, y: number, t: number) {
       { size: 12, color: C.blue, maxW: w });
   }
   if (job.state === 'fail') {
-    text('未能完成，请重试',
+    text(jobFailureReason(job),
       x, y + 132, { size: 12, color: C.dim, maxW: w });
   }
 }
@@ -272,6 +292,21 @@ function drawDrawer(t: number) {
   const selectedJob = jobs.find((job) => job.id === selected);
   if (selectedJob) {
     drawDetail(selectedJob, y + 100, t);
+    if (selectedJob.state === 'fail' && selectedJob.taskType === 'generate' && selectedJob.topic != null) {
+      const successor = jobs.find((job) => job.retryOfJobId === selectedJob.id);
+      const pending = retrying.has(selectedJob.id);
+      const retryY = y + h - 102;
+      action(x + 24, retryY, 125, 34, successor ? '查看重试任务' : pending ? '正在提交…' : '重试这个主题',
+        successor ? () => openTaskDetail(successor.id) : () => void retryTask(selectedJob),
+        'ghost', { size: 12, disabled: pending });
+      if (retryError?.id === selectedJob.id) {
+        text(retryError.text, x + 159, retryY + 17, { size: 12, color: C.red, maxW: w - 183 });
+      } else if (selectedJob.retryOfJobId && jobs.some((job) => job.id === selectedJob.retryOfJobId)) {
+        action(x + 159, retryY, 125, 34, '查看上次任务', () => openTaskDetail(selectedJob.retryOfJobId!), 'ghost', { size: 12 });
+      }
+    } else if (selectedJob.retryOfJobId && jobs.some((job) => job.id === selectedJob.retryOfJobId)) {
+      action(x + 24, y + h - 102, 125, 34, '查看上次任务', () => openTaskDetail(selectedJob.retryOfJobId!), 'ghost', { size: 12 });
+    }
     const traceId = selectedJob.traceId;
     if (traceId) {
       const footerY = y + h - 57;

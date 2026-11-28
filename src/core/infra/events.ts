@@ -1,14 +1,20 @@
 import type { Eff, PowerId } from '../model/types';
 
+/** 一手牌的结算计划；攻击即使被敌人全挡也算出手，抽牌数是实际抽到的。 */
+export type CardCommit = {
+  t: 'cardCommit'; attack: boolean; wrong: boolean; block: number; heal: number; hurt: number; draw: number;
+};
+
 /**
  * 逻辑层与表现层唯一的边界。core 只发事件，表现层在 main.ts 订阅并演出。
  */
 export type GameEvent =
   | { t: 'dmg'; n: number; absorbed: number; eff?: Eff; seq?: number }
-  | { t: 'blk'; n: number }
+  | CardCommit
+  | { t: 'blk'; n: number; card?: CardCommit }
   /** 玩家自己受伤；敌人攻击不走这里。 */
-  | { t: 'hurt'; n: number }
-  | { t: 'heal'; n: number }
+  | { t: 'hurt'; n: number; fromCard?: boolean }
+  | { t: 'heal'; n: number; fromCard?: boolean }
   /** 敌人回血，落点在敌人血条。 */
   | { t: 'foeHeal'; n: number }
   /** 敌人一段攻击落地；与玩家的多段伤害共用同一个执行器与节拍。 */

@@ -4,7 +4,7 @@ import { AGENTIC_OVERLAP_CHARS, AGENTIC_WINDOW, MAX_AGENTIC_WINDOW, MIN_AGENTIC_
 import {
   importDocumentTopics, readBank, refreshDocuments, refreshRemoteBanks, serviceInfo, remoteDocument, resetRemoteDocument, deleteRemoteDocument, startGenerate, startPlan, uploadDoc,
 } from '../core/library';
-import type { PlanRemote } from '../core/library';
+import type { PdfExtraction, PlanRemote } from '../core/library';
 import { pickFile } from './filepick';
 import { editField, fieldOf, type KeyIn } from './textfield';
 import { jobFailureReason, jobsSnapshot, registerJobs, watchJob } from './jobstate';
@@ -24,6 +24,15 @@ function fail(v: PlanView, msg: string) {
   v.busy = '';
   v.ok = false;
   v.msg = msg;
+}
+
+function pdfWarning(report?: PdfExtraction): string {
+  if (!report) return '';
+  const pages = [...report.imagePages, ...report.unreadablePages].sort((a, b) => a - b);
+  if (!pages.length) return '';
+  const sample = pages.slice(0, 10).join('、');
+  const more = pages.length > 10 ? `等 ${pages.length} 页` : '';
+  return `PDF 第 ${sample} 页${more}未提取到正文；出题仅使用已提取的正文。`;
 }
 
 /** 回到原题库预览；任务可能已经追加题目，不继续用打开工作台前的原文。 */
@@ -53,6 +62,7 @@ async function loadDocument(v: PlanView) {
   if (!saved) { fail(v, '文档暂时无法读取，请重试'); return; }
   v.name = saved.name;
   v.chars = saved.chars;
+  v.pdfWarning = pdfWarning(saved.pdfExtraction);
   v.canAgentic = !!info?.canGenerate;
   if (saved.plan) {
     apply(v, saved.plan, saved.planId);
@@ -64,7 +74,7 @@ async function loadDocument(v: PlanView) {
     const result = await watchJob(saved.job.id, (job) => { v.msg = job.progress?.label ?? job.title; });
     v.busy = '';
     if (!result) { fail(v, '任务未完成，可从已保存的文档重试'); return; }
-    if (result.state === 'fail') { fail(v, jobFailureReason(result.tail)); return; }
+    if (result.state === 'fail') { fail(v, jobFailureReason(result)); return; }
     await loadDocument(v);
     return;
   }
@@ -202,6 +212,7 @@ export async function startDocFlow() {
   }
   v.docId = up.docId;
   v.chars = up.chars ?? 0;
+  v.pdfWarning = pdfWarning(up.pdfExtraction);
   void refreshDocuments();
   await loadDocument(v);
   if (v.planId || !v.ok || G.panel.k !== 'plan' || G.panel.data !== v) return;
@@ -226,7 +237,7 @@ async function runPlan(v: PlanView, mode: 'auto' | 'fixed' | 'agentic') {
     fail(v, '暂时无法获取进度，请稍后查看任务');
     return;
   }
-  if (st.state === 'fail') { fail(v, jobFailureReason(st.tail)); return; }
+  if (st.state === 'fail') { fail(v, jobFailureReason(st)); return; }
   if (!st.plan) {
     fail(v, `${label}失败，请重试或更换文档`);
     return;

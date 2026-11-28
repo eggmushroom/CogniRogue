@@ -3,19 +3,20 @@ import { C, FONT_NUM, font, FONT_TITLE, FONT_UI, withAlpha } from '../../gfx/the
 import { action, bar, panel, text } from '../../gfx/ui';
 import { drawArtIcon } from '../../gfx/art/icons';
 import { AccordionMotion } from '../../gfx/motion';
-import { drawMarkdown, layoutMarkdown } from '../../gfx/markdown';
+import { battleSoundEnabled, toggleBattleSound } from '../../gfx/battle-audio';
+import { drawMarkdown, drawMarkdownTitle, layoutMarkdown } from '../../gfx/markdown';
 import { hover, onClick } from '../../input';
 import { BAL } from '../../core/model';
 import { MAX_AGENTIC_WINDOW, MIN_AGENTIC_WINDOW } from '../../core/model/plan';
 import { G, panelOf } from '../../core/infra';
 import { bankTopicTitle, clearQuestionMemory, countQuestions, isRetired, listBanks, listDocuments, rightCount, serviceModelName, serviceReady, sourceBank, wrongCount, type BankRow } from '../../core/library';
-import type { BankPage, ModelForm, Panel, PlanView, Question, QuestionBank } from '../../core/model';
+import type { BankPage, ModelForm, Panel, PlanView, Question, QuestionBank, QuestionSourceSection, QuestionSourceView } from '../../core/model';
 import {
-  box, heading, overflowAffordance, scrollArea,
+  box, heading, overflowAffordance, resetScroll, scrollArea,
   MENU_BUTTON_H, MENU_GAP, MENU_H, MENU_PAD, MENU_RADIUS, MENU_ROW_RADIUS,
   MENU_W, MENU_X, MENU_Y,
 } from './common';
-import { openBank, openBankTopic, selectBank, askToDeleteBank, confirmBankDeletion, requestPackFile } from '../packio';
+import { openBank, openBankTopic, selectBank, askToDeleteBank, confirmBankDeletion, requestPackFile, openQuestionSource, closeQuestionSource, openSourceSection } from '../packio';
 import { generationLabel, jobFailureReason } from '../jobstate';
 import { openTaskDetail } from '../taskbar';
 import { startDocFlow, openSavedDocument, replan, adjustAgenticWindow, focusAgenticOverlap, approvePlan, documentJobs, generateSelectedTopics, requestDocumentAction, cancelDocumentAction, confirmDocumentAction } from '../plangen';
@@ -28,6 +29,8 @@ import { drawField, fieldOf } from '../textfield';
 // Menu polish informed by Unslop by Damir Sokolovsky (CC BY 4.0).
 const questionMotion = new WeakMap<BankPage, AccordionMotion>();
 const questionAnchor = new WeakMap<BankPage, { id: string; offset: number }>();
+const readerLayouts = new WeakMap<QuestionSourceSection, ReturnType<typeof layoutMarkdown>>();
+const READER_SCROLL = 'pack:source-reader';
 let lastPreview: string | undefined;
 const QUESTION_HEADER_H = 48;
 const QUESTION_TITLE_SIZE = 16;
@@ -50,12 +53,13 @@ export function drawPackPanel(t: number) {
   const page = p.page;
   const row = page && rows.find((bank) => bank.id === page.bankId);
   box(packX, packY, packW, packH, C.gold, panelExit(), MENU_RADIUS);
+  if (page?.sourceReader) return drawSourceReader(page, page.sourceReader);
   if (row && page) {
     lastPreview = row.id;
     const bank = row.on ? sourceBank() : page.bank;
     const doc = listDocuments().find((entry) => entry.docId === row.id);
     const name = doc?.name ?? row.name;
-    if (page.topic) drawBankQuestions(page, name, bank, page.topic, t);
+    if (page.topic) drawBankQuestions(page, name, !!doc, bank, page.topic, t);
     else drawBankTopics(row, name, !!doc, bank, !!p.loading, page.lastTopic);
   } else {
     drawBankList(rows, !!p.loading);
@@ -175,7 +179,7 @@ function menuRow(
   if (run) onClick(listX, top, listW, bottom - top, run, label);
 }
 
-function drawBankQuestions(page: BankPage, name: string, bank: QuestionBank, topic: string, t: number) {
+function drawBankQuestions(page: BankPage, name: string, fromDocument: boolean, bank: QuestionBank, topic: string, t: number) {
   const list = packSorted(bank.byTopic[topic] ?? []);
   packHeading(bankTopicTitle(bank, topic), name);
   let motion = questionMotion.get(page);
@@ -186,7 +190,8 @@ function drawBankQuestions(page: BankPage, name: string, bank: QuestionBank, top
     const ok = rightCount(q.topic, q.qid);
     const bad = wrongCount(q.topic, q.qid);
     const amount = progress.get(q.qid) ?? 0;
-    const layout = amount > 0 ? questionLayout(q, listW, !!(ok + bad)) : null;
+    const evidence = page.questionSource?.qid === q.qid ? page.questionSource : undefined;
+    const layout = amount > 0 ? questionLayout(q, listW, !!(ok + bad), evidence) : null;
     const h = layout ? QUESTION_HEADER_H + Math.round((layout.h - QUESTION_HEADER_H) * amount) : QUESTION_HEADER_H;
     return { q, ok, bad, layout, h, amount };
   });
@@ -201,7 +206,7 @@ function drawBankQuestions(page: BankPage, name: string, bank: QuestionBank, top
   const view = scrollArea(listX, listTop, listW, packY + 688 - listTop, need, `pack:questions:${page.bankId}:${topic}`, undefined, anchorDelta);
   let y = view.y;
   for (const item of layouts) {
-    drawPackQuestion(view, listX, y, listW, page, item);
+    drawPackQuestion(view, listX, y, listW, page, fromDocument, item);
     y += item.h + gap;
   }
   view.restore();
@@ -212,14 +217,68 @@ function questionTitle(q: Question, w: number) {
   return layoutMarkdown(q.q, w - QUESTION_TITLE_WIDTH, QUESTION_TITLE_SIZE, 500);
 }
 
-function questionLayout(q: Question, w: number, answered: boolean) {
+function questionLayout(q: Question, w: number, answered: boolean, evidence?: QuestionSourceView) {
   const title = questionTitle(q, w);
   const options = q.options.map((opt) => layoutMarkdown(opt, w - 88, 14));
   const explain = layoutMarkdown(q.explain, w - 64, 13);
+  const extracts = evidence?.state === 'ready' ? evidence.source.sections.map((section) => ({
+    ...section, md: layoutMarkdown(section.excerpt, w - 64, 13),
+  })) : [];
+  const sourceH = evidence?.state === 'ready' ? 44 + extracts.reduce((n, row) => n + row.md.h + 48, 0)
+    : evidence ? 32 : 0;
   const h = 12 + title.h + 16
     + options.reduce((n, option) => n + option.h + 8, 0)
-    + (explain.h ? explain.h + 12 : 0) + (answered ? 40 : 0);
-  return { title, options, explain, h };
+    + (explain.h ? explain.h + 12 : 0) + 36 + sourceH + (answered ? 40 : 0);
+  return { title, options, explain, evidence, extracts, h };
+}
+
+function evidencePages(pages: number[]): string {
+  const ranges: Array<[number, number]> = [];
+  for (const page of pages) {
+    const last = ranges.at(-1);
+    if (last && page === last[1] + 1) last[1] = page;
+    else ranges.push([page, page]);
+  }
+  return ranges.length ? `PDF 第 ${ranges.map(([a, b]) => a === b ? a : `${a}–${b}`).join('、')} 页` : '';
+}
+
+function drawSourceReader(page: BankPage, reader: NonNullable<BankPage['sourceReader']>) {
+  const pages = reader.state === 'ready' ? evidencePages(reader.section.pages) : '';
+  packHeading(reader.title, [reader.documentName, pages].filter(Boolean).join(' · '));
+  if (reader.state !== 'ready') {
+    const message = reader.state === 'loading' ? '正在读取本节全文…'
+      : reader.state === 'error' ? '本节全文读取失败' : '此小节原文已无法定位';
+    text(message, listX, listTop + 20, { size: 15, color: C.dim });
+    if (reader.state === 'error') {
+      action(listX, listTop + 48, 86, 32, '重试', () => void openSourceSection(page, reader.id),
+        'ghost', { size: 13, r: 5 });
+    }
+    return;
+  }
+  const x = listX + 64;
+  const w = listW - 128;
+  let layout = readerLayouts.get(reader.section);
+  if (!layout) {
+    layout = layoutMarkdown(reader.section.text, w, 17);
+    readerLayouts.set(reader.section, layout);
+    resetScroll(READER_SCROLL);
+  }
+  const view = scrollArea(x, listTop, w, packY + 694 - listTop, layout.h + 16, READER_SCROLL);
+  const origin = view.y + 8;
+  // Find the visible line range without repainting every line of a long chapter.
+  const lineAt = (offset: number) => {
+    let start = 0;
+    let end = layout.rows.length;
+    while (start < end) {
+      const middle = (start + end) >>> 1;
+      if (layout.rows[middle]!.y < offset) start = middle + 1;
+      else end = middle;
+    }
+    return start;
+  };
+  drawMarkdown(layout, x, origin, C.ink2, lineAt(view.y0 - origin - layout.lineH), lineAt(view.y0 + view.h - origin));
+  view.restore();
+  overflowAffordance(view, x, w);
 }
 
 /**
@@ -254,7 +313,7 @@ function qStatusOf(q: Question, ok: number, bad: number): { color: string; label
 
 /** 热区按可见区域裁切，长题目超出一屏后仍能收起、重置。 */
 function drawPackQuestion(
-  view: { y0: number; y: number; h: number }, x: number, cy: number, w: number, page: BankPage,
+  view: { y0: number; y: number; h: number }, x: number, cy: number, w: number, page: BankPage, fromDocument: boolean,
   { q, ok, bad, layout, h: rowH, amount }: {
     q: Question; ok: number; bad: number; layout: ReturnType<typeof questionLayout> | null; h: number; amount: number;
   },
@@ -265,6 +324,14 @@ function drawPackQuestion(
   const hv = hover(x, hitTop, w, hitBottom - hitTop);
   const st = qStatusOf(q, ok, bad);
   let infoY = 0;
+
+  onClick(x, hitTop, w, hitBottom - hitTop, () => {
+    if (panelOf('pack')?.page !== page) return;
+    page.question = page.question === q.qid ? undefined : q.qid;
+    closeQuestionSource(page);
+    if (page.question) questionAnchor.set(page, { id: q.qid, offset: cy - view.y });
+    else questionAnchor.delete(page);
+  }, `q:${q.qid}`);
 
   g.save();
   roundRect(x, cy, w, rowH, MENU_ROW_RADIUS);
@@ -279,7 +346,7 @@ function drawPackQuestion(
 
   const title = layout?.title ?? questionTitle(q, w);
   const titleY = cy + 12 - (title.rows[0]?.y ?? 0);
-  drawMarkdown(title, x + 32, titleY, C.ink, 0, 1);
+  drawMarkdownTitle(title, x + 32, titleY, C.ink, rowH > QUESTION_HEADER_H ? amount : 0);
   if (st) text(st.label, x + w - 44, cy + 24, { size: 12, color: st.color, align: 'right' });
   g.save();
   g.translate(x + w - 20, cy + 24);
@@ -290,7 +357,6 @@ function drawPackQuestion(
   if (layout && rowH > QUESTION_HEADER_H) {
     g.save();
     g.globalAlpha *= amount;
-    drawMarkdown(title, x + 32, titleY, C.ink, 1);
     let oy = titleY + title.h + 16;
     layout.options.forEach((option, i) => {
       const right = i === q.answer;
@@ -300,6 +366,41 @@ function drawPackQuestion(
       oy += option.h + 8;
     });
     drawMarkdown(layout.explain, x + 32, oy, C.dim);
+    oy += layout.explain.h ? layout.explain.h + 12 : 0;
+    const left = x + 32;
+    const { evidence, extracts } = layout;
+    const canClickAt = (y: number) => page.question === q.qid && y >= hitTop && y + 26 <= hitBottom;
+    if (canClickAt(oy)) {
+      action(left, oy, 92, 26, evidence ? '收起原文' : '查看原文',
+        () => evidence ? closeQuestionSource(page) : void openQuestionSource(page, q, fromDocument),
+        'ghost', { size: 12, r: 5 });
+    }
+    oy += 36;
+    if (evidence?.state === 'ready') {
+      text(evidence.source.documentName, left, oy + 9, { size: 14, weight: 600, maxW: w - 64 });
+      text('章节原文节选', left, oy + 29, { size: 12, color: C.dim });
+      oy += 44;
+      for (const row of extracts) {
+        const pages = evidencePages(row.pages);
+        text(row.title, left, oy + 12, { size: 13, weight: 600, maxW: w - 192 });
+        if (row.id && canClickAt(oy)) {
+          action(x + w - 144, oy, 112, 26, '阅读本节全文',
+            () => void openSourceSection(page, row.id), 'ghost', { size: 12, r: 5 });
+        }
+        if (pages) {
+          text(pages, left, oy + 30, { size: 12, color: C.dim, maxW: w - 64 });
+        }
+        drawMarkdown(row.md, left, oy + (pages ? 38 : 28), C.ink2);
+        oy += row.md.h + 48;
+      }
+    } else if (evidence) {
+      const status = evidence.state === 'loading' ? '正在查询原文…'
+        : evidence.state === 'error' ? '原文查询失败' : '暂无原文出处';
+      text(status, left, oy + 12, { size: 13, color: C.dim });
+      if (evidence.state === 'error' && canClickAt(oy)) {
+        action(left + 108, oy, 64, 26, '重试', () => void openQuestionSource(page, q, fromDocument), 'ghost', { size: 12, r: 5 });
+      }
+    }
     infoY = cy + layout.h - 20;
     if (ok + bad > 0) {
       g.fillStyle = C.line;
@@ -309,13 +410,7 @@ function drawPackQuestion(
     g.restore();
   }
 
-  onClick(x, hitTop, w, hitBottom - hitTop, () => {
-    if (panelOf('pack')?.page !== page) return;
-    page.question = page.question === q.qid ? undefined : q.qid;
-    if (page.question) questionAnchor.set(page, { id: q.qid, offset: cy - view.y });
-    else questionAnchor.delete(page);
-  }, `q:${q.qid}`);
-  // 重置后注册，避免被整行热区吞掉；只在按钮完整可见时响应。
+  // 子按钮在整行热区之后注册，且只在完整可见时响应。
   if (page.question === q.qid && ok + bad > 0 && infoY - 16 >= hitTop && infoY + 8 <= hitBottom) {
     const rx = x + w - 16;
     const rh = hover(rx - 60, infoY - 16, 64, 24);
@@ -401,6 +496,8 @@ export function drawPlanPanel(v: PlanView) {
   const split = v.tier === 'toc' ? '按目录划分' : v.tier === 'agentic' ? '模型分章' : '按段落划分';
   if (planned) text(`${v.topics.length} 个主题 · ${split}`, x + pad + 20, y + 146,
     { size: 12, color: C.dim });
+  if (v.pdfWarning) text(v.pdfWarning, x + pad + cw - 20, y + 146,
+    { size: 12, color: C.gold, align: 'right', maxW: cw - 270 });
 
   const listTop = y + 184;
   const listH = 404;
@@ -420,7 +517,7 @@ export function drawPlanPanel(v: PlanView) {
     });
     const childrenH = children.reduce((height, sub) => height + 6 + (sub.title.length + sub.summary.length) * 20, 0);
     const job = latest.get(i);
-    const failure = job?.state === 'fail' ? jobFailureReason(job.tail) : '';
+    const failure = job?.state === 'fail' ? jobFailureReason(job) : '';
     const failureLines = failure ? wrapText(`原因：${failure}`, cw - 40).slice(0, 2) : [];
     return { title, titleW, summary, children, failureLines,
       h: 40 + title.length * 24 + (topic.pageFrom ? 24 : 0) + summary.length * 20 + childrenH + failureLines.length * 18 };
@@ -556,9 +653,6 @@ export function drawPlanPanel(v: PlanView) {
   }
 }
 
-/**
- * 设置只保留玩法和模型；连接情况由实际操作反馈，不作为独立配置项。
- */
 export function drawSettingsPanel(t: number) {
   const p = G.panel;
   if (p.k !== 'settings') return;
@@ -588,6 +682,11 @@ export function drawSettingsPanel(t: number) {
         ? serviceModelName() || '默认模型'
         : '未配置',
       run: openModelForm,
+    },
+    {
+      name: '战斗音效',
+      status: battleSoundEnabled() ? '开启' : '关闭',
+      run: toggleBattleSound,
     },
   ];
 
